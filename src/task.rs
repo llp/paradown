@@ -155,7 +155,7 @@ impl DownloadTask {
                             let _ = manager.task_event_tx.send(DownloadEvent::Progress {
                                 id: task_clone.id,
                                 downloaded: total_downloaded,
-                                total,
+                                total: total_size,
                             });
                         }
                     }

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use crate::checksum::{ChecksumAlgorithm, DownloadChecksum};
 use crate::config::DownloadConfig;
 use crate::error::DownloadError;
@@ -14,7 +15,7 @@ use std::sync::{Arc};
 pub enum PersistenceType {
     Memory,
     JsonFile(String),
-    Sqlite(String),
+    Sqlite(PathBuf),
 }
 
 pub struct DownloadPersistenceManager {

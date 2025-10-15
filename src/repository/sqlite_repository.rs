@@ -4,17 +4,17 @@ use crate::repository::repository::DownloadRepository;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs, path::Path};
 
 pub struct SqliteRepository {
     pool: Arc<SqlitePool>,
 }
 
 impl SqliteRepository {
-    pub async fn new(db_path: &str) -> Result<Self, DownloadError> {
+    pub async fn new(db_path: &PathBuf) -> Result<Self, DownloadError> {
         let cwd = std::env::current_dir()?;
-        let db_path = Path::new(db_path);
         let db_abs = if db_path.is_absolute() {
             db_path.to_path_buf()
         } else {

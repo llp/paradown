@@ -72,7 +72,6 @@ async fn main() -> Result<(), DownloadError> {
         None => DownloadConfigBuilder::new()
             .download_dir(cli.download_dir)
             .shuffle(cli.shuffle)
-            .urls(cli.urls.clone())
             .worker_threads(cli.workers)
             .max_concurrent_downloads(cli.workers)
             .rate_limit_kbps(None)

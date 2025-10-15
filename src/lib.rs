@@ -21,3 +21,8 @@ pub use status::DownloadStatus;
 pub use events::DownloadEvent;
 pub use manager::DownloadManager;
 pub use request::DownloadTaskRequest;
+
+pub use config::{
+    DownloadConfigBuilder, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
+};
+pub use persistence::PersistenceType;

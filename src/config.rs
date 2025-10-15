@@ -59,7 +59,6 @@ impl Default for RetryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadConfig {
     pub download_dir: PathBuf,
-    pub urls: Vec<String>,
     pub shuffle: bool,
     pub max_concurrent_downloads: usize,
     pub worker_threads: usize,
@@ -82,7 +81,6 @@ impl Default for DownloadConfig {
     fn default() -> Self {
         Self {
             download_dir: PathBuf::from("./downloads"),
-            urls: Vec::new(),
             shuffle: false,
             max_concurrent_downloads: 4,
             worker_threads: 4,
@@ -107,16 +105,6 @@ impl DownloadConfigBuilder {
 
     pub fn download_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.inner.download_dir = dir.into();
-        self
-    }
-
-    pub fn urls(mut self, urls: Vec<String>) -> Self {
-        self.inner.urls = urls;
-        self
-    }
-
-    pub fn add_url(mut self, url: impl Into<String>) -> Self {
-        self.inner.urls.push(url.into());
         self
     }
 
@@ -190,46 +178,20 @@ pub enum DownloadConfigError {
 }
 
 impl DownloadConfig {
-    /// 验证配置合法性
     pub fn validate(&self) -> Result<(), DownloadConfigError> {
-        if !self.download_dir.to_str().map_or(false, |s| !s.is_empty()) {
-            return Err(DownloadConfigError::InvalidDownloadDir(
-                self.download_dir.to_string_lossy().to_string(),
-            ));
-        }
-
-        if let Err(e) = std::fs::create_dir_all(&self.download_dir) {
-            return Err(DownloadConfigError::InvalidDownloadDir(format!(
-                "Cannot create directory '{}': {}",
-                self.download_dir.display(),
-                e
-            )));
+        if !self.download_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&self.download_dir) {
+                return Err(DownloadConfigError::InvalidDownloadDir(format!(
+                    "Cannot create directory '{}': {}",
+                    self.download_dir.display(),
+                    e
+                )));
+            }
         }
 
         if self.worker_threads == 0 || self.worker_threads > 100 {
             return Err(DownloadConfigError::InvalidWorkers(self.worker_threads));
         }
-
-        if self.urls.is_empty() {
-            return Err(DownloadConfigError::NoUrls);
-        }
-
-        if self.urls.len() > 163 {
-            return Err(DownloadConfigError::InvalidUrl(format!(
-                "Too many URLs (max 163, got {})",
-                self.urls.len()
-            )));
-        }
-
-        for (i, url) in self.urls.iter().enumerate() {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err(DownloadConfigError::InvalidUrl(format!(
-                    "Invalid URL at index {}: {}",
-                    i, url
-                )));
-            }
-        }
-
         Ok(())
     }
 

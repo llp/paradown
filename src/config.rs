@@ -81,7 +81,7 @@ pub struct DownloadConfigBuilder {
 impl Default for DownloadConfig {
     fn default() -> Self {
         Self {
-            download_dir: PathBuf::from("downloads"),
+            download_dir: PathBuf::from("./downloads"),
             urls: Vec::new(),
             shuffle: false,
             max_concurrent_downloads: 4,
@@ -89,7 +89,7 @@ impl Default for DownloadConfig {
             retry: RetryConfig::default(),
             rate_limit_kbps: None,
             connection_timeout: Duration::from_secs(30),
-            persistence_type: PersistenceType::Sqlite("downloads.db".into()),
+            persistence_type: PersistenceType::Sqlite("./downloads.db".into()),
             progress_throttle: ProgressThrottleConfig::default(),
             file_conflict_strategy: FileConflictStrategy::Resume,
             debug: true,

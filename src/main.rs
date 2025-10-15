@@ -97,11 +97,11 @@ async fn main() -> Result<(), DownloadError> {
 
     // let task_progress_manager = Arc::new(DownloadProgressManager::new());
 
-    // for url in cli.urls {
-    //     let request = DownloadTaskRequest::builder(url).build();
-    //     let task_id = manager.add_task(request).await?;
-    //     manager.start_task(task_id).await?;
-    // }
+    for url in cli.urls {
+        let request = DownloadTaskRequest::builder(url).build();
+        let task_id = manager.add_task(request).await?;
+        manager.start_task(task_id).await?;
+    }
 
     let rx = manager.subscribe_events();
     tokio::spawn(async move {
@@ -147,8 +147,8 @@ async fn main() -> Result<(), DownloadError> {
     });
 
     //-------------------------start---------------------------
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    manager.start_all().await?;
+    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    // manager.start_all().await?;
     //-------------------------Pause & Resume---------------------------
     // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
     // manager.pause_all().await?;

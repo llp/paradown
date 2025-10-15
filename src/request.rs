@@ -2,7 +2,7 @@ use crate::checksum::DownloadChecksum;
 use crate::status::DownloadStatus;
 
 //---------------------------------------------------------------------------------
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTaskRequest {
     pub id: Option<u32>,
     pub url: String,
@@ -94,6 +94,7 @@ impl DownloadRequestBuilder {
 //---------------------------------------------------------------------------------
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct DownloadWorkerRequest {

@@ -1,5 +1,6 @@
 use crate::config::DownloadConfigError;
 use reqwest::header::ToStrError;
+use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
 use std::io;
 use std::num::ParseIntError;
@@ -7,8 +8,7 @@ use thiserror::Error;
 use tokio::sync::AcquireError;
 use tokio::task::JoinError;
 
-
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, Serialize, Deserialize)]
 pub enum DownloadError {
     #[error("IO error: {0}")]
     Io(String),
@@ -29,7 +29,7 @@ pub enum DownloadError {
     InvalidUrl(String),
 
     #[error("URL parse error: {0}")]
-    UrlParseError(#[from] url::ParseError),
+    UrlParseError(String),
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
@@ -54,6 +54,13 @@ pub enum DownloadError {
 
     #[error("Header ToStrError: {0}")]
     Header(String),
+}
+
+// 手动实现转换，从 url::ParseError -> DownloadError::UrlParseError
+impl From<url::ParseError> for DownloadError {
+    fn from(err: url::ParseError) -> Self {
+        DownloadError::UrlParseError(err.to_string())
+    }
 }
 
 impl From<sqlx::Error> for DownloadError {

@@ -1,7 +1,9 @@
 use crate::DownloadError;
 use std::fmt;
 use std::str::FromStr;
-#[derive(Clone, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DownloadStatus {
     Pending,
     Preparing,

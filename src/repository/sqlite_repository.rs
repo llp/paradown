@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use std::{fs, path::Path};
-use log::error;
 
 pub struct SqliteRepository {
     pool: Arc<SqlitePool>,

@@ -171,7 +171,7 @@ impl DownloadManager {
     }
 
     /// 从数据库加载所有任务并恢复到内存
-    pub async fn load_tasks(self: &Arc<Self>) -> Result<(), DownloadError> {
+    async fn load_tasks(self: &Arc<Self>) -> Result<(), DownloadError> {
         // 1. 获取持久化组件
         let persistence = self
             .persistence
@@ -404,7 +404,7 @@ impl DownloadManager {
         }
     }
 
-    pub async fn persist_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
+    async fn persist_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
         // 1.获取任务
         let Some(task) = self.get_task(task_id) else {
             error!(

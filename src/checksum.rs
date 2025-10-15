@@ -17,7 +17,7 @@ pub enum ChecksumAlgorithm {
     NONE,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DownloadChecksum {
     pub algorithm: ChecksumAlgorithm,
     pub value: Option<String>,

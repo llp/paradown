@@ -45,7 +45,7 @@ impl DownloadWorker {
         end: u64,
         downloaded: Option<u64>,
         file_path: Arc<PathBuf>,
-        status: Option<DownloadStatus>,
+        _: Option<DownloadStatus>,
         stats: Arc<DownloadStats>,
     ) -> Self {
         debug!(

@@ -8,7 +8,7 @@ use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
 use dashmap::DashMap;
-use log::{debug, error, warn};
+use log::{LevelFilter, debug, error, warn};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::str::FromStr;
@@ -54,6 +54,17 @@ impl DownloadManager {
     }
 
     pub async fn init(self: &Arc<Self>) -> Result<(), DownloadError> {
+        let log_level = if self.config.debug {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        };
+
+        env_logger::Builder::from_default_env()
+            .filter_level(log_level)
+            .filter_module("sqlx::query", LevelFilter::Info) // 只让 sqlx 输出 info 级别以上
+            .init();
+
         let persistence = Arc::new(DownloadPersistenceManager::new(self.config.clone()).await?);
         self.persistence
             .set(persistence)
@@ -134,8 +145,8 @@ impl DownloadManager {
                     }
                     DownloadEvent::Progress {
                         id,
-                        downloaded,
-                        total,
+                        downloaded: _downloaded,
+                        total: _total,
                     } => {
                         manager_clone
                             .persist_task(id)
@@ -210,7 +221,7 @@ impl DownloadManager {
                 ),
                 downloaded_size: Some(db_task.downloaded_size),
                 total_size: db_task.total_size,
-                checksums,
+                checksums: Some(checksums),
             };
 
             // 6. 转换 workers -> DownloadWorkerRequest
@@ -291,7 +302,7 @@ impl DownloadManager {
             task_request.status,            // 对应 Option<DownloadStatus>
             task_request.downloaded_size,   // 对应 Option<u64>
             task_request.total_size,        // 对应 Option<u64>
-            task_request.checksums.clone(), // 对应 Vec<DownloadChecksum>
+            task_request.checksums.clone().unwrap_or_default(), // 对应 Vec<DownloadChecksum>
             self.config.clone(),
             Some(persistence),
             Arc::downgrade(self),

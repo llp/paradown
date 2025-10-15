@@ -69,6 +69,7 @@ pub struct DownloadConfig {
     pub persistence_type: PersistenceType,
     pub progress_throttle: ProgressThrottleConfig,
     pub file_conflict_strategy: FileConflictStrategy,
+    pub debug: bool,
 }
 
 /// Builder 模式的实现
@@ -91,6 +92,7 @@ impl Default for DownloadConfig {
             persistence_type: PersistenceType::Sqlite("downloads.db".into()),
             progress_throttle: ProgressThrottleConfig::default(),
             file_conflict_strategy: FileConflictStrategy::Resume,
+            debug: true,
         }
     }
 }
@@ -160,6 +162,11 @@ impl DownloadConfigBuilder {
 
     pub fn file_conflict_strategy(mut self, strategy: FileConflictStrategy) -> Self {
         self.inner.file_conflict_strategy = strategy;
+        self
+    }
+
+    pub fn debug(mut self, debug: bool) -> Self {
+        self.inner.debug = debug;
         self
     }
 

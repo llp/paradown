@@ -8,7 +8,7 @@ use crate::worker::DownloadWorker;
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistenceType {

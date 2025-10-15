@@ -8,7 +8,7 @@ pub struct DownloadTaskRequest {
     pub url: String,
     pub file_name: Option<String>,
     pub file_path: Option<String>,
-    pub checksums: Vec<DownloadChecksum>,
+    pub checksums: Option<Vec<DownloadChecksum>>,
     pub status: Option<DownloadStatus>,
     pub downloaded_size: Option<u64>,
     pub total_size: Option<u64>,
@@ -22,7 +22,7 @@ impl DownloadTaskRequest {
             url: url.into(),
             file_name: None,
             file_path: None,
-            checksums: Vec::new(),
+            checksums: Some(Vec::new()),
             status: None,
             downloaded_size: None,
             total_size: None,
@@ -35,7 +35,7 @@ pub struct DownloadRequestBuilder {
     url: String,
     file_name: Option<String>,
     file_path: Option<String>,
-    checksums: Vec<DownloadChecksum>,
+    checksums: Option<Vec<DownloadChecksum>>,
     status: Option<DownloadStatus>,
     downloaded_size: Option<u64>,
     total_size: Option<u64>,
@@ -58,7 +58,7 @@ impl DownloadRequestBuilder {
     }
 
     pub fn checksums(mut self, checksums: Vec<DownloadChecksum>) -> Self {
-        self.checksums = checksums;
+        self.checksums = Some(checksums);
         self
     }
 

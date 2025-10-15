@@ -122,14 +122,14 @@ impl DownloadTask {
                 match event {
                     DownloadEvent::Progress {
                         id,
-                        downloaded,
+                        downloaded: _downloaded,
                         total,
                         ..
                     } => {
                         // 保存单个 worker 状态和进度
                         let task_clone_for_persist = Arc::clone(&task_clone);
                         tokio::spawn(async move {
-                            task_clone_for_persist.persist_task_worker(id).await;
+                            let _ = task_clone_for_persist.persist_task_worker(id).await;
                         });
 
                         let workers = task_clone.workers.read().await;
@@ -168,7 +168,7 @@ impl DownloadTask {
                         // 保存单个 worker 状态和进度
                         let task_clone_for_persist = Arc::clone(&task_clone);
                         tokio::spawn(async move {
-                            task_clone_for_persist.persist_task_worker(worker_id).await;
+                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
                         });
 
                         let workers = task_clone.workers.read().await;
@@ -257,7 +257,7 @@ impl DownloadTask {
                         // 保存单个 worker 状态和进度
                         let task_clone_for_persist = Arc::clone(&task_clone);
                         tokio::spawn(async move {
-                            task_clone_for_persist.persist_task_worker(worker_id).await;
+                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
                         });
 
                         stats_clone.snapshot().await;
@@ -284,7 +284,7 @@ impl DownloadTask {
                         // 保存单个 worker 状态和进度
                         let task_clone_for_persist = Arc::clone(&task_clone);
                         tokio::spawn(async move {
-                            task_clone_for_persist.persist_task_worker(worker_id).await;
+                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
                         });
                     }
                     DownloadEvent::Cancel(worker_id) => {
@@ -293,7 +293,7 @@ impl DownloadTask {
                         // 保存单个 worker 状态和进度
                         let task_clone_for_persist = Arc::clone(&task_clone);
                         tokio::spawn(async move {
-                            task_clone_for_persist.persist_task_worker(worker_id).await;
+                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
                         });
 
                         let workers = task_clone.workers.read().await;

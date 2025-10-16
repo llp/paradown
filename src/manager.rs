@@ -415,6 +415,19 @@ impl DownloadManager {
         }
     }
 
+    pub async fn delete_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
+        if let Some(task_ref) = self.tasks.get(&task_id) {
+            let task = Arc::clone(task_ref.value());
+            task.delete().await?;
+            if let Some(tx) = &self.status_tx {
+                let _ = tx.send(DownloadStatus::Deleted).await;
+            }
+            Ok(task_id)
+        } else {
+            Err(DownloadError::TaskNotFound(task_id))
+        }
+    }
+
     async fn persist_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
         // 1.获取任务
         let Some(task) = self.get_task(task_id) else {

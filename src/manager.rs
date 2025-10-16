@@ -438,7 +438,11 @@ impl DownloadManager {
             .iter()
             .map(|entry| {
                 let task = Arc::clone(entry.value());
-                tokio::spawn(async move { task.start().await })
+                tokio::spawn(async move {
+                    if let Err(e) = task.start().await {
+                        eprintln!("[Task {}] Failed to start: {:?}", task.id, e);
+                    }
+                })
             })
             .collect();
 
@@ -454,7 +458,11 @@ impl DownloadManager {
             .iter()
             .map(|entry| {
                 let task = Arc::clone(entry.value());
-                tokio::spawn(async move { task.pause().await })
+                tokio::spawn(async move {
+                    if let Err(e) = task.pause().await {
+                        eprintln!("[Task {}] Failed to pause: {:?}", task.id, e);
+                    }
+                })
             })
             .collect();
 
@@ -470,7 +478,11 @@ impl DownloadManager {
             .iter()
             .map(|entry| {
                 let task = Arc::clone(entry.value());
-                tokio::spawn(async move { task.resume().await })
+                tokio::spawn(async move {
+                    if let Err(e) = task.resume().await {
+                        eprintln!("[Task {}] Failed to resume: {:?}", task.id, e);
+                    }
+                })
             })
             .collect();
 
@@ -483,7 +495,9 @@ impl DownloadManager {
     pub async fn cancel_all(self: &Arc<Self>) -> Result<(), DownloadError> {
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
-            task.cancel().await?;
+            if let Err(e) = task.cancel().await {
+                eprintln!("[Task {}] Failed to cancel: {:?}", task.id, e);
+            }
         }
         Ok(())
     }

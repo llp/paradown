@@ -359,7 +359,6 @@ impl DownloadTask {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), DownloadError> {
-        error!("=====1======start======@@@@==>>>>>");
         {
             let status = self.status.lock().await;
             match &*status {
@@ -379,7 +378,6 @@ impl DownloadTask {
                     return self.resume().await; // 如果有 resume() 实现，可直接复用
                 }
                 DownloadStatus::Completed => {
-                    error!("======2=====start======@@@@==>>>>>");
                     debug!("[Task {}] Task already completed, skipping start", self.id);
                     return Err(DownloadError::Other("Task already completed".into()));
                 }

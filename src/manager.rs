@@ -433,6 +433,9 @@ impl DownloadManager {
     }
 
     pub async fn start_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if self.tasks.is_empty() {
+            return Err(DownloadError::Other("No tasks to start".into()));
+        }
         let futures: Vec<_> = self
             .tasks
             .iter()
@@ -453,6 +456,9 @@ impl DownloadManager {
     }
 
     pub async fn pause_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if self.tasks.is_empty() {
+            return Err(DownloadError::Other("No tasks to pause".into()));
+        }
         let futures: Vec<_> = self
             .tasks
             .iter()
@@ -473,6 +479,9 @@ impl DownloadManager {
     }
 
     pub async fn resume_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if self.tasks.is_empty() {
+            return Err(DownloadError::Other("No tasks to resume".into()));
+        }
         let futures: Vec<_> = self
             .tasks
             .iter()
@@ -493,6 +502,9 @@ impl DownloadManager {
     }
 
     pub async fn cancel_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if self.tasks.is_empty() {
+            return Err(DownloadError::Other("No tasks to cancel".into()));
+        }
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.cancel().await {
@@ -503,6 +515,9 @@ impl DownloadManager {
     }
 
     pub async fn delete_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if self.tasks.is_empty() {
+            return Err(DownloadError::Other("No tasks to delete".into()));
+        }
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.delete().await {

@@ -267,6 +267,11 @@ impl DownloadManager {
             new_id
         });
 
+        let file_path = task_request
+            .file_path
+            .clone()
+            .filter(|path| !path.trim().is_empty());
+
         let persistence = self
             .persistence
             .get()
@@ -277,7 +282,7 @@ impl DownloadManager {
             task_id,
             task_request.url,
             task_request.file_name.clone(), // 对应 Option<String>
-            task_request.file_path.clone(), // 对应 Option<String>
+            file_path,                      // 对应 Option<String>
             task_request.status,            // 对应 Option<DownloadStatus>
             task_request.downloaded_size,   // 对应 Option<u64>
             task_request.total_size,        // 对应 Option<u64>

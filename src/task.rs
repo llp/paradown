@@ -9,7 +9,7 @@ use crate::status::DownloadStatus;
 use crate::worker::DownloadWorker;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use log::{debug, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};

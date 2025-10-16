@@ -26,3 +26,5 @@ pub use config::{
     DownloadConfigBuilder, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
 pub use persistence::PersistenceType;
+
+pub use task::DownloadTaskSnapshot;

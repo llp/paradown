@@ -10,6 +10,7 @@ use crate::worker::DownloadWorker;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use log::{debug, info};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +40,19 @@ pub struct DownloadTask {
     pub manager: Weak<DownloadManager>,
     pub stats: Arc<DownloadStats>,
     pub client: Arc<reqwest::Client>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DownloadTaskSnapshot {
+    pub id: u32,
+    pub url: String,
+    pub file_name: Option<String>,
+    pub file_path: Option<PathBuf>,
+    pub status: String,
+    pub progress: u64,
+    pub total_size: u64,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl DownloadTask {
@@ -102,6 +116,25 @@ impl DownloadTask {
             stats: Arc::new(DownloadStats::new()),
             client,
         }))
+    }
+
+    pub async fn snapshot(&self) -> DownloadTaskSnapshot {
+        let status_guard = self.status.lock().await;
+        let status_str = match &*status_guard {
+            DownloadStatus::Failed(err) => format!("Failed: {}", err),
+            _ => status_guard.to_string(),
+        };
+        DownloadTaskSnapshot {
+            id: self.id,
+            url: self.url.clone(),
+            file_name: self.file_name.get().cloned(),
+            file_path: self.file_path.get().cloned(),
+            status: status_str,
+            progress: self.progress.load(Ordering::Relaxed),
+            total_size: self.total_size.load(Ordering::Relaxed),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+        }
     }
 
     pub async fn init(self: &Arc<Self>) -> Result<(), DownloadError> {

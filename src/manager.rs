@@ -524,6 +524,15 @@ impl DownloadManager {
             .map(|entry| Arc::clone(entry.value()))
     }
 
+    pub fn get_all_tasks(&self) -> Vec<Arc<DownloadTask>> {
+        self.tasks
+            .iter()
+            .map(|entry| Arc::clone(&*entry.value()))
+            .collect()
+    }
+
+    //----------------------------------------------------------------------------------------------
+
     pub async fn run(self: &Arc<Self>) -> Result<(), DownloadError> {
         let mut rx_opt = self.command_rx.lock().await;
         if rx_opt.is_none() {

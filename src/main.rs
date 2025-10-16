@@ -91,7 +91,7 @@ async fn main() -> Result<(), DownloadError> {
     info!("Random order: {}", config.shuffle);
 
     let (mut interactive, status_tx, command_rx) = InteractiveMode::new();
-    let manager = DownloadManager::new(config, Some(status_tx.clone()), Some(command_rx))?;
+    let manager = DownloadManager::new(config)?;
     manager.init().await?;
 
     // let task_progress_manager = Arc::new(DownloadProgressManager::new());
@@ -207,13 +207,6 @@ async fn main() -> Result<(), DownloadError> {
     // manager.start_task(task_id).await?;
 
     //----------------------------------------------------------------
-    let manager_clone = Arc::clone(&manager);
-    tokio::spawn(async move {
-        if let Err(e) = manager_clone.run().await {
-            eprintln!("Error in manager run: {:?}", e);
-        }
-    });
-
     interactive.run().await;
 
     info!("Download process completed successfully");

@@ -8,14 +8,14 @@ use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
 use dashmap::DashMap;
-use log::{LevelFilter, debug, error, warn};
+use log::{LevelFilter, debug, error, info, warn};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
-use tokio::sync::{Mutex, OnceCell, broadcast, mpsc};
+use tokio::sync::{Mutex, OnceCell, broadcast};
 
 /**
  *
@@ -24,27 +24,19 @@ pub struct DownloadManager {
     pub config: Arc<DownloadConfig>,
     pub tasks: Arc<DashMap<u32, Arc<DownloadTask>>>,
     pub persistence: OnceCell<Arc<DownloadPersistenceManager>>,
-    pub status_tx: Option<mpsc::Sender<DownloadStatus>>,
-    pub command_rx: Mutex<Option<mpsc::Receiver<crate::cli::Command>>>,
     pub running_count: Arc<AtomicUsize>,
     pub pending_queue: Arc<Mutex<VecDeque<u32>>>,
     pub task_event_tx: broadcast::Sender<DownloadEvent>,
 }
 
 impl DownloadManager {
-    pub fn new(
-        config: DownloadConfig,
-        status_tx: Option<mpsc::Sender<DownloadStatus>>,
-        command_rx: Option<mpsc::Receiver<crate::cli::Command>>,
-    ) -> Result<Arc<Self>, DownloadError> {
+    pub fn new(config: DownloadConfig) -> Result<Arc<Self>, DownloadError> {
         let (task_event_tx, _) = broadcast::channel(100);
 
         let manager = Arc::new(Self {
             config: Arc::new(config),
             tasks: Arc::new(DashMap::new()),
             persistence: OnceCell::new(),
-            status_tx,
-            command_rx: Mutex::new(command_rx),
             running_count: Arc::new(AtomicUsize::new(0)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             task_event_tx,
@@ -114,10 +106,6 @@ impl DownloadManager {
                             .await
                             .expect(&format!("Failed to persist task: {}", task_id));
 
-                        if let Some(tx) = &manager_clone.status_tx {
-                            let _ = tx.send(DownloadStatus::Failed(error)).await;
-                        }
-
                         manager_clone
                             .spawn_next_task()
                             .await
@@ -128,20 +116,12 @@ impl DownloadManager {
                             .persist_task(task_id)
                             .await
                             .expect(&format!("Failed to persist task: {}", task_id));
-
-                        if let Some(tx) = &manager_clone.status_tx {
-                            let _ = tx.send(DownloadStatus::Preparing).await;
-                        }
                     }
                     DownloadEvent::Pause(task_id) => {
                         manager_clone
                             .persist_task(task_id)
                             .await
                             .expect(&format!("Failed to persist task: {}", task_id));
-
-                        if let Some(tx) = &manager_clone.status_tx {
-                            let _ = tx.send(DownloadStatus::Paused).await;
-                        }
                     }
                     DownloadEvent::Progress {
                         id,
@@ -152,10 +132,6 @@ impl DownloadManager {
                             .persist_task(id)
                             .await
                             .expect(&format!("Failed to persist task: {}", id));
-
-                        if let Some(tx) = &manager_clone.status_tx {
-                            let _ = tx.send(DownloadStatus::Running).await;
-                        }
                     }
                     _ => {}
                 }
@@ -276,7 +252,10 @@ impl DownloadManager {
                 task_request.url,
                 *existing.key()
             );
-            return Ok(*existing.key());
+            return Err(DownloadError::Other(format!(
+                "URL '{}' already exists!",
+                task_request.url
+            )));
         }
 
         //
@@ -350,24 +329,13 @@ impl DownloadManager {
 
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
-            let tx_status = self.status_tx.clone();
             let running_count = self.running_count.clone();
             running_count.fetch_add(1, Ordering::Relaxed);
             tokio::spawn(async move {
                 let result = task.start().await;
                 match result {
-                    Ok(_) => {
-                        if let Some(tx) = tx_status {
-                            let _ = tx.send(DownloadStatus::Running).await;
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(tx) = tx_status {
-                            let _ = tx
-                                .send(DownloadStatus::Failed(DownloadError::Other(e.to_string())))
-                                .await;
-                        }
-                    }
+                    Ok(_) => {}
+                    Err(e) => {}
                 }
             });
             Ok(task_id)
@@ -380,9 +348,6 @@ impl DownloadManager {
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
             task.pause().await?;
-            if let Some(tx) = &self.status_tx {
-                let _ = tx.send(DownloadStatus::Paused).await;
-            }
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))
@@ -393,9 +358,6 @@ impl DownloadManager {
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
             task.resume().await?;
-            if let Some(tx) = &self.status_tx {
-                let _ = tx.send(DownloadStatus::Running).await;
-            }
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))
@@ -406,9 +368,6 @@ impl DownloadManager {
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
             task.cancel().await?;
-            if let Some(tx) = &self.status_tx {
-                let _ = tx.send(DownloadStatus::Canceled).await;
-            }
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))
@@ -416,16 +375,27 @@ impl DownloadManager {
     }
 
     pub async fn delete_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
-        if let Some(task_ref) = self.tasks.get(&task_id) {
-            let task = Arc::clone(task_ref.value());
-            task.delete().await?;
-            if let Some(tx) = &self.status_tx {
-                let _ = tx.send(DownloadStatus::Deleted).await;
+        let task = {
+            if let Some(task_ref) = self.tasks.get(&task_id) {
+                Arc::clone(task_ref.value())
+            } else {
+                error!("[Task {}] Not found when trying to delete", task_id);
+                return Err(DownloadError::TaskNotFound(task_id));
             }
-            Ok(task_id)
-        } else {
-            Err(DownloadError::TaskNotFound(task_id))
+        };
+
+        if let Err(e) = task.delete().await {
+            error!("[Task {}] Failed to delete task: {:?}", task_id, e);
+            return Err(e);
         }
+
+        self.tasks.remove(&task_id);
+
+        info!(
+            "[Task {}] Deleted successfully and removed from map",
+            task_id
+        );
+        Ok(task_id)
     }
 
     async fn persist_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
@@ -516,20 +486,17 @@ impl DownloadManager {
             let task = Arc::clone(entry.value());
             task.cancel().await?;
         }
-        if let Some(tx) = &self.status_tx {
-            let _ = tx.send(DownloadStatus::Canceled).await;
-        }
         Ok(())
     }
 
     pub async fn delete_all(self: &Arc<Self>) -> Result<(), DownloadError> {
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
-            task.delete().await?;
+            if let Err(e) = task.delete().await {
+                error!("Failed to delete task {}: {:?}", task.id, e);
+            }
         }
-        if let Some(tx) = &self.status_tx {
-            let _ = tx.send(DownloadStatus::Deleted).await;
-        }
+        self.tasks.clear();
         Ok(())
     }
 
@@ -556,27 +523,6 @@ impl DownloadManager {
     }
 
     //----------------------------------------------------------------------------------------------
-
-    pub async fn run(self: &Arc<Self>) -> Result<(), DownloadError> {
-        let mut rx_opt = self.command_rx.lock().await;
-        if rx_opt.is_none() {
-            return Ok(());
-        }
-        let mut rx = rx_opt.take().unwrap();
-        drop(rx_opt);
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                crate::cli::Command::Pause => self.pause_all().await?,
-                crate::cli::Command::Resume => self.resume_all().await?,
-                crate::cli::Command::Cancel => self.cancel_all().await?,
-                crate::cli::Command::SetRateLimit(limit) => {
-                    println!("Setting rate limit to {} KB/s", limit);
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn subscribe_events(&self) -> broadcast::Receiver<DownloadEvent> {
         self.task_event_tx.subscribe()
     }

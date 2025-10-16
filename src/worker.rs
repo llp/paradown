@@ -24,7 +24,7 @@ pub struct DownloadWorker {
     pub url: String,
     pub start: u64,
     pub end: u64,
-    pub downloaded: AtomicU64,
+    pub downloaded_size: AtomicU64,
     pub total_size: AtomicU64,
     pub file_path: Arc<PathBuf>,
     pub paused: Arc<AtomicBool>,
@@ -43,7 +43,7 @@ impl DownloadWorker {
         url: String,
         start: u64,
         end: u64,
-        downloaded: Option<u64>,
+        downloaded_size: Option<u64>,
         file_path: Arc<PathBuf>,
         _: Option<DownloadStatus>,
         stats: Arc<DownloadStats>,
@@ -61,7 +61,7 @@ impl DownloadWorker {
             start,
             end,
             file_path,
-            downloaded: AtomicU64::new(downloaded.unwrap_or(0)), // 从 request/task 初始化
+            downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)), // 从 request/task 初始化
             total_size: AtomicU64::new(end - start + 1),
             paused: Arc::new(AtomicBool::new(false)),
             canceled: Arc::new(AtomicBool::new(false)),
@@ -211,7 +211,7 @@ impl DownloadWorker {
 
                 self.stats.update_worker(self.id, chunk_len).await;
 
-                self.downloaded.store(downloaded_size, Ordering::Relaxed);
+                self.downloaded_size.store(downloaded_size, Ordering::Relaxed);
 
                 if downloaded_size - last_reported >= threshold
                     || last_emit.elapsed() >= emit_interval
@@ -237,7 +237,7 @@ impl DownloadWorker {
             }
 
             let expected_length = self.end - self.start + 1;
-            let actual_length = self.downloaded.load(Ordering::Relaxed);
+            let actual_length = self.downloaded_size.load(Ordering::Relaxed);
             if actual_length != expected_length {
                 debug!(
                     "[Worker {}] Download length mismatch! expected: {}, actual: {}",
@@ -304,7 +304,7 @@ impl fmt::Debug for DownloadWorker {
             .field("url", &self.url)
             .field("start", &self.start)
             .field("end", &self.end)
-            .field("downloaded", &self.downloaded)
+            .field("downloaded_size", &self.downloaded_size)
             .field("total_size", &self.total_size)
             .field("file_path", &self.file_path)
             .field("updated_at", &self.updated_at)

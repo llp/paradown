@@ -157,7 +157,7 @@ impl DownloadPersistenceManager {
             file_name,
             file_path: file_path_str,
             status: task.status.lock().await.to_string(),
-            downloaded_size: task.progress.load(Ordering::Relaxed),
+            downloaded_size: task.downloaded_size.load(Ordering::Relaxed),
             total_size: Some(task.total_size.load(Ordering::Relaxed)),
             created_at: task.created_at,
             updated_at: task.updated_at,
@@ -173,7 +173,7 @@ impl DownloadPersistenceManager {
             index: worker.id,
             start: worker.start,
             end: worker.end,
-            downloaded: worker.downloaded.load(Ordering::Relaxed),
+            downloaded: worker.downloaded_size.load(Ordering::Relaxed),
             status: worker.status.lock().await.to_string(),
             updated_at: worker.updated_at,
         }

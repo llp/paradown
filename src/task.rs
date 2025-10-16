@@ -34,7 +34,7 @@ pub struct DownloadTask {
     pub workers: RwLock<Vec<Arc<DownloadWorker>>>,
 
     pub total_size: AtomicU64,
-    pub progress: AtomicU64,
+    pub downloaded_size: AtomicU64,
 
     pub worker_event_tx: broadcast::Sender<DownloadEvent>,
     pub manager: Weak<DownloadManager>,
@@ -49,7 +49,7 @@ pub struct DownloadTaskSnapshot {
     pub file_name: Option<String>,
     pub file_path: Option<PathBuf>,
     pub status: String,
-    pub progress: u64,
+    pub downloaded_size: u64,
     pub total_size: u64,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -104,7 +104,7 @@ impl DownloadTask {
             file_path: file_path_cell,
             checksums,
             status: Mutex::new(initial_status),
-            progress: AtomicU64::new(downloaded_size.unwrap_or(0)),
+            downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
             total_size: AtomicU64::new(total_size.unwrap_or(0)),
             created_at: Some(Utc::now()),
@@ -130,7 +130,7 @@ impl DownloadTask {
             file_name: self.file_name.get().cloned(),
             file_path: self.file_path.get().cloned(),
             status: status_str,
-            progress: self.progress.load(Ordering::Relaxed),
+            downloaded_size: self.downloaded_size.load(Ordering::Relaxed),
             total_size: self.total_size.load(Ordering::Relaxed),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
@@ -168,11 +168,11 @@ impl DownloadTask {
                         let workers = task_clone.workers.read().await;
                         let total_downloaded: u64 = workers
                             .iter()
-                            .map(|w| w.downloaded.load(Ordering::Relaxed))
+                            .map(|w| w.downloaded_size.load(Ordering::Relaxed))
                             .sum();
 
                         task_clone
-                            .progress
+                            .downloaded_size
                             .store(total_downloaded, Ordering::Relaxed);
 
                         let total_size = task_clone.total_size.load(Ordering::Relaxed);
@@ -858,7 +858,7 @@ impl fmt::Debug for DownloadTask {
             .field("file_name", &self.file_name)
             .field("file_path", &self.file_path)
             .field("checksums", &self.checksums)
-            .field("progress", &self.progress)
+            .field("downloaded_size", &self.downloaded_size)
             .field("config", &self.config)
             .field("workers", &self.workers)
             .field("total_size", &self.total_size)

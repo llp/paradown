@@ -156,7 +156,7 @@ impl DownloadTask {
                     DownloadEvent::Progress {
                         id,
                         downloaded: _downloaded,
-                        total,
+                        total: _,
                         ..
                     } => {
                         // 保存单个 worker 状态和进度

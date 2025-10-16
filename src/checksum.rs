@@ -8,6 +8,7 @@ use sha2::Sha256;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChecksumAlgorithm {
@@ -17,6 +18,21 @@ pub enum ChecksumAlgorithm {
     NONE,
 }
 
+impl FromStr for ChecksumAlgorithm {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "MD5" => Ok(ChecksumAlgorithm::MD5),
+            "SHA1" => Ok(ChecksumAlgorithm::SHA1),
+            "SHA256" => Ok(ChecksumAlgorithm::SHA256),
+            "NONE" => Ok(ChecksumAlgorithm::NONE),
+            _ => Ok(ChecksumAlgorithm::NONE),
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DownloadChecksum {
     pub algorithm: ChecksumAlgorithm,

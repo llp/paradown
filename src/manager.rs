@@ -272,6 +272,11 @@ impl DownloadManager {
             .clone()
             .filter(|path| !path.trim().is_empty());
 
+        let file_name = task_request
+            .file_name
+            .clone()
+            .filter(|path| !path.trim().is_empty());
+
         let persistence = self
             .persistence
             .get()
@@ -281,11 +286,11 @@ impl DownloadManager {
         let task = DownloadTask::new(
             task_id,
             task_request.url,
-            task_request.file_name.clone(), // 对应 Option<String>
-            file_path,                      // 对应 Option<String>
-            task_request.status,            // 对应 Option<DownloadStatus>
-            task_request.downloaded_size,   // 对应 Option<u64>
-            task_request.total_size,        // 对应 Option<u64>
+            file_name,                                          // 对应 Option<String>
+            file_path,                                          // 对应 Option<String>
+            task_request.status,                                // 对应 Option<DownloadStatus>
+            task_request.downloaded_size,                       // 对应 Option<u64>
+            task_request.total_size,                            // 对应 Option<u64>
             task_request.checksums.clone().unwrap_or_default(), // 对应 Vec<DownloadChecksum>
             self.config.clone(),
             Some(persistence),

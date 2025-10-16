@@ -913,11 +913,10 @@ impl DownloadTask {
         }
 
         // 2. 构造文件名（从 file_name 获取，没设置则用 task_id）
-        let file_name = self
-            .file_name
-            .get()
-            .cloned()
-            .unwrap_or_else(|| format!("download_{}.tmp", self.id));
+        let file_name = match self.file_name.get().as_deref() {
+            Some(name) if !name.trim().is_empty() => name.to_string(),
+            _ => format!("download_{}.tmp", self.id),
+        };
 
         // 3. 构造文件路径
         let path = download_dir.join(&file_name);

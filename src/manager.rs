@@ -336,13 +336,7 @@ impl DownloadManager {
             let task = Arc::clone(task_ref.value());
             let running_count = self.running_count.clone();
             running_count.fetch_add(1, Ordering::Relaxed);
-            tokio::spawn(async move {
-                let result = task.start().await;
-                match result {
-                    Ok(_) => {}
-                    Err(e) => {}
-                }
-            });
+            task.start().await?;
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))

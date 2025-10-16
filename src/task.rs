@@ -359,13 +359,46 @@ impl DownloadTask {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), DownloadError> {
+        error!("=====1======start======@@@@==>>>>>");
         {
             let status = self.status.lock().await;
-            if matches!(*status, DownloadStatus::Completed) {
-                debug!("[Task {}] Task already completed, skipping start", self.id);
-                return Ok(());
+            match &*status {
+                DownloadStatus::Pending | DownloadStatus::Preparing | DownloadStatus::Running => {
+                    debug!(
+                        "[Task {}] Task already active: {:?}, skipping start",
+                        self.id, *status
+                    );
+                    return Err(DownloadError::Other(format!(
+                        "Task is {:?}, cannot start again",
+                        *status
+                    )));
+                }
+                DownloadStatus::Paused => {
+                    debug!("[Task {}] Resuming paused task", self.id);
+                    drop(status); // 释放锁
+                    return self.resume().await; // 如果有 resume() 实现，可直接复用
+                }
+                DownloadStatus::Completed => {
+                    error!("======2=====start======@@@@==>>>>>");
+                    debug!("[Task {}] Task already completed, skipping start", self.id);
+                    return Err(DownloadError::Other("Task already completed".into()));
+                }
+                DownloadStatus::Canceled => {
+                    debug!("[Task {}] Task is canceled, cannot start", self.id);
+                    return Err(DownloadError::Other("Task is canceled".into()));
+                }
+                DownloadStatus::Failed(_) => {
+                    debug!("[Task {}] Restarting failed task", self.id);
+                    // 可视为重新下载
+                    //TODO 处理上次下载的记录
+                }
+                DownloadStatus::Deleted => {
+                    debug!("[Task {}] Task has been deleted, cannot start", self.id);
+                    return Err(DownloadError::Other("Task deleted".into()));
+                }
             }
         }
+        //------------------------------------------------------------------------------------------
         {
             let mut status = self.status.lock().await;
             *status = DownloadStatus::Preparing;

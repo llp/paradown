@@ -13,4 +13,5 @@ pub enum DownloadEvent {
     Complete(u32),
     Error(u32, DownloadError),
     Cancel(u32),
+    Delete(u32),
 }

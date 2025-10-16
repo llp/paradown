@@ -80,10 +80,13 @@ impl InteractiveMode {
             DownloadStatus::Pending => println!("Download is pending"),
             DownloadStatus::Preparing => {
                 // println!("Download is Preparing")
-            },
+            }
             DownloadStatus::Running => {
                 // println!("Download is running")
-            },
+            }
+            DownloadStatus::Deleted => {
+                // println!("Download is running")
+            }
             DownloadStatus::Paused => println!("Download is paused"),
             DownloadStatus::Canceled => println!("Download is canceled"),
             DownloadStatus::Completed => println!("Download completed"),

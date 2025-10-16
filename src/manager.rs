@@ -509,6 +509,17 @@ impl DownloadManager {
         Ok(())
     }
 
+    pub async fn delete_all(self: &Arc<Self>) -> Result<(), DownloadError> {
+        for entry in self.tasks.iter() {
+            let task = Arc::clone(entry.value());
+            task.delete().await?;
+        }
+        if let Some(tx) = &self.status_tx {
+            let _ = tx.send(DownloadStatus::Deleted).await;
+        }
+        Ok(())
+    }
+
     pub fn get_task(&self, id: u32) -> Option<Arc<DownloadTask>> {
         self.get_task_by_id(id)
     }

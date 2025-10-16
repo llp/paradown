@@ -1,7 +1,7 @@
 use crate::DownloadError;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DownloadStatus {
@@ -12,6 +12,7 @@ pub enum DownloadStatus {
     Completed,
     Canceled,
     Failed(DownloadError),
+    Deleted,
 }
 
 impl fmt::Display for DownloadStatus {
@@ -24,6 +25,7 @@ impl fmt::Display for DownloadStatus {
             DownloadStatus::Completed => "Completed",
             DownloadStatus::Failed(_) => "Failed",
             DownloadStatus::Canceled => "Canceled",
+            DownloadStatus::Deleted => "Deleted",
         };
         write!(f, "{}", s)
     }
@@ -39,13 +41,12 @@ impl FromStr for DownloadStatus {
             "Preparing" => Ok(DownloadStatus::Preparing),
             "Paused" => Ok(DownloadStatus::Paused),
             "Completed" => Ok(DownloadStatus::Completed),
-            //TODO
             "Failed" => Ok(DownloadStatus::Failed(crate::error::DownloadError::Other(
                 String::from(""),
             ))),
             "Canceled" => Ok(DownloadStatus::Canceled),
+            "Deleted" => Ok(DownloadStatus::Deleted),
             _ => Err(()),
         }
     }
 }
-

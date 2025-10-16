@@ -626,6 +626,7 @@ impl DownloadTask {
             DownloadStatus::Pending
             | DownloadStatus::Completed
             | DownloadStatus::Canceled
+            | DownloadStatus::Deleted
             | DownloadStatus::Failed(_) => {
                 return Err(DownloadError::Other(format!(
                     "Cannot pause task in state: {:?}",
@@ -683,7 +684,10 @@ impl DownloadTask {
                 debug!("[Task {}] Task is already running", self.id);
                 return Ok(());
             }
-            DownloadStatus::Completed | DownloadStatus::Canceled | DownloadStatus::Failed(_) => {
+            DownloadStatus::Completed
+            | DownloadStatus::Canceled
+            | DownloadStatus::Deleted
+            | DownloadStatus::Failed(_) => {
                 return Err(DownloadError::Other(format!(
                     "Cannot resume task in state: {:?}",
                     *status
@@ -719,7 +723,10 @@ impl DownloadTask {
                 *status = DownloadStatus::Canceled;
                 debug!("[Task {}] Canceled", self.id);
             }
-            DownloadStatus::Completed | DownloadStatus::Canceled | DownloadStatus::Failed(_) => {
+            DownloadStatus::Completed
+            | DownloadStatus::Canceled
+            | DownloadStatus::Deleted
+            | DownloadStatus::Failed(_) => {
                 return Err(DownloadError::Other(format!(
                     "Cannot cancel task in state: {:?}",
                     *status
@@ -730,11 +737,27 @@ impl DownloadTask {
 
         //cancel
         self.persist_task().await?;
+        self.delete_task_worker().await?;
 
-        let workers = self.workers.read().await;
+        let mut workers = self.workers.write().await;
         for worker in workers.iter() {
             let _ = worker.cancel().await;
         }
+        workers.clear();
+
+        if let Some(manager) = self.manager.upgrade() {
+            let _ = manager.task_event_tx.send(DownloadEvent::Cancel(self.id));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete(self: &Arc<Self>) -> Result<(), DownloadError> {
+        let mut workers = self.workers.write().await;
+        for worker in workers.iter() {
+            let _ = worker.delete().await;
+        }
+        workers.clear();
 
         if let Some(file_path) = self.file_path.get() {
             if file_path.exists() {
@@ -749,11 +772,13 @@ impl DownloadTask {
                 debug!("[Task {}] File not found: {:?}", self.id, file_path);
             }
         }
+        //
+        self.delete_task().await?;
 
+        //
         if let Some(manager) = self.manager.upgrade() {
-            let _ = manager.task_event_tx.send(DownloadEvent::Cancel(self.id));
+            let _ = manager.task_event_tx.send(DownloadEvent::Delete(self.id));
         }
-
         Ok(())
     }
 
@@ -762,6 +787,29 @@ impl DownloadTask {
             debug!("[Task {}] Persisting task", self.id);
             if let Err(e) = persistence.save_task(self).await {
                 debug!("[Task {}] Failed to persist task: {:?}", self.id, e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if let Some(persistence) = self.persistence.as_ref() {
+            debug!("[Task {}] Deleting task", self.id);
+            if let Err(e) = persistence.delete_task(self.id).await {
+                debug!("[Task {}] Failed to delete task: {:?}", self.id, e);
+            }
+            if let Err(e) = persistence.delete_workers(self.id).await {
+                debug!("[Task {}] Failed to delete task worker: {:?}", self.id, e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_task_worker(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if let Some(persistence) = self.persistence.as_ref() {
+            debug!("[Task {}] Deleting task workers", self.id);
+            if let Err(e) = persistence.delete_workers(self.id).await {
+                debug!("[Task {}] Failed to delete task worker: {:?}", self.id, e);
             }
         }
         Ok(())

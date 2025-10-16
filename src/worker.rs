@@ -29,6 +29,7 @@ pub struct DownloadWorker {
     pub file_path: Arc<PathBuf>,
     pub paused: Arc<AtomicBool>,
     pub canceled: Arc<AtomicBool>,
+    pub deleted: Arc<AtomicBool>,
     pub updated_at: Option<DateTime<Utc>>,
     pub status: Arc<tokio::sync::Mutex<DownloadStatus>>,
     pub stats: Arc<DownloadStats>,
@@ -65,6 +66,7 @@ impl DownloadWorker {
             total_size: AtomicU64::new(end - start + 1),
             paused: Arc::new(AtomicBool::new(false)),
             canceled: Arc::new(AtomicBool::new(false)),
+            deleted: Arc::new(AtomicBool::new(false)),
             updated_at: Some(Utc::now()),
             status: Arc::new(tokio::sync::Mutex::new(DownloadStatus::Pending)),
             stats,
@@ -93,9 +95,14 @@ impl DownloadWorker {
         let mut last_reported: u64 = 0;
 
         loop {
+            if self.deleted.load(Ordering::Relaxed) {
+                debug!("[Worker {}] Download deleted", self.id);
+                return Ok(());
+            }
+
             if self.canceled.load(Ordering::Relaxed) {
                 debug!("[Worker {}] Download canceled", self.id);
-                return Err(DownloadError::Canceled(self.id));
+                return Ok(());
             }
 
             while self.paused.load(Ordering::Relaxed) {
@@ -211,7 +218,8 @@ impl DownloadWorker {
 
                 self.stats.update_worker(self.id, chunk_len).await;
 
-                self.downloaded_size.store(downloaded_size, Ordering::Relaxed);
+                self.downloaded_size
+                    .store(downloaded_size, Ordering::Relaxed);
 
                 if downloaded_size - last_reported >= threshold
                     || last_emit.elapsed() >= emit_interval
@@ -286,12 +294,25 @@ impl DownloadWorker {
     }
 
     pub async fn cancel(&self) -> Result<(), DownloadError> {
+        self.canceled.store(true, Ordering::Relaxed);
         *self.status.lock().await = DownloadStatus::Canceled;
         debug!("[Worker {}] Canceled", self.id);
         if let Some(task_arc) = self.task.upgrade() {
             let _ = task_arc
                 .worker_event_tx
                 .send(DownloadEvent::Cancel(self.id));
+        }
+        Ok(())
+    }
+
+    pub async fn delete(&self) -> Result<(), DownloadError> {
+        self.deleted.store(true, Ordering::Relaxed);
+        *self.status.lock().await = DownloadStatus::Deleted;
+        debug!("[Worker {}] Deleted", self.id);
+        if let Some(task_arc) = self.task.upgrade() {
+            let _ = task_arc
+                .worker_event_tx
+                .send(DownloadEvent::Delete(self.id));
         }
         Ok(())
     }

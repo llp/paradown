@@ -186,15 +186,21 @@ impl DownloadManager {
                 .map(|c| persistence.db_to_checksum(&c))
                 .collect::<Vec<_>>();
 
-            // 5. 转换 task -> DownloadTaskRequest
+            // 5. 修正 Running/Preparing 状态
+            let mut restored_status =
+                DownloadStatus::from_str(&db_task.status).unwrap_or(DownloadStatus::Pending);
+            restored_status = match restored_status {
+                DownloadStatus::Running | DownloadStatus::Preparing => DownloadStatus::Paused,
+                _ => restored_status,
+            };
+
+            // 6. 转换 task -> DownloadTaskRequest
             let task_request = DownloadTaskRequest {
                 id: Some(db_task.id),
                 url: db_task.url.clone(),
                 file_name: Some(db_task.file_name.clone()),
                 file_path: Some(db_task.file_path.clone()),
-                status: Some(
-                    DownloadStatus::from_str(&db_task.status).unwrap_or(DownloadStatus::Pending),
-                ),
+                status: Some(restored_status),
                 downloaded_size: Some(db_task.downloaded_size),
                 total_size: db_task.total_size,
                 checksums: Some(checksums),

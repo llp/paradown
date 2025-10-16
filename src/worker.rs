@@ -33,6 +33,7 @@ pub struct DownloadWorker {
     pub updated_at: Option<DateTime<Utc>>,
     pub status: Arc<tokio::sync::Mutex<DownloadStatus>>,
     pub stats: Arc<DownloadStats>,
+    pub is_running: AtomicBool,
 }
 
 impl DownloadWorker {
@@ -80,17 +81,52 @@ impl DownloadWorker {
                 status.unwrap_or(DownloadStatus::Pending),
             )),
             stats,
+            is_running: AtomicBool::new(false),
         }
     }
 
     pub async fn start(&self) -> Result<(), DownloadError> {
-        info!("[Worker {}] Starting download", self.id);
+        // 防止重复启动
+        if self.is_running.swap(true, Ordering::Relaxed) {
+            debug!("[Worker {}] start() called, but already running", self.id);
+            return Ok(());
+        }
+
+        info!("[Worker {}] Starting download loop", self.id);
+
+        let current_status = self.status.lock().await.clone();
+        match current_status {
+            DownloadStatus::Paused => {
+                debug!("[Worker {}] Resuming paused task", self.id);
+                self.paused.store(true, Ordering::Relaxed);
+            }
+            DownloadStatus::Canceled | DownloadStatus::Deleted => {
+                debug!(
+                    "[Worker {}] Task cannot start, status: {:?}",
+                    self.id, current_status
+                );
+                self.is_running.store(false, Ordering::Relaxed);
+                return Err(DownloadError::Other(format!(
+                    "Task cannot start, status: {:?}",
+                    current_status
+                )));
+            }
+            DownloadStatus::Completed => {
+                debug!(
+                    "[Worker {}] Task already completed, skipping start",
+                    self.id
+                );
+                self.is_running.store(false, Ordering::Relaxed);
+                return Ok(());
+            }
+            _ => {}
+        }
+        //------------------------------------------------------------------------------------------
+        *self.status.lock().await = DownloadStatus::Running;
 
         if let Some(task_arc) = self.task.upgrade() {
             let _ = task_arc.worker_event_tx.send(DownloadEvent::Start(self.id));
         }
-
-        *self.status.lock().await = DownloadStatus::Running;
 
         let mut retry_count = 0;
         let max_retries = self.config.retry.max_retries;
@@ -300,6 +336,11 @@ impl DownloadWorker {
         self.paused.store(false, Ordering::Relaxed);
         *self.status.lock().await = DownloadStatus::Running;
         debug!("[Worker {}] Resumed", self.id);
+
+        // 如果循环未启动，启动一次
+        if !self.is_running.load(Ordering::Relaxed) {
+            let _ = self.start().await;
+        }
         Ok(())
     }
 

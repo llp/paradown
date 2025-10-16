@@ -355,6 +355,12 @@ impl DownloadTask {
             }
         });
 
+        if let Some(manager) = self.manager.upgrade() {
+            let _ = manager
+                .task_event_tx
+                .send(DownloadEvent::Preparing(self.id));
+        }
+
         Ok(())
     }
 
@@ -362,7 +368,13 @@ impl DownloadTask {
         {
             let status = self.status.lock().await;
             match &*status {
-                DownloadStatus::Pending | DownloadStatus::Preparing | DownloadStatus::Running => {
+                DownloadStatus::Pending => {
+                    debug!(
+                        "[Task {}] Task is in Pending state, will attempt to start/restart the task",
+                        self.id
+                    );
+                }
+                DownloadStatus::Preparing | DownloadStatus::Running => {
                     debug!(
                         "[Task {}] Task already active: {:?}, skipping start",
                         self.id, *status

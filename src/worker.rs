@@ -46,13 +46,21 @@ impl DownloadWorker {
         end: u64,
         downloaded_size: Option<u64>,
         file_path: Arc<PathBuf>,
-        _: Option<DownloadStatus>,
+        status: Option<DownloadStatus>,
         stats: Arc<DownloadStats>,
     ) -> Self {
         debug!(
             "[Worker {}] Created for URL: {}, range: {}-{}",
             id, url, start, end
         );
+
+        let (paused, canceled, deleted) = match status {
+            Some(DownloadStatus::Paused) => (true, false, false),
+            Some(DownloadStatus::Canceled) => (false, true, false),
+            Some(DownloadStatus::Deleted) => (false, false, true),
+            _ => (false, false, false),
+        };
+
         Self {
             config,
             task,
@@ -64,11 +72,13 @@ impl DownloadWorker {
             file_path,
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)), // 从 request/task 初始化
             total_size: AtomicU64::new(end - start + 1),
-            paused: Arc::new(AtomicBool::new(false)),
-            canceled: Arc::new(AtomicBool::new(false)),
-            deleted: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(paused)),
+            canceled: Arc::new(AtomicBool::new(canceled)),
+            deleted: Arc::new(AtomicBool::new(deleted)),
             updated_at: Some(Utc::now()),
-            status: Arc::new(tokio::sync::Mutex::new(DownloadStatus::Pending)),
+            status: Arc::new(tokio::sync::Mutex::new(
+                status.unwrap_or(DownloadStatus::Pending),
+            )),
             stats,
         }
     }

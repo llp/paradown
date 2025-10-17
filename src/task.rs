@@ -786,9 +786,14 @@ impl DownloadTask {
 
         //task
         self.persist_task().await?;
+
         //workers
+        let mut workers = self.workers.write().await;
+        for worker in workers.iter() {
+            let _ = worker.cancel().await;
+        }
+        workers.clear();
         self.purge_task_workers().await?;
-        self.clear_task_workers().await?;
 
         if let Some(manager) = self.manager.upgrade() {
             let _ = manager.task_event_tx.send(DownloadEvent::Cancel(self.id));
@@ -799,7 +804,11 @@ impl DownloadTask {
 
     pub async fn delete(self: &Arc<Self>) -> Result<(), DownloadError> {
         //workers
-        self.clear_task_workers().await?;
+        let mut workers = self.workers.write().await;
+        for worker in workers.iter() {
+            let _ = worker.delete().await;
+        }
+        workers.clear();
         self.purge_task_workers().await?;
 
         //file
@@ -848,10 +857,8 @@ impl DownloadTask {
 
     async fn clear_task_workers(self: &Arc<Self>) -> Result<(), DownloadError> {
         let mut workers = self.workers.write().await;
-        for worker in workers.iter() {
-            let _ = worker.delete().await;
-        }
         workers.clear();
+
         Ok(())
     }
 

@@ -9,7 +9,7 @@ use crate::status::DownloadStatus;
 use crate::worker::DownloadWorker;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -394,13 +394,19 @@ impl DownloadTask {
                     return Err(DownloadError::Other("Task already completed".into()));
                 }
                 DownloadStatus::Canceled => {
-                    debug!("[Task {}] Task is canceled, cannot start", self.id);
-                    return Err(DownloadError::Other("Task is canceled".into()));
+                    warn!(
+                        "[Task {}] Task was previously canceled — restarting as new download",
+                        self.id
+                    );
+                    self.reset_task().await?;
                 }
+
                 DownloadStatus::Failed(_) => {
-                    debug!("[Task {}] Restarting failed task", self.id);
-                    // 可视为重新下载
-                    //TODO 处理上次下载的记录
+                    warn!(
+                        "[Task {}] Task failed previously — resetting and restarting download",
+                        self.id
+                    );
+                    self.reset_task().await?;
                 }
                 DownloadStatus::Deleted => {
                     debug!("[Task {}] Task has been deleted, cannot start", self.id);
@@ -778,15 +784,11 @@ impl DownloadTask {
         }
         drop(status);
 
-        //cancel
+        //task
         self.persist_task().await?;
-        self.delete_task_worker().await?;
-
-        let mut workers = self.workers.write().await;
-        for worker in workers.iter() {
-            let _ = worker.cancel().await;
-        }
-        workers.clear();
+        //workers
+        self.purge_task_workers().await?;
+        self.clear_task_workers().await?;
 
         if let Some(manager) = self.manager.upgrade() {
             let _ = manager.task_event_tx.send(DownloadEvent::Cancel(self.id));
@@ -796,12 +798,38 @@ impl DownloadTask {
     }
 
     pub async fn delete(self: &Arc<Self>) -> Result<(), DownloadError> {
-        let mut workers = self.workers.write().await;
-        for worker in workers.iter() {
-            let _ = worker.delete().await;
-        }
-        workers.clear();
+        //workers
+        self.clear_task_workers().await?;
+        self.purge_task_workers().await?;
 
+        //file
+        self.delete_task_file().await?;
+        //task
+        self.purge_task().await?;
+
+        //
+        if let Some(manager) = self.manager.upgrade() {
+            let _ = manager.task_event_tx.send(DownloadEvent::Delete(self.id));
+        }
+        Ok(())
+    }
+
+    async fn reset_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+        //workers
+        self.clear_task_workers().await?;
+        self.purge_task_workers().await?;
+
+        //progress
+        self.downloaded_size.store(0, Ordering::Relaxed);
+        self.total_size.store(0, Ordering::Relaxed);
+
+        //file
+        self.delete_task_file().await?;
+
+        Ok(())
+    }
+
+    async fn delete_task_file(self: &Arc<Self>) -> Result<(), DownloadError> {
         if let Some(file_path) = self.file_path.get() {
             if file_path.exists() {
                 match tokio::fs::remove_file(file_path).await {
@@ -815,13 +843,15 @@ impl DownloadTask {
                 debug!("[Task {}] File not found: {:?}", self.id, file_path);
             }
         }
-        //
-        self.delete_task().await?;
+        Ok(())
+    }
 
-        //
-        if let Some(manager) = self.manager.upgrade() {
-            let _ = manager.task_event_tx.send(DownloadEvent::Delete(self.id));
+    async fn clear_task_workers(self: &Arc<Self>) -> Result<(), DownloadError> {
+        let mut workers = self.workers.write().await;
+        for worker in workers.iter() {
+            let _ = worker.delete().await;
         }
+        workers.clear();
         Ok(())
     }
 
@@ -835,7 +865,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    async fn delete_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+    async fn purge_task(self: &Arc<Self>) -> Result<(), DownloadError> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task", self.id);
             if let Err(e) = persistence.delete_task(self.id).await {
@@ -848,7 +878,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    async fn delete_task_worker(self: &Arc<Self>) -> Result<(), DownloadError> {
+    async fn purge_task_workers(self: &Arc<Self>) -> Result<(), DownloadError> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task workers", self.id);
             if let Err(e) = persistence.delete_workers(self.id).await {

@@ -80,25 +80,25 @@ impl DownloadManager {
                 match event {
                     DownloadEvent::Complete(task_id) => {
                         manager_clone
-                            .persist_task(task_id)
-                            .await
-                            .expect(&format!("Failed to persist task: {}", task_id));
-
-                        manager_clone
                             .spawn_next_task()
                             .await
                             .expect("Failed to spawn the next download task after an error event");
+
+                        manager_clone
+                            .persist_task(task_id)
+                            .await
+                            .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Cancel(task_id) => {
                         manager_clone
-                            .persist_task(task_id)
-                            .await
-                            .expect(&format!("Failed to persist task: {}", task_id));
-
-                        manager_clone
                             .spawn_next_task()
                             .await
                             .expect("Failed to spawn the next download task after an error event");
+
+                        manager_clone
+                            .persist_task(task_id)
+                            .await
+                            .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Error(task_id, error) => {
                         manager_clone
@@ -142,16 +142,50 @@ impl DownloadManager {
     }
 
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
-        self.running_count.fetch_sub(1, Ordering::Relaxed);
+        let prev_count = self.running_count.fetch_sub(1, Ordering::Relaxed);
+        let current_count = self.running_count.load(Ordering::Relaxed);
+
+        debug!(
+            "[TaskManager] spawn_next_task: running_count decreased {} -> {}",
+            prev_count, current_count
+        );
 
         let next_task_id_opt = {
             let mut queue = self.pending_queue.lock().await;
-            queue.pop_front()
+            let task_id = queue.pop_front();
+            if let Some(id) = task_id {
+                debug!(
+                    "[TaskManager] spawn_next_task: found next queued task id={} (remaining queue={})",
+                    id,
+                    queue.len()
+                );
+            } else {
+                debug!(
+                    "[TaskManager] spawn_next_task: no more tasks in pending queue (running_count={})",
+                    current_count
+                );
+            }
+            task_id
         };
+
         if let Some(next_id) = next_task_id_opt {
             let manager_clone = Arc::clone(&self);
+            debug!(
+                "[TaskManager] spawn_next_task: launching next queued task id={} ...",
+                next_id
+            );
             tokio::spawn(async move {
-                let _ = manager_clone.start_task(next_id).await;
+                if let Err(e) = manager_clone.start_task(next_id).await {
+                    error!(
+                        "[TaskManager] Failed to start next queued task id={} -> {:?}",
+                        next_id, e
+                    );
+                } else {
+                    debug!(
+                        "[TaskManager] Successfully started next queued task id={}",
+                        next_id
+                    );
+                }
             });
         }
         Ok(())
@@ -334,22 +368,48 @@ impl DownloadManager {
 
     pub async fn start_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
         let max_concurrent_tasks = self.config.max_concurrent_downloads;
+        debug!(
+            "[TaskManager] Current running_count = {}, max_concurrent = {}",
+            self.running_count.load(Ordering::Relaxed),
+            max_concurrent_tasks
+        );
 
         if self.running_count.load(Ordering::Relaxed) >= max_concurrent_tasks {
             let mut queue = self.pending_queue.lock().await;
             if !queue.contains(&task_id) {
                 queue.push_back(task_id);
+                debug!(
+                    "[TaskManager] Task {} added to pending queue. Queue length = {}",
+                    task_id,
+                    queue.len()
+                );
+            } else {
+                debug!("[TaskManager] Task {} already in pending queue", task_id);
             }
             return Ok(task_id);
         }
 
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
-            let running_count = self.running_count.clone();
-            running_count.fetch_add(1, Ordering::Relaxed);
+
+            let prev_count = self.running_count.fetch_add(1, Ordering::Relaxed);
+            debug!(
+                "[TaskManager] Running count increased: {} -> {} (starting task {})",
+                prev_count,
+                prev_count + 1,
+                task_id
+            );
+
             task.start().await?;
+
+            debug!(
+                "[TaskManager] Task {} started successfully. Current running_count = {}",
+                task_id,
+                self.running_count.load(Ordering::Relaxed)
+            );
             Ok(task_id)
         } else {
+            error!("[TaskManager] Task {} not found in task map", task_id);
             Err(DownloadError::TaskNotFound(task_id))
         }
     }

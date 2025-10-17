@@ -461,6 +461,11 @@ impl DownloadManager {
 
     /// resume 也需控制并发（与 start_task 同逻辑）
     pub async fn resume_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
+        debug!(
+            "[Manager] Before resume_task {}, available_permits = {}",
+            task_id,
+            self.semaphore.available_permits()
+        );
         match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => {
                 let task_ref = self
@@ -683,6 +688,8 @@ impl DownloadManager {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.delete().await {
                 error!("Failed to delete task {}: {:?}", task.id, e);
+            } else {
+                let _ = self.remove_from_queue(task.id).await;
             }
         }
         self.tasks.clear();

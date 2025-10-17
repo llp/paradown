@@ -77,7 +77,7 @@ impl DownloadTaskProgress {
     pub fn finish(&self) {
         self.set_status("Completed");
         self.progress_bar.finish_with_message(format!(
-            "{} ✅ Completed in {}",
+            "{} Completed in {}",
             self.name,
             humantime::format_duration(self.elapsed())
         ));

@@ -13,7 +13,6 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, Semaphore, broadcast};
 
@@ -451,7 +450,7 @@ impl DownloadManager {
         // 3.执行保存操作
         match persistence.save_task(&task).await {
             Ok(_) => {
-                debug!("[Manager {}] ✅ Task state persisted successfully", task_id);
+                debug!("[Manager {}] Task state persisted successfully", task_id);
                 Ok(task_id)
             }
             Err(e) => {

@@ -356,9 +356,7 @@ impl DownloadTask {
         });
 
         if let Some(manager) = self.manager.upgrade() {
-            let _ = manager
-                .task_event_tx
-                .send(DownloadEvent::Preparing(self.id));
+            let _ = manager.task_event_tx.send(DownloadEvent::Pending(self.id));
         }
 
         Ok(())

@@ -2,6 +2,7 @@ use crate::DownloadError;
 
 #[derive(Debug, Clone)]
 pub enum DownloadEvent {
+    Pending(u32),
     Preparing(u32),
     Start(u32),
     Pause(u32),

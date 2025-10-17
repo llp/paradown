@@ -718,22 +718,10 @@ impl DownloadTask {
                     }
                 };
             }
-            DownloadStatus::Preparing => {
-                debug!(
-                    "[Task {}] Task is still preparing, will start when ready",
-                    self.id
-                );
-                return Ok(());
-            }
-            DownloadStatus::Pending => {
-                debug!("[Task {}] Task pending, starting now", self.id);
-                *status = DownloadStatus::Preparing;
-            }
-            DownloadStatus::Running => {
-                debug!("[Task {}] Task is already running", self.id);
-                return Ok(());
-            }
             DownloadStatus::Completed
+            | DownloadStatus::Preparing
+            | DownloadStatus::Pending
+            | DownloadStatus::Running
             | DownloadStatus::Canceled
             | DownloadStatus::Deleted
             | DownloadStatus::Failed(_) => {
@@ -807,10 +795,13 @@ impl DownloadTask {
             let _ = worker.delete().await;
         }
         workers.clear();
-        self.purge_task_workers().await?;
 
         //file
         self.delete_task_file().await?;
+
+        self.purge_task_workers().await?;
+        //task
+        self.purge_task_checksums().await?;
         //task
         self.purge_task().await?;
 
@@ -888,6 +879,19 @@ impl DownloadTask {
             debug!("[Task {}] Deleting task workers", self.id);
             if let Err(e) = persistence.delete_workers(self.id).await {
                 debug!("[Task {}] Failed to delete task worker: {:?}", self.id, e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn purge_task_checksums(self: &Arc<Self>) -> Result<(), DownloadError> {
+        if let Some(persistence) = self.persistence.as_ref() {
+            debug!("[Task {}] Deleting task checksums", self.id);
+            if let Err(e) = persistence.delete_checksums(self.id).await {
+                debug!(
+                    "[Task {}] Failed to delete task checksums: {:?}",
+                    self.id, e
+                );
             }
         }
         Ok(())

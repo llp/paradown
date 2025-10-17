@@ -418,45 +418,11 @@ impl DownloadManager {
     }
 
     pub async fn start_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
-        // 试图获取 Owned permit（非阻塞）
-        match self.semaphore.clone().try_acquire_owned() {
-            Ok(permit) => {
-                let task_ref = self
-                    .tasks
-                    .get(&task_id)
-                    .ok_or(DownloadError::TaskNotFound(task_id))?;
-                let task = Arc::clone(task_ref.value());
-
-                debug!(
-                    "[Manager] Starting task {} (permits left after acquire = {})",
-                    task_id,
-                    self.semaphore.available_permits()
-                );
-
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    let res = task.start().await;
-                    match res {
-                        Ok(()) => {
-                            debug!("[Task {}] completed", task_id);
-                            {
-                                let mut guard = task.permit.lock().await;
-                                *guard = Some(_permit);
-                            }
-                        }
-                        Err(e) => {
-                            error!("[Task {}] failed: {:?}", task_id, e);
-                            drop(_permit);
-                            let mut guard = task.permit.lock().await;
-                            *guard = None;
-                        }
-                    }
-                });
-
-                Ok(task_id)
-            }
+        // 尝试获取 semaphore permit
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
             Err(_) => {
-                // semaphore 满 -> 加入队列（去重）
+                // semaphore 满 -> 加入队列
                 let mut queue = self.pending_queue.lock().await;
                 if !queue.iter().any(|(id, _)| *id == task_id) {
                     queue.push_back((task_id, PendingAction::Start));
@@ -473,7 +439,36 @@ impl DownloadManager {
                         queue.len()
                     );
                 }
+                return Ok(task_id);
+            }
+        };
+
+        let task_ref = self
+            .tasks
+            .get(&task_id)
+            .ok_or(DownloadError::TaskNotFound(task_id))?;
+        let task = Arc::clone(task_ref.value());
+
+        debug!(
+            "[Manager] Starting task {} (permits left after acquire = {})",
+            task_id,
+            self.semaphore.available_permits()
+        );
+
+        let res = task.start().await;
+        match res {
+            Ok(()) => {
+                debug!("[Task {}] completed", task_id);
+                let mut guard = task.permit.lock().await;
+                *guard = Some(permit);
                 Ok(task_id)
+            }
+            Err(e) => {
+                error!("[Task {}] failed: {:?}", task_id, e);
+                drop(permit);
+                let mut guard = task.permit.lock().await;
+                *guard = None;
+                Err(e)
             }
         }
     }
@@ -495,54 +490,33 @@ impl DownloadManager {
             task_id,
             self.semaphore.available_permits()
         );
-        match self.semaphore.clone().try_acquire_owned() {
-            Ok(permit) => {
-                let task_ref = self
-                    .tasks
-                    .get(&task_id)
-                    .ok_or(DownloadError::TaskNotFound(task_id))?;
-                let task = Arc::clone(task_ref.value());
-                let manager_clone = Arc::clone(self);
 
-                tokio::spawn(async move {
-                    let res = task.resume().await;
-                    match res {
-                        Ok(()) => {
-                            debug!("[Task {}] resumed", task_id);
-                            {
-                                let mut guard = task.permit.lock().await;
-                                *guard = Some(permit);
-                            }
-                        }
-                        Err(e) => {
-                            error!("[Task {}] resume failed: {:?}", task_id, e);
-                            drop(permit);
-                            let mut guard = task.permit.lock().await;
-                            *guard = None;
-                        }
-                    }
-                });
+        let permit = self
+            .semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| DownloadError::Other("No available permits, task queued".into()))?;
 
+        let task_ref = self
+            .tasks
+            .get(&task_id)
+            .ok_or(DownloadError::TaskNotFound(task_id))?;
+        let task = Arc::clone(task_ref.value());
+
+        let res = task.resume().await;
+        match res {
+            Ok(()) => {
+                debug!("[Task {}] resumed", task_id);
+                let mut guard = task.permit.lock().await;
+                *guard = Some(permit);
                 Ok(task_id)
             }
-            Err(_) => {
-                // queue 去重后入队
-                let mut queue = self.pending_queue.lock().await;
-                if !queue
-                    .iter()
-                    .any(|(id, action)| *id == task_id && *action == PendingAction::Resume)
-                {
-                    queue.push_back((task_id, PendingAction::Resume));
-                    debug!(
-                        "[Manager] Task {} queued for resume (queue len = {}, permits={})",
-                        task_id,
-                        queue.len(),
-                        self.semaphore.available_permits()
-                    );
-                } else {
-                    debug!("[Manager] Task {} already queued for resume", task_id);
-                }
-                Ok(task_id)
+            Err(e) => {
+                error!("[Task {}] resume failed: {:?}", task_id, e);
+                drop(permit);
+                let mut guard = task.permit.lock().await;
+                *guard = None;
+                Err(e)
             }
         }
     }
@@ -676,6 +650,9 @@ impl DownloadManager {
             futures.push(tokio::spawn(async move {
                 if let Err(e) = manager_clone.resume_task(task_id).await {
                     error!("[Task {}] Failed to resume: {:?}", task_id, e);
+                    if let Err(e) = manager_clone.spawn_next_task().await {
+                        error!("[Manager] Failed to spawn next task after resume failure of task {}: {:?}", task_id, e);
+                    }
                 }
             }));
         }

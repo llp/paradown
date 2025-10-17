@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
-use tokio::sync::{Mutex, OnceCell, broadcast};
+use tokio::sync::{Mutex, OnceCell, Semaphore, broadcast};
 
 /**
  *
@@ -24,20 +24,22 @@ pub struct DownloadManager {
     pub config: Arc<DownloadConfig>,
     pub tasks: Arc<DashMap<u32, Arc<DownloadTask>>>,
     pub persistence: OnceCell<Arc<DownloadPersistenceManager>>,
-    pub running_count: Arc<AtomicUsize>,
     pub pending_queue: Arc<Mutex<VecDeque<u32>>>,
     pub task_event_tx: broadcast::Sender<DownloadEvent>,
+
+    semaphore: Arc<Semaphore>,
 }
 
 impl DownloadManager {
     pub fn new(config: DownloadConfig) -> Result<Arc<Self>, DownloadError> {
         let (task_event_tx, _) = broadcast::channel(100);
+        let max_concurrent = config.max_concurrent_downloads;
 
         let manager = Arc::new(Self {
             config: Arc::new(config),
             tasks: Arc::new(DashMap::new()),
             persistence: OnceCell::new(),
-            running_count: Arc::new(AtomicUsize::new(0)),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             task_event_tx,
         });
@@ -142,77 +144,22 @@ impl DownloadManager {
     }
 
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
-        // 安全地尝试减 1：只有当 count > 0 时才减，避免从 0 下溢
-        let dec_result =
-            self.running_count
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                    if cur == 0 {
-                        None // 表示不更新
-                    } else {
-                        Some(cur - 1)
-                    }
-                });
-
-        match dec_result {
-            Ok(prev) => {
-                let current = prev - 1;
-                debug!(
-                    "[TaskManager] spawn_next_task: running_count decreased {} -> {}",
-                    prev, current
-                );
-            }
-            Err(cur) => {
-                // fetch_update 返回 Err(current) 当 closure 返回 None，或 CAS 失败
-                debug!(
-                    "[TaskManager] spawn_next_task: running_count was {}, not decreased (avoid underflow)",
-                    cur
-                );
-            }
-        }
-
-        // 从等待队列中取出下一个任务
-        let next_task_id_opt = {
+        let next_task = {
             let mut queue = self.pending_queue.lock().await;
-            let task_id = queue.pop_front();
-            if let Some(id) = task_id {
-                debug!(
-                    "[TaskManager] spawn_next_task: found next queued task id={} (remaining queue={})",
-                    id,
-                    queue.len()
-                );
-            } else {
-                debug!(
-                    "[TaskManager] spawn_next_task: no more tasks in pending queue (running_count={})",
-                    self.running_count.load(Ordering::Relaxed)
-                );
-            }
-            task_id
+            queue.pop_front()
         };
 
-        // 如果有下一个任务，则异步启动
-        if let Some(next_id) = next_task_id_opt {
-            let manager_clone = Arc::clone(&self);
+        if let Some(task_id) = next_task {
             debug!(
-                "[TaskManager] spawn_next_task: launching next queued task id={} ...",
-                next_id
+                "[Manager] Scheduling next queued task {} (permits={})",
+                task_id,
+                self.semaphore.available_permits()
             );
-            tokio::spawn(async move {
-                if let Err(e) = manager_clone.start_task(next_id).await {
-                    error!(
-                        "[TaskManager] Failed to start next queued task id={} -> {:?}",
-                        next_id, e
-                    );
-                } else {
-                    debug!(
-                        "[TaskManager] Successfully initiated start for queued task id={}",
-                        next_id
-                    );
-                }
-            });
+            self.start_task(task_id).await?;
         }
+
         Ok(())
     }
-
     /// 从数据库加载所有任务并恢复到内存
     async fn load_tasks(self: &Arc<Self>) -> Result<(), DownloadError> {
         // 1. 获取持久化组件
@@ -389,66 +336,42 @@ impl DownloadManager {
     }
 
     pub async fn start_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
-        let max_concurrent_tasks = self.config.max_concurrent_downloads;
-        debug!(
-            "[TaskManager] Current running_count = {}, max_concurrent = {}",
-            self.running_count.load(Ordering::Relaxed),
-            max_concurrent_tasks
-        );
+        let permit = self.semaphore.clone().try_acquire_owned();
 
-        if self.running_count.load(Ordering::Relaxed) >= max_concurrent_tasks {
-            let mut queue = self.pending_queue.lock().await;
-            if !queue.contains(&task_id) {
+        match permit {
+            Ok(permit) => {
+                let task_ref = self
+                    .tasks
+                    .get(&task_id)
+                    .ok_or(DownloadError::TaskNotFound(task_id))?;
+                let task = Arc::clone(task_ref.value());
+
+                debug!(
+                    "[Manager] Starting task {} (available permits = {})",
+                    task_id,
+                    self.semaphore.available_permits()
+                );
+
+                tokio::spawn(async move {
+                    let _permit = permit; // 保留生命周期直到任务完成
+                    if let Err(e) = task.start().await {
+                        error!("[Task {}] failed: {:?}", task_id, e);
+                    }
+                });
+
+                Ok(task_id)
+            }
+            Err(_) => {
+                // 信号量已满 -> 入队
+                let mut queue = self.pending_queue.lock().await;
                 queue.push_back(task_id);
                 debug!(
-                    "[TaskManager] Task {} added to pending queue. Queue length = {}",
+                    "[Manager] Task {} queued (queue len = {})",
                     task_id,
                     queue.len()
                 );
-            } else {
-                debug!("[TaskManager] Task {} already in pending queue", task_id);
+                Ok(task_id)
             }
-            return Ok(task_id);
-        }
-
-        // 尝试启动任务（在真正启动前增加计数）
-        if let Some(task_ref) = self.tasks.get(&task_id) {
-            let task = Arc::clone(task_ref.value());
-
-            // 增加计数并记录 previous 值
-            let prev_count = self.running_count.fetch_add(1, Ordering::Relaxed);
-            debug!(
-                "[TaskManager] Running count increased: {} -> {} (starting task {})",
-                prev_count,
-                prev_count + 1,
-                task_id
-            );
-
-            match task.start().await {
-                Ok(()) => {
-                    debug!(
-                        "[TaskManager] Task {} started successfully. Current running_count = {}",
-                        task_id,
-                        self.running_count.load(Ordering::Relaxed)
-                    );
-                    Ok(task_id)
-                }
-                Err(e) => {
-                    // 回退计数（但回退时也要小心，尽量避免下溢）
-                    let prev = self.running_count.fetch_sub(1, Ordering::Relaxed);
-                    debug!(
-                        "[TaskManager] start_task: task.start() failed for {} -> {:?}, running_count {} -> {}",
-                        task_id,
-                        e,
-                        prev,
-                        prev.saturating_sub(1)
-                    );
-                    Err(e)
-                }
-            }
-        } else {
-            error!("[TaskManager] Task {} not found in task map", task_id);
-            Err(DownloadError::TaskNotFound(task_id))
         }
     }
 

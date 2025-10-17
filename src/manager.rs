@@ -89,43 +89,60 @@ impl DownloadManager {
             while let Ok(event) = rx.recv().await {
                 match event {
                     DownloadEvent::Complete(task_id) => {
+                        if let Err(e) = manager_clone.persist_task(task_id).await {
+                            error!("Failed to persist task {}: {:?}", task_id, e);
+                        }
+                        //----------------------------------------------------------
+                        //
+                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                        }
+                        //
+                        manager_clone.release_task_permit(task_id).await;
+                        //
                         if let Err(e) = manager_clone.spawn_next_task().await {
                             error!(
                                 "Failed to spawn next task after Complete({}): {:?}",
                                 task_id, e
                             );
                         }
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
-                        }
                     }
                     DownloadEvent::Cancel(task_id) => {
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Cancel({}): {:?}", task_id, e);
-                        }
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Cancel({}): {:?}",
-                                task_id, e
-                            );
-                        }
                         if let Err(e) = manager_clone.persist_task(task_id).await {
                             error!("Failed to persist task {}: {:?}", task_id, e);
+                        }
+
+                        //----------------------------------------------------------
+                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                        }
+                        //
+                        manager_clone.release_task_permit(task_id).await;
+                        //
+                        if let Err(e) = manager_clone.spawn_next_task().await {
+                            error!(
+                                "Failed to spawn next task after Complete({}): {:?}",
+                                task_id, e
+                            );
                         }
                     }
                     DownloadEvent::Error(task_id, _err) => {
-                        // 出错时也尝试启动下一个
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Error({}): {:?}", task_id, e);
-                        }
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Error({}): {:?}",
-                                task_id, e
-                            );
-                        }
                         if let Err(e) = manager_clone.persist_task(task_id).await {
                             error!("Failed to persist task {}: {:?}", task_id, e);
+                        }
+
+                        //----------------------------------------------------------
+                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                        }
+                        //
+                        manager_clone.release_task_permit(task_id).await;
+                        //
+                        if let Err(e) = manager_clone.spawn_next_task().await {
+                            error!(
+                                "Failed to spawn next task after Complete({}): {:?}",
+                                task_id, e
+                            );
                         }
                     }
                     DownloadEvent::Preparing(task_id) => {
@@ -134,18 +151,21 @@ impl DownloadManager {
                         }
                     }
                     DownloadEvent::Pause(task_id) => {
-                        // 暂停时，确保从 queue 中移除并尝试拉起下一个
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Pause({}): {:?}", task_id, e);
-                        }
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Pause({}): {:?}",
-                                task_id, e
-                            );
-                        }
                         if let Err(e) = manager_clone.persist_task(task_id).await {
                             error!("Failed to persist task {}: {:?}", task_id, e);
+                        }
+                        //----------------------------------------------------------
+                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                        }
+                        //
+                        manager_clone.release_task_permit(task_id).await;
+                        //
+                        if let Err(e) = manager_clone.spawn_next_task().await {
+                            error!(
+                                "Failed to spawn next task after Complete({}): {:?}",
+                                task_id, e
+                            );
                         }
                     }
                     DownloadEvent::Progress { id, .. } => {
@@ -159,6 +179,18 @@ impl DownloadManager {
         });
 
         Ok(())
+    }
+
+    async fn release_task_permit(&self, task_id: u32) {
+        if let Some(task) = self.get_task(task_id) {
+            let mut guard = task.permit.lock().await;
+            if guard.is_some() {
+                *guard = None; // permit drop -> semaphore slot 释放
+                debug!("[Task {}] Released semaphore permit", task_id);
+            }
+        } else {
+            warn!("[Manager] Task {} not found when releasing permit", task_id);
+        }
     }
 
     /// 将 task_id 从等待队列中移除（如果存在）
@@ -177,41 +209,37 @@ impl DownloadManager {
 
     /// spawn 下一个排队任务（会跳过启动失败或不存在的任务）
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
-        loop {
-            let next_opt = {
-                let mut queue = self.pending_queue.lock().await;
-                queue.pop_front()
-            };
+        let next_opt = {
+            let mut queue = self.pending_queue.lock().await;
+            queue.pop_front()
+        };
 
-            if let Some((task_id, action)) = next_opt {
-                let manager_clone = Arc::clone(self);
-                tokio::spawn(async move {
-                    match action {
-                        PendingAction::Start => {
-                            if let Err(e) = manager_clone.start_task(task_id).await {
-                                error!(
-                                    "[Manager] Failed to start queued task {}: {:?}",
-                                    task_id, e
-                                );
-                            }
-                        }
-                        PendingAction::Resume => {
-                            if let Err(e) = manager_clone.resume_task(task_id).await {
-                                error!(
-                                    "[Manager] Failed to resume queued task {}: {:?}",
-                                    task_id, e
-                                );
-                            }
-                        }
-                        PendingAction::Retry => {
-                            if let Err(e) = manager_clone.start_task(task_id).await {
-                                error!("[Manager] Failed to retry task {}: {:?}", task_id, e);
-                            }
+        if let Some((task_id, action)) = next_opt {
+            let manager_clone = Arc::clone(self);
+            tokio::spawn(async move {
+                match action {
+                    PendingAction::Start => {
+                        if let Err(e) = manager_clone.start_task(task_id).await {
+                            error!("[Manager] Failed to start queued task {}: {:?}", task_id, e);
                         }
                     }
-                });
-            }
+                    PendingAction::Resume => {
+                        if let Err(e) = manager_clone.resume_task(task_id).await {
+                            error!(
+                                "[Manager] Failed to resume queued task {}: {:?}",
+                                task_id, e
+                            );
+                        }
+                    }
+                    PendingAction::Retry => {
+                        if let Err(e) = manager_clone.start_task(task_id).await {
+                            error!("[Manager] Failed to retry task {}: {:?}", task_id, e);
+                        }
+                    }
+                }
+            });
         }
+        Ok(())
     }
 
     /// 从数据库加载并恢复任务（保持你原逻辑，仅保留修正 Running->Paused）
@@ -405,20 +433,22 @@ impl DownloadManager {
                     self.semaphore.available_permits()
                 );
 
-                // spawn 子任务做实际下载；确保在任务结束后释放 permit 并 spawn_next_task()
                 tokio::spawn(async move {
-                    // _permit 在此作用域存在，保证并发量限制；我们在任务结束后显式 drop
                     let _permit = permit;
                     let res = task.start().await;
-                    // drop permit before spawning next to release concurrency slot ASAP
-                    drop(_permit);
-
                     match res {
                         Ok(()) => {
                             debug!("[Task {}] completed", task_id);
+                            {
+                                let mut guard = task.permit.lock().await;
+                                *guard = Some(_permit);
+                            }
                         }
                         Err(e) => {
                             error!("[Task {}] failed: {:?}", task_id, e);
+                            drop(_permit);
+                            let mut guard = task.permit.lock().await;
+                            *guard = None;
                         }
                     }
                 });
@@ -452,10 +482,6 @@ impl DownloadManager {
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
             task.pause().await?;
-            // 从队列移除（如果在队列中）
-            self.remove_from_queue(task_id).await?;
-            // 尝试调度下一个队列任务
-            self.spawn_next_task().await?;
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))
@@ -479,13 +505,21 @@ impl DownloadManager {
                 let manager_clone = Arc::clone(self);
 
                 tokio::spawn(async move {
-                    let _permit = permit;
                     let res = task.resume().await;
-                    drop(_permit);
-
                     match res {
-                        Ok(()) => debug!("[Task {}] resumed", task_id),
-                        Err(e) => error!("[Task {}] resume failed: {:?}", task_id, e),
+                        Ok(()) => {
+                            debug!("[Task {}] resumed", task_id);
+                            {
+                                let mut guard = task.permit.lock().await;
+                                *guard = Some(permit);
+                            }
+                        }
+                        Err(e) => {
+                            error!("[Task {}] resume failed: {:?}", task_id, e);
+                            drop(permit);
+                            let mut guard = task.permit.lock().await;
+                            *guard = None;
+                        }
                     }
                 });
 
@@ -517,9 +551,6 @@ impl DownloadManager {
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
             task.cancel().await?;
-            // 取消时也从队列移除并尝试 spawn_next
-            self.remove_from_queue(task_id).await?;
-            self.spawn_next_task().await?;
             Ok(task_id)
         } else {
             Err(DownloadError::TaskNotFound(task_id))
@@ -540,15 +571,11 @@ impl DownloadManager {
             error!("[Task {}] Failed to delete task: {:?}", task_id, e);
             return Err(e);
         }
-
-        self.remove_from_queue(task_id).await?;
         self.tasks.remove(&task_id);
-
         info!(
             "[Task {}] Deleted successfully and removed from map",
             task_id
         );
-        self.spawn_next_task().await?;
         Ok(task_id)
     }
 
@@ -625,9 +652,6 @@ impl DownloadManager {
                 tokio::spawn(async move {
                     if let Err(e) = task.pause().await {
                         error!("[Task {}] Failed to pause: {:?}", task.id, e);
-                    } else {
-                        // 确保从队列移除
-                        let _ = manager_clone.remove_from_queue(task.id).await;
                     }
                 })
             })
@@ -636,8 +660,6 @@ impl DownloadManager {
         for f in futures {
             let _ = f.await;
         }
-        // 尝试 spawn 下一个
-        self.spawn_next_task().await?;
         Ok(())
     }
 
@@ -670,13 +692,8 @@ impl DownloadManager {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.cancel().await {
                 error!("[Task {}] Failed to cancel: {:?}", task.id, e);
-            } else {
-                // 移出队列
-                let _ = self.remove_from_queue(task.id).await;
             }
         }
-        // 取消后尝试 spawn 下一个
-        self.spawn_next_task().await?;
         Ok(())
     }
 
@@ -688,8 +705,6 @@ impl DownloadManager {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.delete().await {
                 error!("Failed to delete task {}: {:?}", task.id, e);
-            } else {
-                let _ = self.remove_from_queue(task.id).await;
             }
         }
         self.tasks.clear();

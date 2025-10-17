@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::fs;
-use tokio::sync::{Mutex, OnceCell, RwLock, broadcast};
+use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
 use url::Url;
 
 pub struct DownloadTask {
@@ -40,6 +40,7 @@ pub struct DownloadTask {
     pub manager: Weak<DownloadManager>,
     pub stats: Arc<DownloadStats>,
     pub client: Arc<reqwest::Client>,
+    pub permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -115,6 +116,7 @@ impl DownloadTask {
             manager,
             stats: Arc::new(DownloadStats::new()),
             client,
+            permit: Mutex::new(None),
         }))
     }
 

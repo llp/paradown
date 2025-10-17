@@ -250,7 +250,7 @@ impl DownloadWorker {
             while let Some(chunk) = stream.next().await {
                 if self.canceled.load(Ordering::Relaxed) {
                     debug!("[Worker {}] Download canceled during writing", self.id);
-                    return Err(DownloadError::Canceled(self.id));
+                    return Ok(());
                 }
 
                 while self.paused.load(Ordering::Relaxed) {

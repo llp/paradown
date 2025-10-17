@@ -792,8 +792,6 @@ impl DownloadTask {
         for worker in workers.iter() {
             let _ = worker.cancel().await;
         }
-        workers.clear();
-        self.purge_task_workers().await?;
 
         if let Some(manager) = self.manager.upgrade() {
             let _ = manager.task_event_tx.send(DownloadEvent::Cancel(self.id));

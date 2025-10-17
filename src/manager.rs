@@ -8,6 +8,8 @@ use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
 use dashmap::DashMap;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use log::{LevelFilter, debug, error, info, warn};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -455,7 +457,7 @@ impl DownloadManager {
             }
             Err(e) => {
                 error!(
-                    "[Manager {}] ❌ Failed to persist task state: {:?}",
+                    "[Manager {}] Failed to persist task state: {:?}",
                     task_id, e
                 );
                 Err(e)
@@ -467,22 +469,23 @@ impl DownloadManager {
         if self.tasks.is_empty() {
             return Err(DownloadError::Other("No tasks to start".into()));
         }
-        let futures: Vec<_> = self
-            .tasks
-            .iter()
-            .map(|entry| {
-                let task = Arc::clone(entry.value());
-                tokio::spawn(async move {
-                    if let Err(e) = task.start().await {
-                        eprintln!("[Task {}] Failed to start: {:?}", task.id, e);
-                    }
-                })
-            })
-            .collect();
 
-        for f in futures {
-            let _ = f.await;
+        let mut futures = FuturesUnordered::new();
+
+        for entry in self.tasks.iter() {
+            let task_id = *entry.key();
+            let manager_clone = Arc::clone(self);
+            futures.push(tokio::spawn(async move {
+                if let Err(e) = manager_clone.start_task(task_id).await {
+                    // 打印错误，同时不阻塞其他任务
+                    error!("[Task {}] Failed to start: {:?}", task_id, e);
+                }
+            }));
         }
+
+        // 等待所有任务尝试启动完成
+        while let Some(_) = futures.next().await {}
+
         Ok(())
     }
 

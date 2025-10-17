@@ -142,14 +142,35 @@ impl DownloadManager {
     }
 
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
-        let prev_count = self.running_count.fetch_sub(1, Ordering::Relaxed);
-        let current_count = self.running_count.load(Ordering::Relaxed);
+        // 安全地尝试减 1：只有当 count > 0 时才减，避免从 0 下溢
+        let dec_result =
+            self.running_count
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    if cur == 0 {
+                        None // 表示不更新
+                    } else {
+                        Some(cur - 1)
+                    }
+                });
 
-        debug!(
-            "[TaskManager] spawn_next_task: running_count decreased {} -> {}",
-            prev_count, current_count
-        );
+        match dec_result {
+            Ok(prev) => {
+                let current = prev - 1;
+                debug!(
+                    "[TaskManager] spawn_next_task: running_count decreased {} -> {}",
+                    prev, current
+                );
+            }
+            Err(cur) => {
+                // fetch_update 返回 Err(current) 当 closure 返回 None，或 CAS 失败
+                debug!(
+                    "[TaskManager] spawn_next_task: running_count was {}, not decreased (avoid underflow)",
+                    cur
+                );
+            }
+        }
 
+        // 从等待队列中取出下一个任务
         let next_task_id_opt = {
             let mut queue = self.pending_queue.lock().await;
             let task_id = queue.pop_front();
@@ -162,12 +183,13 @@ impl DownloadManager {
             } else {
                 debug!(
                     "[TaskManager] spawn_next_task: no more tasks in pending queue (running_count={})",
-                    current_count
+                    self.running_count.load(Ordering::Relaxed)
                 );
             }
             task_id
         };
 
+        // 如果有下一个任务，则异步启动
         if let Some(next_id) = next_task_id_opt {
             let manager_clone = Arc::clone(&self);
             debug!(
@@ -182,7 +204,7 @@ impl DownloadManager {
                     );
                 } else {
                     debug!(
-                        "[TaskManager] Successfully started next queued task id={}",
+                        "[TaskManager] Successfully initiated start for queued task id={}",
                         next_id
                     );
                 }
@@ -389,9 +411,11 @@ impl DownloadManager {
             return Ok(task_id);
         }
 
+        // 尝试启动任务（在真正启动前增加计数）
         if let Some(task_ref) = self.tasks.get(&task_id) {
             let task = Arc::clone(task_ref.value());
 
+            // 增加计数并记录 previous 值
             let prev_count = self.running_count.fetch_add(1, Ordering::Relaxed);
             debug!(
                 "[TaskManager] Running count increased: {} -> {} (starting task {})",
@@ -400,14 +424,28 @@ impl DownloadManager {
                 task_id
             );
 
-            task.start().await?;
-
-            debug!(
-                "[TaskManager] Task {} started successfully. Current running_count = {}",
-                task_id,
-                self.running_count.load(Ordering::Relaxed)
-            );
-            Ok(task_id)
+            match task.start().await {
+                Ok(()) => {
+                    debug!(
+                        "[TaskManager] Task {} started successfully. Current running_count = {}",
+                        task_id,
+                        self.running_count.load(Ordering::Relaxed)
+                    );
+                    Ok(task_id)
+                }
+                Err(e) => {
+                    // 回退计数（但回退时也要小心，尽量避免下溢）
+                    let prev = self.running_count.fetch_sub(1, Ordering::Relaxed);
+                    debug!(
+                        "[TaskManager] start_task: task.start() failed for {} -> {:?}, running_count {} -> {}",
+                        task_id,
+                        e,
+                        prev,
+                        prev.saturating_sub(1)
+                    );
+                    Err(e)
+                }
+            }
         } else {
             error!("[TaskManager] Task {} not found in task map", task_id);
             Err(DownloadError::TaskNotFound(task_id))

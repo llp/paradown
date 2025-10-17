@@ -82,6 +82,7 @@ impl DownloadManager {
             while let Ok(event) = rx.recv().await {
                 match event {
                     DownloadEvent::Complete(task_id) => {
+                        //spawn_next_task
                         manager_clone
                             .spawn_next_task()
                             .await
@@ -93,6 +94,7 @@ impl DownloadManager {
                             .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Cancel(task_id) => {
+                        //spawn_next_task
                         manager_clone
                             .spawn_next_task()
                             .await
@@ -104,15 +106,16 @@ impl DownloadManager {
                             .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Error(task_id, error) => {
-                        manager_clone
-                            .persist_task(task_id)
-                            .await
-                            .expect(&format!("Failed to persist task: {}", task_id));
-
+                        //spawn_next_task
                         manager_clone
                             .spawn_next_task()
                             .await
                             .expect("Failed to spawn the next download task after an error event");
+
+                        manager_clone
+                            .persist_task(task_id)
+                            .await
+                            .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Preparing(task_id) => {
                         manager_clone
@@ -121,6 +124,12 @@ impl DownloadManager {
                             .expect(&format!("Failed to persist task: {}", task_id));
                     }
                     DownloadEvent::Pause(task_id) => {
+                        //spawn_next_task
+                        manager_clone
+                            .spawn_next_task()
+                            .await
+                            .expect("Failed to spawn the next download task after an error event");
+
                         manager_clone
                             .persist_task(task_id)
                             .await
@@ -149,7 +158,6 @@ impl DownloadManager {
             let mut queue = self.pending_queue.lock().await;
             queue.pop_front()
         };
-
         if let Some(task_id) = next_task {
             debug!(
                 "[Manager] Scheduling next queued task {} (permits={})",
@@ -158,7 +166,6 @@ impl DownloadManager {
             );
             self.start_task(task_id).await?;
         }
-
         Ok(())
     }
     /// 从数据库加载所有任务并恢复到内存
@@ -387,12 +394,35 @@ impl DownloadManager {
     }
 
     pub async fn resume_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
-        if let Some(task_ref) = self.tasks.get(&task_id) {
-            let task = Arc::clone(task_ref.value());
-            task.resume().await?;
-            Ok(task_id)
-        } else {
-            Err(DownloadError::TaskNotFound(task_id))
+        let permit = self.semaphore.clone().try_acquire_owned();
+        match permit {
+            Ok(permit) => {
+                let task_ref = self
+                    .tasks
+                    .get(&task_id)
+                    .ok_or(DownloadError::TaskNotFound(task_id))?;
+                let task = Arc::clone(task_ref.value());
+
+                tokio::spawn(async move {
+                    let _permit = permit; // 保留生命周期直到任务完成
+                    if let Err(e) = task.resume().await {
+                        error!("[Task {}] failed to resume: {:?}", task_id, e);
+                    }
+                });
+
+                Ok(task_id)
+            }
+            Err(_) => {
+                // Semaphore 满了 -> 入队
+                let mut queue = self.pending_queue.lock().await;
+                queue.push_back(task_id);
+                debug!(
+                    "[Manager] Task {} queued for resume (queue len = {})",
+                    task_id,
+                    queue.len()
+                );
+                Ok(task_id)
+            }
         }
     }
 
@@ -516,22 +546,20 @@ impl DownloadManager {
         if self.tasks.is_empty() {
             return Err(DownloadError::Other("No tasks to resume".into()));
         }
-        let futures: Vec<_> = self
-            .tasks
-            .iter()
-            .map(|entry| {
-                let task = Arc::clone(entry.value());
-                tokio::spawn(async move {
-                    if let Err(e) = task.resume().await {
-                        eprintln!("[Task {}] Failed to resume: {:?}", task.id, e);
-                    }
-                })
-            })
-            .collect();
 
-        for f in futures {
-            let _ = f.await;
+        let mut futures = FuturesUnordered::new();
+
+        for entry in self.tasks.iter() {
+            let task_id = *entry.key();
+            let manager_clone = Arc::clone(self);
+            futures.push(tokio::spawn(async move {
+                if let Err(e) = manager_clone.resume_task(task_id).await {
+                    error!("[Task {}] Failed to start: {:?}", task_id, e);
+                }
+            }));
         }
+        while let Some(_) = futures.next().await {}
+
         Ok(())
     }
 

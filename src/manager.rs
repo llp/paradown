@@ -25,10 +25,17 @@ pub struct DownloadManager {
     pub config: Arc<DownloadConfig>,
     pub tasks: Arc<DashMap<u32, Arc<DownloadTask>>>,
     pub persistence: OnceCell<Arc<DownloadPersistenceManager>>,
-    pub pending_queue: Arc<Mutex<VecDeque<u32>>>,
+    pub pending_queue: Arc<Mutex<VecDeque<(u32, PendingAction)>>>,
     pub task_event_tx: broadcast::Sender<DownloadEvent>,
 
     semaphore: Arc<Semaphore>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingAction {
+    Start,
+    Resume,
+    Retry,
 }
 
 impl DownloadManager {
@@ -157,7 +164,7 @@ impl DownloadManager {
     /// 将 task_id 从等待队列中移除（如果存在）
     async fn remove_from_queue(&self, task_id: u32) -> Result<(), DownloadError> {
         let mut queue = self.pending_queue.lock().await;
-        if let Some(pos) = queue.iter().position(|id| *id == task_id) {
+        if let Some(pos) = queue.iter().position(|(id, _action)| *id == task_id) {
             queue.remove(pos);
             debug!(
                 "[Manager] Removed task {} from pending queue (new len={})",
@@ -171,42 +178,38 @@ impl DownloadManager {
     /// spawn 下一个排队任务（会跳过启动失败或不存在的任务）
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
         loop {
-            let next_id_opt = {
+            let next_opt = {
                 let mut queue = self.pending_queue.lock().await;
                 queue.pop_front()
             };
 
-            match next_id_opt {
-                Some(next_id) => {
-                    debug!(
-                        "[Manager] spawn_next_task: trying next queued task {} (permits={})",
-                        next_id,
-                        self.semaphore.available_permits()
-                    );
-
-                    // 尝试启动该任务；如果 start_task 返回 Err（例如任务不存在或启动失败）则继续循环尝试下一个
-                    match self.start_task(next_id).await {
-                        Ok(_) => {
-                            debug!("[Manager] spawn_next_task: started queued task {}", next_id);
-                            break Ok(());
+            if let Some((task_id, action)) = next_opt {
+                let manager_clone = Arc::clone(self);
+                tokio::spawn(async move {
+                    match action {
+                        PendingAction::Start => {
+                            if let Err(e) = manager_clone.start_task(task_id).await {
+                                error!(
+                                    "[Manager] Failed to start queued task {}: {:?}",
+                                    task_id, e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            error!(
-                                "[Manager] spawn_next_task: failed to start queued task {} -> {:?}, trying next",
-                                next_id, e
-                            );
-                            // 如果失败，继续循环拿下一个
-                            continue;
+                        PendingAction::Resume => {
+                            if let Err(e) = manager_clone.resume_task(task_id).await {
+                                error!(
+                                    "[Manager] Failed to resume queued task {}: {:?}",
+                                    task_id, e
+                                );
+                            }
+                        }
+                        PendingAction::Retry => {
+                            if let Err(e) = manager_clone.start_task(task_id).await {
+                                error!("[Manager] Failed to retry task {}: {:?}", task_id, e);
+                            }
                         }
                     }
-                }
-                None => {
-                    debug!(
-                        "[Manager] spawn_next_task: no queued tasks (permits={})",
-                        self.semaphore.available_permits()
-                    );
-                    break Ok(());
-                }
+                });
             }
         }
     }
@@ -425,10 +428,10 @@ impl DownloadManager {
             Err(_) => {
                 // semaphore 满 -> 加入队列（去重）
                 let mut queue = self.pending_queue.lock().await;
-                if !queue.contains(&task_id) {
-                    queue.push_back(task_id);
+                if !queue.iter().any(|(id, _)| *id == task_id) {
+                    queue.push_back((task_id, PendingAction::Start));
                     debug!(
-                        "[Manager] Task {} queued (queue len = {}, permits={})",
+                        "[Manager] Task {} queued for start (queue len = {}, permits={})",
                         task_id,
                         queue.len(),
                         self.semaphore.available_permits()
@@ -484,13 +487,6 @@ impl DownloadManager {
                         Ok(()) => debug!("[Task {}] resumed", task_id),
                         Err(e) => error!("[Task {}] resume failed: {:?}", task_id, e),
                     }
-
-                    if let Err(e) = manager_clone.spawn_next_task().await {
-                        error!(
-                            "[Manager] spawn_next_task after resume {} failed: {:?}",
-                            task_id, e
-                        );
-                    }
                 });
 
                 Ok(task_id)
@@ -498,12 +494,16 @@ impl DownloadManager {
             Err(_) => {
                 // queue 去重后入队
                 let mut queue = self.pending_queue.lock().await;
-                if !queue.contains(&task_id) {
-                    queue.push_back(task_id);
+                if !queue
+                    .iter()
+                    .any(|(id, action)| *id == task_id && *action == PendingAction::Resume)
+                {
+                    queue.push_back((task_id, PendingAction::Resume));
                     debug!(
-                        "[Manager] Task {} queued for resume (queue len={})",
+                        "[Manager] Task {} queued for resume (queue len = {}, permits={})",
                         task_id,
-                        queue.len()
+                        queue.len(),
+                        self.semaphore.available_permits()
                     );
                 } else {
                     debug!("[Manager] Task {} already queued for resume", task_id);

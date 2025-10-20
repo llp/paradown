@@ -227,29 +227,28 @@ impl DownloadManager {
 
         if let Some((task_id, action)) = next_opt {
             let manager_clone = Arc::clone(self);
-            tokio::spawn(async move {
-                match action {
-                    PendingAction::Start => {
-                        if let Err(e) = manager_clone.start_task(task_id).await {
-                            error!("[Manager] Failed to start queued task {}: {:?}", task_id, e);
-                        }
-                    }
-                    PendingAction::Resume => {
-                        if let Err(e) = manager_clone.resume_task(task_id).await {
-                            error!(
-                                "[Manager] Failed to resume queued task {}: {:?}",
-                                task_id, e
-                            );
-                        }
-                    }
-                    PendingAction::Retry => {
-                        if let Err(e) = manager_clone.start_task(task_id).await {
-                            error!("[Manager] Failed to retry task {}: {:?}", task_id, e);
-                        }
+            match action {
+                PendingAction::Start => {
+                    if let Err(e) = manager_clone.start_task(task_id).await {
+                        error!("[Manager] Failed to start queued task {}: {:?}", task_id, e);
                     }
                 }
-            });
-        }
+                PendingAction::Resume => {
+                    if let Err(e) = manager_clone.resume_task(task_id).await {
+                        error!(
+                            "[Manager] Failed to resume queued task {}: {:?}",
+                            task_id, e
+                        );
+                    }
+                }
+                PendingAction::Retry => {
+                    if let Err(e) = manager_clone.start_task(task_id).await {
+                        error!("[Manager] Failed to retry task {}: {:?}", task_id, e);
+                    }
+                }
+            }
+        };
+
         Ok(())
     }
 
@@ -469,16 +468,23 @@ impl DownloadManager {
         let res = task.start().await;
         match res {
             Ok(()) => {
-                debug!("[Task {}] completed", task_id);
+                debug!("[Task {}] started", task_id);
                 let mut guard = task.permit.lock().await;
                 *guard = Some(permit);
                 Ok(task_id)
             }
             Err(e) => {
-                error!("[Task {}] failed: {:?}", task_id, e);
+                error!("[Task {}] start failed: {:?}", task_id, e);
                 drop(permit);
                 let mut guard = task.permit.lock().await;
                 *guard = None;
+
+                if let Err(e) = Box::pin(self.spawn_next_task()).await {
+                    error!(
+                        "Failed to spawn next task after start task failed({}): {:?}",
+                        task_id, e
+                    );
+                }
                 Err(e)
             }
         }
@@ -545,6 +551,13 @@ impl DownloadManager {
                 drop(permit);
                 let mut guard = task.permit.lock().await;
                 *guard = None;
+
+                if let Err(e) = Box::pin(self.spawn_next_task()).await {
+                    error!(
+                        "Failed to spawn next task after resume task failed({}): {:?}",
+                        task_id, e
+                    );
+                }
                 Err(e)
             }
         }
@@ -654,7 +667,6 @@ impl DownloadManager {
             .iter()
             .map(|entry| {
                 let task = Arc::clone(entry.value());
-                let manager_clone = Arc::clone(self);
                 tokio::spawn(async move {
                     if let Err(e) = task.pause().await {
                         error!("[Task {}] Failed to pause: {:?}", task.id, e);

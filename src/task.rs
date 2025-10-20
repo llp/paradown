@@ -9,7 +9,7 @@ use crate::status::DownloadStatus;
 use crate::worker::DownloadWorker;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -780,7 +780,7 @@ impl DownloadTask {
         self.persist_task().await?;
 
         //workers
-        let mut workers = self.workers.write().await;
+        let workers = self.workers.write().await;
         for worker in workers.iter() {
             let _ = worker.cancel().await;
         }

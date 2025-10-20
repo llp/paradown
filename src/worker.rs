@@ -15,6 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 pub struct DownloadWorker {
     pub task: Weak<DownloadTask>,
@@ -30,7 +31,7 @@ pub struct DownloadWorker {
     pub paused: Arc<AtomicBool>,
     pub canceled: Arc<AtomicBool>,
     pub deleted: Arc<AtomicBool>,
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Mutex<Option<DateTime<Utc>>>,
     pub status: Arc<tokio::sync::Mutex<DownloadStatus>>,
     pub stats: Arc<DownloadStats>,
     pub is_running: AtomicBool,
@@ -49,6 +50,7 @@ impl DownloadWorker {
         file_path: Arc<PathBuf>,
         status: Option<DownloadStatus>,
         stats: Arc<DownloadStats>,
+        updated_at: Option<DateTime<Utc>>,
     ) -> Self {
         debug!(
             "[Worker {}] Created for URL: {}, range: {}-{}",
@@ -61,7 +63,7 @@ impl DownloadWorker {
             Some(DownloadStatus::Deleted) => (false, false, true),
             _ => (false, false, false),
         };
-
+        let now = Utc::now();
         Self {
             config,
             task,
@@ -76,7 +78,7 @@ impl DownloadWorker {
             paused: Arc::new(AtomicBool::new(paused)),
             canceled: Arc::new(AtomicBool::new(canceled)),
             deleted: Arc::new(AtomicBool::new(deleted)),
-            updated_at: Some(Utc::now()),
+            updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
             status: Arc::new(tokio::sync::Mutex::new(
                 status.unwrap_or(DownloadStatus::Pending),
             )),

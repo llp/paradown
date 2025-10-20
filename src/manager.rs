@@ -431,6 +431,7 @@ impl DownloadManager {
                         .as_ref()
                         .and_then(|s| DownloadStatus::from_str(s).ok()),
                     task.stats.clone(),
+                    w_req.updated_at,
                 );
                 worker_vec.push(Arc::new(worker));
             }

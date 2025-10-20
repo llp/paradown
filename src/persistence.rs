@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use crate::checksum::{ChecksumAlgorithm, DownloadChecksum};
 use crate::config::DownloadConfig;
 use crate::error::DownloadError;
@@ -6,10 +5,11 @@ use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWo
 use crate::repository::{DownloadRepository, MemoryRepository, SqliteRepository};
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistenceType {
@@ -150,7 +150,7 @@ impl DownloadPersistenceManager {
 
         // 从 OnceCell 获取 file_name，如果没设置就用空字符串
         let file_name = task.file_name.get().cloned().unwrap_or_default();
-
+        let updated_at_guard = task.updated_at.lock().await;
         let download_task = DBDownloadTask {
             id: task.id,
             url: task.url.clone(),
@@ -160,13 +160,14 @@ impl DownloadPersistenceManager {
             downloaded_size: task.downloaded_size.load(Ordering::Relaxed),
             total_size: Some(task.total_size.load(Ordering::Relaxed)),
             created_at: task.created_at,
-            updated_at: task.updated_at,
+            updated_at: updated_at_guard.clone(),
         };
         download_task
     }
 
     /// 转换 Worker -> DBDownloadWorker
     async fn worker_to_db(&self, worker: &Arc<DownloadWorker>) -> DBDownloadWorker {
+        let updated_at_guard = worker.updated_at.lock().await;
         DBDownloadWorker {
             id: worker.id,
             task_id: worker.task.upgrade().map(|t| t.id).unwrap_or_default(),
@@ -175,7 +176,7 @@ impl DownloadPersistenceManager {
             end: worker.end,
             downloaded: worker.downloaded_size.load(Ordering::Relaxed),
             status: worker.status.lock().await.to_string(),
-            updated_at: worker.updated_at,
+            updated_at: updated_at_guard.clone(),
         }
     }
 

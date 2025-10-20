@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
+use sqlx::encode::IsNull::No;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +30,7 @@ pub struct DownloadTask {
     pub checksums: Vec<DownloadChecksum>,
     pub config: Arc<DownloadConfig>,
     pub created_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Mutex<Option<DateTime<Utc>>>,
     pub persistence: Option<Arc<DownloadPersistenceManager>>,
     pub workers: RwLock<Vec<Arc<DownloadWorker>>>,
 
@@ -69,8 +70,8 @@ impl DownloadTask {
         config: Arc<DownloadConfig>,
         persistence: Option<Arc<DownloadPersistenceManager>>,
         manager: Weak<DownloadManager>,
-         created_at: Option<DateTime<Utc>>,
-         updated_at: Option<DateTime<Utc>>,
+        created_at: Option<DateTime<Utc>>,
+        updated_at: Option<DateTime<Utc>>,
     ) -> Result<Arc<Self>, DownloadError> {
         let (worker_event_tx, _) = broadcast::channel(100);
 
@@ -113,7 +114,7 @@ impl DownloadTask {
             config,
             total_size: AtomicU64::new(total_size.unwrap_or(0)),
             created_at: Some(created_at.unwrap_or(now)),
-            updated_at: Some(updated_at.unwrap_or(now)),
+            updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
             persistence,
             workers: RwLock::new(vec![]),
             worker_event_tx,
@@ -130,6 +131,8 @@ impl DownloadTask {
             DownloadStatus::Failed(err) => format!("Failed: {}", err),
             _ => status_guard.to_string(),
         };
+
+        let updated_at_guard = self.updated_at.lock().await;
         DownloadTaskSnapshot {
             id: self.id,
             url: self.url.clone(),
@@ -139,7 +142,7 @@ impl DownloadTask {
             downloaded_size: self.downloaded_size.load(Ordering::Relaxed),
             total_size: self.total_size.load(Ordering::Relaxed),
             created_at: self.created_at.clone(),
-            updated_at: self.updated_at.clone(),
+            updated_at: updated_at_guard.clone(),
         }
     }
 
@@ -218,8 +221,7 @@ impl DownloadTask {
                                 all_done = false;
                                 debug!(
                                     "[Task {}] Worker Not completed -> id: {}, status: {:?}",
-                                    task_clone.id,
-                                    w.id, *status
+                                    task_clone.id, w.id, *status
                                 );
                                 break;
                             }
@@ -580,6 +582,7 @@ impl DownloadTask {
             let worker_count = self.config.worker_threads;
             let total_size = self.total_size.load(Ordering::Relaxed);
             let chunk_size = total_size / worker_count as u64;
+            let now = Utc::now();
 
             for i in 0..worker_count {
                 let start = i as u64 * chunk_size;
@@ -601,6 +604,7 @@ impl DownloadTask {
                     Arc::clone(&file_path),
                     Some(DownloadStatus::Pending),
                     Arc::clone(&self.stats),
+                    Some(now),
                 ));
 
                 // 持久化 worker
@@ -865,6 +869,11 @@ impl DownloadTask {
     }
 
     pub async fn persist_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+        {
+            let mut updated_at_guard = self.updated_at.lock().await;
+            *updated_at_guard = Some(Utc::now());
+        }
+
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Persisting task", self.id);
             if let Err(e) = persistence.save_task(self).await {

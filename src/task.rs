@@ -944,6 +944,10 @@ impl DownloadTask {
 
             if let Some(worker) = worker_opt {
                 // debug!("[Task {}] Persisting worker {}", self.id, worker_id);
+                {
+                    let mut updated_at_guard = worker.updated_at.lock().await;
+                    *updated_at_guard = Some(Utc::now());
+                }
                 if let Err(e) = persistence.save_worker(&worker).await {
                     debug!(
                         "[Task {}] Failed to persist worker {}: {:?}",

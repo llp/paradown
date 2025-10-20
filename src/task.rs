@@ -178,13 +178,13 @@ impl DownloadTask {
                             .store(total_downloaded, Ordering::Relaxed);
 
                         let total_size = task_clone.total_size.load(Ordering::Relaxed);
-                        debug!(
-                            "[Task {}] Progress: {}/{} ({:.2}%)",
-                            task_clone.id,
-                            total_downloaded,
-                            total_size,
-                            total_downloaded as f64 / total_size as f64 * 100.0
-                        );
+                        // debug!(
+                        //     "[Task {}] Progress: {}/{} ({:.2}%)",
+                        //     task_clone.id,
+                        //     total_downloaded,
+                        //     total_size,
+                        //     total_downloaded as f64 / total_size as f64 * 100.0
+                        // );
 
                         if let Some(manager) = task_clone.manager.upgrade() {
                             let _ = manager.task_event_tx.send(DownloadEvent::Progress {
@@ -596,7 +596,7 @@ impl DownloadTask {
 
                 // 持久化 worker
                 if let Some(persistence) = self.persistence.as_ref() {
-                    debug!("[Task {}] Persisting worker state", self.id);
+                    // debug!("[Task {}] Persisting worker state", self.id);
                     let worker_clone = Arc::clone(&worker);
                     if let Err(e) = persistence.save_worker(&worker_clone).await {
                         debug!(
@@ -704,6 +704,11 @@ impl DownloadTask {
     pub async fn resume(self: &Arc<Self>) -> Result<(), DownloadError> {
         let mut status = self.status.lock().await;
         match *status {
+            DownloadStatus::Pending | DownloadStatus::Running => {
+                drop(status);
+                // 将递归调用包裹成 boxed future
+                return Box::pin(self.start()).await;
+            }
             DownloadStatus::Paused => {
                 *status = match self.total_size.load(Ordering::Relaxed) {
                     0 => {
@@ -721,8 +726,6 @@ impl DownloadTask {
             }
             DownloadStatus::Completed
             | DownloadStatus::Preparing
-            | DownloadStatus::Pending
-            | DownloadStatus::Running
             | DownloadStatus::Canceled
             | DownloadStatus::Deleted
             | DownloadStatus::Failed(_) => {
@@ -922,7 +925,7 @@ impl DownloadTask {
             };
 
             if let Some(worker) = worker_opt {
-                debug!("[Task {}] Persisting worker {}", self.id, worker_id);
+                // debug!("[Task {}] Persisting worker {}", self.id, worker_id);
                 if let Err(e) = persistence.save_worker(&worker).await {
                     debug!(
                         "[Task {}] Failed to persist worker {}: {:?}",

@@ -191,6 +191,11 @@ impl DownloadManager {
         } else {
             warn!("[Manager] Task {} not found when releasing permit", task_id);
         }
+        debug!(
+            "[Manager] release task {} permit (permits left after release = {})",
+            task_id,
+            self.semaphore.available_permits()
+        );
     }
 
     /// 将 task_id 从等待队列中移除（如果存在）
@@ -204,6 +209,12 @@ impl DownloadManager {
                 queue.len()
             );
         }
+        Ok(())
+    }
+
+    async fn clear_task_pending_queue(&self) -> Result<(), DownloadError> {
+        let mut queue = self.pending_queue.lock().await;
+        queue.clear();
         Ok(())
     }
 
@@ -484,23 +495,42 @@ impl DownloadManager {
     }
 
     pub async fn resume_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
-        debug!(
-            "[Manager] Before resume_task {}, available_permits = {}",
-            task_id,
-            self.semaphore.available_permits()
-        );
-
-        let permit = self
-            .semaphore
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| DownloadError::Other("No available permits, task queued".into()))?;
+        // 尝试获取 semaphore permit
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                // semaphore 满 -> 加入队列
+                let mut queue = self.pending_queue.lock().await;
+                if !queue.iter().any(|(id, _)| *id == task_id) {
+                    queue.push_back((task_id, PendingAction::Resume));
+                    debug!(
+                        "[Manager] Task {} queued for resume (queue len = {}, permits={})",
+                        task_id,
+                        queue.len(),
+                        self.semaphore.available_permits()
+                    );
+                } else {
+                    debug!(
+                        "[Manager] Task {} already in queue (skip push). queue len={}",
+                        task_id,
+                        queue.len()
+                    );
+                }
+                return Ok(task_id);
+            }
+        };
 
         let task_ref = self
             .tasks
             .get(&task_id)
             .ok_or(DownloadError::TaskNotFound(task_id))?;
         let task = Arc::clone(task_ref.value());
+
+        debug!(
+            "[Manager] Resuming task {} (permits left after acquire = {})",
+            task_id,
+            self.semaphore.available_permits()
+        );
 
         let res = task.resume().await;
         match res {
@@ -574,7 +604,7 @@ impl DownloadManager {
         // 3.执行保存操作
         match persistence.save_task(&task).await {
             Ok(_) => {
-                debug!("[Manager {}] Task state persisted successfully", task_id);
+                // debug!("[Manager {}] Task state persisted successfully", task_id);
                 Ok(task_id)
             }
             Err(e) => {
@@ -616,6 +646,9 @@ impl DownloadManager {
         if self.tasks.is_empty() {
             return Err(DownloadError::Other("No tasks to pause".into()));
         }
+
+        self.clear_task_pending_queue().await?;
+
         let futures: Vec<_> = self
             .tasks
             .iter()
@@ -664,6 +697,9 @@ impl DownloadManager {
         if self.tasks.is_empty() {
             return Err(DownloadError::Other("No tasks to cancel".into()));
         }
+
+        self.clear_task_pending_queue().await?;
+
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.cancel().await {
@@ -677,6 +713,9 @@ impl DownloadManager {
         if self.tasks.is_empty() {
             return Err(DownloadError::Other("No tasks to delete".into()));
         }
+
+        self.clear_task_pending_queue().await?;
+
         for entry in self.tasks.iter() {
             let task = Arc::clone(entry.value());
             if let Err(e) = task.delete().await {

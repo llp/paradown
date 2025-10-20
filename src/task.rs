@@ -242,7 +242,7 @@ impl DownloadTask {
                                 for checksum in checksums.iter_mut() {
                                     match checksum.verify(path.as_ref()) {
                                         Ok(true) => {
-                                            checksum.verified = true;
+                                            checksum.verified = Some(true);
                                             checksum.verified_at = Some(Utc::now());
                                             debug!(
                                                 "[Task {}] Checksum {:?} passed for file {:?}",
@@ -255,7 +255,7 @@ impl DownloadTask {
                                                 task_clone.id, checksum.algorithm, path
                                             );
                                             ok = false;
-                                            checksum.verified = false;
+                                            checksum.verified = Some(true);
                                             checksum.verified_at = Some(Utc::now());
                                             break;
                                         }
@@ -265,7 +265,7 @@ impl DownloadTask {
                                                 task_clone.id, checksum.algorithm, path, e
                                             );
                                             ok = false;
-                                            checksum.verified = false;
+                                            checksum.verified = Some(false);
                                             checksum.verified_at = Some(Utc::now());
                                             break;
                                         }
@@ -509,12 +509,12 @@ impl DownloadTask {
             let checksum_ok = {
                 let mut checksums = self.checksums.lock().await;
                 checksums.iter_mut().all(|c| {
-                    if c.verified {
+                    if c.verified.unwrap_or(false) {
                         true
                     } else {
                         match c.verify(file_path.as_ref()) {
                             Ok(true) => {
-                                c.verified = true;
+                                c.verified = Some(true);
                                 c.verified_at = Some(Utc::now());
                                 true
                             }

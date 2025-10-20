@@ -38,7 +38,7 @@ impl FromStr for ChecksumAlgorithm {
 pub struct DownloadChecksum {
     pub algorithm: ChecksumAlgorithm,
     pub value: Option<String>,
-    pub verified: bool,
+    pub verified: Option<bool>,
     pub verified_at: Option<DateTime<Utc>>,
 }
 

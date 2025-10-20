@@ -12,6 +12,8 @@ pub struct DownloadTaskRequest {
     pub status: Option<DownloadStatus>,
     pub downloaded_size: Option<u64>,
     pub total_size: Option<u64>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl DownloadTaskRequest {
@@ -26,6 +28,8 @@ impl DownloadTaskRequest {
             status: None,
             downloaded_size: None,
             total_size: None,
+            created_at: None,
+            updated_at: None,
         }
     }
 }
@@ -39,6 +43,8 @@ pub struct DownloadRequestBuilder {
     status: Option<DownloadStatus>,
     downloaded_size: Option<u64>,
     total_size: Option<u64>,
+    created_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
 }
 
 impl DownloadRequestBuilder {
@@ -77,6 +83,16 @@ impl DownloadRequestBuilder {
         self
     }
 
+    pub fn created_at(mut self, created_at: DateTime<Utc>) -> Self {
+        self.created_at = Some(created_at);
+        self
+    }
+
+    pub fn updated_at(mut self, updated_at: DateTime<Utc>) -> Self {
+        self.updated_at = Some(updated_at);
+        self
+    }
+
     /// 构建最终的 DownloadRequest
     pub fn build(self) -> DownloadTaskRequest {
         DownloadTaskRequest {
@@ -88,6 +104,8 @@ impl DownloadRequestBuilder {
             status: self.status,
             downloaded_size: self.downloaded_size,
             total_size: self.total_size,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
         }
     }
 }

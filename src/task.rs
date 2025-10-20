@@ -69,6 +69,8 @@ impl DownloadTask {
         config: Arc<DownloadConfig>,
         persistence: Option<Arc<DownloadPersistenceManager>>,
         manager: Weak<DownloadManager>,
+         created_at: Option<DateTime<Utc>>,
+         updated_at: Option<DateTime<Utc>>,
     ) -> Result<Arc<Self>, DownloadError> {
         let (worker_event_tx, _) = broadcast::channel(100);
 
@@ -98,6 +100,8 @@ impl DownloadTask {
                 .map_err(|e| DownloadError::Other(format!("Failed to build HTTP client: {}", e)))?,
         );
 
+        let now = Utc::now();
+
         Ok(Arc::new(Self {
             id,
             url,
@@ -108,8 +112,8 @@ impl DownloadTask {
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
             total_size: AtomicU64::new(total_size.unwrap_or(0)),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
+            created_at: Some(created_at.unwrap_or(now)),
+            updated_at: Some(updated_at.unwrap_or(now)),
             persistence,
             workers: RwLock::new(vec![]),
             worker_event_tx,

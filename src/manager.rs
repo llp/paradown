@@ -311,6 +311,8 @@ impl DownloadManager {
                 downloaded_size: Some(db_task.downloaded_size),
                 total_size: db_task.total_size,
                 checksums: Some(checksums),
+                created_at: db_task.created_at,
+                updated_at: db_task.updated_at,
             };
 
             // 6. 转换 workers -> DownloadWorkerRequest
@@ -408,6 +410,8 @@ impl DownloadManager {
             self.config.clone(),
             Some(persistence),
             Arc::downgrade(self),
+            task_request.created_at,
+            task_request.updated_at,
         )?;
         if let Some(worker_requests) = workers {
             let mut worker_vec = vec![];
@@ -462,9 +466,9 @@ impl DownloadManager {
                     );
                     if let Err(e) = Box::pin(self.spawn_next_task()).await {
                         error!(
-                        "Failed to spawn next task after start task failed({}): {:?}",
-                        task_id, e
-                    );
+                            "Failed to spawn next task after start task failed({}): {:?}",
+                            task_id, e
+                        );
                     }
                 }
                 return Ok(task_id);
@@ -541,9 +545,9 @@ impl DownloadManager {
                     );
                     if let Err(e) = Box::pin(self.spawn_next_task()).await {
                         error!(
-                        "Failed to spawn next task after start task failed({}): {:?}",
-                        task_id, e
-                    );
+                            "Failed to spawn next task after start task failed({}): {:?}",
+                            task_id, e
+                        );
                     }
                 }
                 return Ok(task_id);

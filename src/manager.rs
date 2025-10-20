@@ -220,8 +220,12 @@ impl DownloadManager {
 
     /// spawn 下一个排队任务（会跳过启动失败或不存在的任务）
     async fn spawn_next_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+        debug!("[Manager] spawn_next_task invoked");
+
         let next_opt = {
             let mut queue = self.pending_queue.lock().await;
+            let queue_len_before = queue.len();
+            debug!("[Manager] Queue length before pop: {}", queue_len_before);
             queue.pop_front()
         };
 
@@ -249,6 +253,14 @@ impl DownloadManager {
             }
         };
 
+        let queue_len_after = {
+            let queue = self.pending_queue.lock().await;
+            queue.len()
+        };
+        debug!(
+            "[Manager] spawn_next_task completed. Queue length after task = {}",
+            queue_len_after
+        );
         Ok(())
     }
 
@@ -448,6 +460,12 @@ impl DownloadManager {
                         task_id,
                         queue.len()
                     );
+                    if let Err(e) = Box::pin(self.spawn_next_task()).await {
+                        error!(
+                        "Failed to spawn next task after start task failed({}): {:?}",
+                        task_id, e
+                    );
+                    }
                 }
                 return Ok(task_id);
             }
@@ -468,13 +486,13 @@ impl DownloadManager {
         let res = task.start().await;
         match res {
             Ok(()) => {
-                debug!("[Task {}] started", task_id);
+                debug!("[Manager] Task {} started", task_id);
                 let mut guard = task.permit.lock().await;
                 *guard = Some(permit);
                 Ok(task_id)
             }
             Err(e) => {
-                error!("[Task {}] start failed: {:?}", task_id, e);
+                error!("[Manager] Task {} start failed: {:?}", task_id, e);
                 drop(permit);
                 let mut guard = task.permit.lock().await;
                 *guard = None;
@@ -521,6 +539,12 @@ impl DownloadManager {
                         task_id,
                         queue.len()
                     );
+                    if let Err(e) = Box::pin(self.spawn_next_task()).await {
+                        error!(
+                        "Failed to spawn next task after start task failed({}): {:?}",
+                        task_id, e
+                    );
+                    }
                 }
                 return Ok(task_id);
             }
@@ -541,13 +565,13 @@ impl DownloadManager {
         let res = task.resume().await;
         match res {
             Ok(()) => {
-                debug!("[Task {}] resumed", task_id);
+                debug!("[Manager] Task {} resumed", task_id);
                 let mut guard = task.permit.lock().await;
                 *guard = Some(permit);
                 Ok(task_id)
             }
             Err(e) => {
-                error!("[Task {}] resume failed: {:?}", task_id, e);
+                error!("[Manager] Task {} resume failed: {:?}", task_id, e);
                 drop(permit);
                 let mut guard = task.permit.lock().await;
                 *guard = None;

@@ -327,18 +327,41 @@ impl DownloadWorker {
 
     pub async fn pause(&self) -> Result<(), DownloadError> {
         self.paused.store(true, Ordering::Relaxed);
-        *self.status.lock().await = DownloadStatus::Paused;
+        let mut status_guard = self.status.lock().await;
+        match *status_guard {
+            DownloadStatus::Canceled | DownloadStatus::Failed(_) | DownloadStatus::Completed => {
+                debug!(
+                    "[Worker {}] Paused ignored — current status = {:?}",
+                    self.id, *status_guard
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
         debug!("[Worker {}] Paused", self.id);
+        *status_guard = DownloadStatus::Paused;
         Ok(())
     }
 
     pub async fn resume(&self) -> Result<(), DownloadError> {
-        self.paused.store(false, Ordering::Relaxed);
-        *self.status.lock().await = DownloadStatus::Running;
-        debug!("[Worker {}] Resumed", self.id);
+        let mut status_guard = self.status.lock().await;
+        match *status_guard {
+            DownloadStatus::Canceled | DownloadStatus::Failed(_) | DownloadStatus::Completed => {
+                debug!(
+                    "[Worker {}] Resume ignored — current status = {:?}",
+                    self.id, *status_guard
+                );
+                return Ok(()); // 不做任何操作
+            }
+            _ => {}
+        }
 
-        // 如果循环未启动，启动一次
-        if !self.is_running.load(Ordering::Relaxed) {
+        debug!("[Worker {}] Resumed", self.id);
+        self.paused.store(false, Ordering::Relaxed);
+
+        if self.is_running.load(Ordering::Relaxed) {
+            *status_guard = DownloadStatus::Running;
+        } else {
             let _ = self.start().await;
         }
         Ok(())

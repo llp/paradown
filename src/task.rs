@@ -212,6 +212,11 @@ impl DownloadTask {
                             let status = w.status.lock().await;
                             if !matches!(*status, DownloadStatus::Completed) {
                                 all_done = false;
+                                debug!(
+                                    "[Task {}] Worker Not completed -> id: {}, status: {:?}",
+                                    task_clone.id,
+                                    w.id, *status
+                                );
                                 break;
                             }
                         }

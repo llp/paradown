@@ -483,7 +483,6 @@ impl DownloadManager {
         }
     }
 
-    /// resume 也需控制并发（与 start_task 同逻辑）
     pub async fn resume_task(self: &Arc<Self>, task_id: u32) -> Result<u32, DownloadError> {
         debug!(
             "[Manager] Before resume_task {}, available_permits = {}",

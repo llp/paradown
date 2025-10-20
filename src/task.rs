@@ -615,48 +615,49 @@ impl DownloadTask {
         }
 
         //---------------------------------------------------------------------------------------
-        let mut tasks = vec![];
-        for worker in workers_vec {
-            let worker_clone = Arc::clone(&worker);
-            tasks.push(tokio::spawn(async move { worker_clone.start().await }));
-        }
+        let task = Arc::clone(&self);
+        tokio::spawn(async move {
+            let mut tasks = vec![];
+            for worker in workers_vec {
+                let worker_clone = Arc::clone(&worker);
+                tasks.push(tokio::spawn(async move { worker_clone.start().await }));
+            }
 
-        let results = join_all(tasks).await;
+            let results = join_all(tasks).await;
 
-        for r in results {
-            match r {
-                Ok(inner) => match inner {
-                    Ok(()) => {}
+            for r in results {
+                match r {
+                    Ok(inner) => match inner {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let mut status = task.status.lock().await;
+                            *status =
+                                DownloadStatus::Failed(DownloadError::Other(format!("{:?}", e)));
+                            debug!("[Task {}] Worker failed: {:?}", task.id, e);
+
+                            if let Some(manager) = task.manager.upgrade() {
+                                let _ = manager.task_event_tx.send(DownloadEvent::Error(
+                                    task.id,
+                                    DownloadError::Other(format!("{:?}", e)),
+                                ));
+                            }
+                        }
+                    },
                     Err(e) => {
-                        let mut status = self.status.lock().await;
+                        let mut status = task.status.lock().await;
                         *status = DownloadStatus::Failed(DownloadError::Other(format!("{:?}", e)));
-                        debug!("[Task {}] Worker failed: {:?}", self.id, e);
+                        debug!("[Task {}] Worker panicked: {:?}", task.id, e);
 
-                        if let Some(manager) = self.manager.upgrade() {
+                        if let Some(manager) = task.manager.upgrade() {
                             let _ = manager.task_event_tx.send(DownloadEvent::Error(
-                                self.id,
+                                task.id,
                                 DownloadError::Other(format!("{:?}", e)),
                             ));
                         }
-                        return Err(format!("Worker failed: {:?}", e).into());
                     }
-                },
-                Err(e) => {
-                    let mut status = self.status.lock().await;
-                    *status = DownloadStatus::Failed(DownloadError::Other(format!("{:?}", e)));
-                    debug!("[Task {}] Worker panicked: {:?}", self.id, e);
-
-                    if let Some(manager) = self.manager.upgrade() {
-                        let _ = manager.task_event_tx.send(DownloadEvent::Error(
-                            self.id,
-                            DownloadError::Other(format!("{:?}", e)),
-                        ));
-                    }
-
-                    return Err(format!("Worker panicked: {:?}", e).into());
                 }
             }
-        }
+        });
 
         Ok(())
     }

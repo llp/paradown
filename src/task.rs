@@ -55,6 +55,7 @@ pub struct DownloadTaskSnapshot {
     pub total_size: u64,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub checksums: Vec<DownloadChecksum>,
 }
 
 impl DownloadTask {
@@ -143,6 +144,7 @@ impl DownloadTask {
             total_size: self.total_size.load(Ordering::Relaxed),
             created_at: self.created_at.clone(),
             updated_at: updated_at_guard.clone(),
+            checksums: self.checksums.clone(),
         }
     }
 

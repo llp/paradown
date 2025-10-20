@@ -192,8 +192,8 @@ impl DownloadPersistenceManager {
                 ChecksumAlgorithm::NONE => "NONE".to_string(),
             },
             value: checksum.value.clone().unwrap_or_default(),
-            verified: false,
-            verified_at: None,
+            verified: checksum.verified.clone(),
+            verified_at: checksum.verified_at.clone(),
         }
     }
 
@@ -207,6 +207,8 @@ impl DownloadPersistenceManager {
                 _ => ChecksumAlgorithm::NONE,
             },
             value: Some(model.value.clone()),
+            verified: model.verified.clone(),
+            verified_at: model.verified_at.clone(),
         }
     }
 }

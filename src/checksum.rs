@@ -1,4 +1,5 @@
 use crate::error::DownloadError;
+use chrono::{DateTime, Utc};
 use digest::Digest;
 use log::debug;
 use md5::Md5;
@@ -37,6 +38,8 @@ impl FromStr for ChecksumAlgorithm {
 pub struct DownloadChecksum {
     pub algorithm: ChecksumAlgorithm,
     pub value: Option<String>,
+    pub verified: bool,
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 impl DownloadChecksum {

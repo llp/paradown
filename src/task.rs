@@ -11,7 +11,6 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use sqlx::encode::IsNull::No;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

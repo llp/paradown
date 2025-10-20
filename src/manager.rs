@@ -642,8 +642,9 @@ impl DownloadManager {
             );
             return Ok(task_id);
         };
-        //
-        persistence.save_checksums(&task.checksums, task_id).await?;
+
+        let checksums = task.checksums.lock().await;
+        persistence.save_checksums(&checksums, task_id).await?;
 
         // 3.执行保存操作
         match persistence.save_task(&task).await {

@@ -26,7 +26,7 @@ pub struct DownloadTask {
     pub status: Mutex<DownloadStatus>,
     pub file_name: OnceCell<String>,
     pub file_path: Arc<OnceCell<PathBuf>>,
-    pub checksums: Vec<DownloadChecksum>,
+    pub checksums: Mutex<Vec<DownloadChecksum>>,
     pub config: Arc<DownloadConfig>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
@@ -108,7 +108,7 @@ impl DownloadTask {
             url,
             file_name: file_name_cell,
             file_path: file_path_cell,
-            checksums,
+            checksums: Mutex::new(checksums),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
@@ -143,7 +143,7 @@ impl DownloadTask {
             total_size: self.total_size.load(Ordering::Relaxed),
             created_at: self.created_at.clone(),
             updated_at: updated_at_guard.clone(),
-            checksums: self.checksums.clone(),
+            checksums: self.checksums.lock().await.clone(),
         }
     }
 
@@ -238,9 +238,12 @@ impl DownloadTask {
 
                             let checksum_ok = if let Some(path) = task_clone.file_path.get() {
                                 let mut ok = true;
-                                for checksum in &task_clone.checksums {
+                                let mut checksums = task_clone.checksums.lock().await;
+                                for checksum in checksums.iter_mut() {
                                     match checksum.verify(path.as_ref()) {
                                         Ok(true) => {
+                                            checksum.verified = true;
+                                            checksum.verified_at = Some(Utc::now());
                                             debug!(
                                                 "[Task {}] Checksum {:?} passed for file {:?}",
                                                 task_clone.id, checksum.algorithm, path
@@ -252,6 +255,8 @@ impl DownloadTask {
                                                 task_clone.id, checksum.algorithm, path
                                             );
                                             ok = false;
+                                            checksum.verified = false;
+                                            checksum.verified_at = Some(Utc::now());
                                             break;
                                         }
                                         Err(e) => {
@@ -260,6 +265,8 @@ impl DownloadTask {
                                                 task_clone.id, checksum.algorithm, path, e
                                             );
                                             ok = false;
+                                            checksum.verified = false;
+                                            checksum.verified_at = Some(Utc::now());
                                             break;
                                         }
                                     }
@@ -499,10 +506,23 @@ impl DownloadTask {
                 .map_err(|e| DownloadError::Io(format!("Failed to read file metadata: {}", e)))?;
             let current_size = metadata.len();
 
-            let checksum_ok = self
-                .checksums
-                .iter()
-                .all(|c| c.verify(file_path.as_ref()).unwrap_or(false));
+            let checksum_ok = {
+                let mut checksums = self.checksums.lock().await;
+                checksums.iter_mut().all(|c| {
+                    if c.verified {
+                        true
+                    } else {
+                        match c.verify(file_path.as_ref()) {
+                            Ok(true) => {
+                                c.verified = true;
+                                c.verified_at = Some(Utc::now());
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                })
+            };
 
             match self.config.file_conflict_strategy {
                 FileConflictStrategy::Overwrite => {
@@ -923,7 +943,8 @@ impl DownloadTask {
     pub async fn persist_task_checksums(self: &Arc<Self>) -> Result<(), DownloadError> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Persisting task checksums", self.id);
-            if let Err(e) = persistence.save_checksums(&self.checksums, self.id).await {
+            let checksums = self.checksums.lock().await;
+            if let Err(e) = persistence.save_checksums(&checksums, self.id).await {
                 debug!(
                     "[Task {}] Failed to persist task checksums: {:?}",
                     self.id, e

@@ -55,4 +55,8 @@ path = "src/lib.rs"
 [[bin]]
 name = "paradown"
 path = "src/main.rs"
+required-features = ["cli"]
 
+[features]
+default = []
+cli = []

@@ -1,15 +1,15 @@
 [package]
 name = "paradown"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["liulipeng <pengliliu8086@gmail.com>"]
 description = "A multi-threaded download manager with resume capability"
-license = "MIT"
 repository = "https://github.com/llp/paradown"
 documentation = "https://github.com/llp/paradown/blob/main/README.md"
 readme = "README.md"
 keywords = ["download", "http", "multi-threaded", "downloader"]
 categories = ["network-programming", "asynchronous"]
+license = "Apache-2.0"
 
 [dependencies]
 indicatif = { version = "0.17", features = ["tokio"] }

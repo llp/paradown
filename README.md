@@ -1,92 +1,179 @@
 # paradown
 
-pc端用的rust下载器
+**paradown** — a high-performance, multi-threaded CLI download manager written in Rust.
 
-## Getting started
+Aims:
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- Robust concurrent downloading with multiple worker threads.
+- Resume / checkpointing support through SQLite / in-memory / JSON persistence.
+- Integrity verification with checksums.
+- Interactive control (pause/resume/cancel, rate limiting).
+- Retry/backoff, configurable timeouts and file conflict strategies.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+---
 
-## Add your files
+## Features
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+- Multi-threaded downloads with configurable worker count.
+- Persistence backends:
+    - SQLite (default) — persistent state across restarts.
+    - In-memory — ephemeral (useful for testing).
+    - JSON file — simple file-based persistence.
+- Resumable downloads when possible (supports partial content / range requests).
+- Per-task checksum verification (MD5/SHA variants: see `checksum` module).
+- Rate limiting (bytes/sec or kilobytes/sec configurable).
+- Retry configuration with exponential backoff.
+- CLI and interactive mode (stdin-driven commands).
+- Progress reporting and throttling to avoid flooding output.
+- Configurable file conflict strategies: overwrite, resume, skip-if-valid, etc.
+- Clear modular architecture: `manager`, `worker`, `repository`, `persistence`, `task`, `cli`, `progress`, `stats`.
 
+---
+
+## Quick start
+
+Build locally:
+
+```bash
+# From crate root:
+cargo build --release
+# Or to install locally:
+cargo install --path .
 ```
-cd existing_repo
-git remote add origin https://gitlab01.huan.tv/mediateam/paradown.git
-git branch -M main
-git push -uf origin main
+
+Basic usage (download one or more URLs — --urls is required):
+
+```bash
+# download into ./downloads (default)
+paradown -u https://example.com/file.iso
+
+# specify workers and download directory
+paradown -u https://a -u https://b -w 8 -d /path/to/dir
+
+# use a config file
+paradown -c ./paradown.toml
 ```
 
-## Integrate with your tools
+> The CLI expects at least one --urls (-u) argument. See “Configuration” for file-based setup.
 
-- [ ] [Set up project integrations](http://gitlab01.huan.tv/mediateam/paradown/-/settings/integrations)
+## Example configuration (TOML)
 
-## Collaborate with your team
+This crate uses serde for config deserialization. Example paradown.toml:
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Automatically merge when pipeline succeeds](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+```toml
+# paradown.toml - example
+download_dir = "./downloads"
+shuffle = false
+max_concurrent_downloads = 4
+worker_threads = 4
+rate_limit_kbps = 0            # 0 or omit => no limit; otherwise use integer KB/s
+connection_timeout_secs = 30   # connection timeout in seconds
+debug = true
 
-## Test and Deploy
+[persistence]
+# Use one of:
+# type = "Sqlite"
+# sqlite_path = "./downloads.db"
+# type = "Memory"
+# type = "JsonFile"
+type = "Sqlite"
+sqlite_path = "./downloads.db"
 
-Use the built-in continuous integration in GitLab.
+[retry]
+max_retries = 5
+initial_delay_secs = 1
+max_delay_secs = 60
+backoff_factor = 2.0
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing(SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+[progress_throttle]
+# example throttle config (fields vary; defaults applied if omitted)
+threshold_bytes = 1048576
+interval_millis = 500
+```
 
-***
+> Field names above are illustrative — match actual keys with your crate’s DownloadConfig (see src/config.rs).
+> DownloadConfig defaults: download_dir = "./downloads", worker_threads = 4, persistence = Sqlite("./downloads.db"),
+> connection_timeout = 30s, file_conflict_strategy = Resume, debug = true.
 
-# Editing this README
+## CLI & Interactive commands
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!).  Thank you to [makeareadme.com](https://www.makeareadme.com/) for this template.
+CLI flags (from the source main.rs):
 
-## Suggestions for a good README
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+* -c, --config <FILE> — path to config TOML file.
+* -w, --workers <N> — number of worker threads (overrides config).
+* -d, --download-dir <DIR> — download destination directory (overrides config).
+* -s, --shuffle — shuffle task list before starting.
+* -v, --verbose — verbose logging.
+* -u, --urls <URLS>... — one or more URLs to download (required if not using config to load tasks).
 
-## Name
-Choose a self-explaining name for your project.
+Interactive mode (stdin-based) supports commands implemented in src/cli.rs:
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+* Pause current active downloads.
+* Resume paused downloads.
+* Cancel a task.
+* Set rate limit dynamically (e.g., set global KB/s).
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## Architecture & module overview
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Top-level modules (short description):
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+* main.rs — CLI parsing, startup, logger initialization, bootstraps manager and interactive loop.
+* manager — orchestrates tasks, assigns workers, handles lifecycle (start/stop/pause/resume).
+* worker — per-thread worker logic that executes HTTP requests, writes to files, reports progress.
+* task — download task model, chunk/worker assignment, state machine for download progress.
+* request — request struct, builder for creating download requests and metadata (file path, checksums).
+* persistence — persistence manager that chooses repository backend and provides save/load functions.
+* repository — trait and implementations:
+* sqlite_repository — persistent DB storage using SQLite.
+* memory_repository — volatile in-memory storage (useful for tests).
+* models: DB representation types for tasks/workers/checksums.
+* checksum — checksum calculation & types (support for multiple algorithms).
+* progress — throttling and progress reporting utilities.
+* stats — collection and reporting of aggregate download statistics.
+* cli — interactive stdin handler and command dispatcher.
+* error — centralized error types.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+This separation makes it easier to:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+* Swap persistence backends.
+* Replace the HTTP client implementation or instrument workers.
+* Integrate with higher-level apps (library-mode) in the future (requires exposing APIs and making a lib crate).
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+## Configuration keys and defaults
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Key defaults (from DownloadConfig::default()):
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+* download_dir: ./downloads
+* shuffle: false
+* max_concurrent_downloads: 4
+* worker_threads: 4
+* retry: uses RetryConfig::default()
+* rate_limit_kbps: None (no limit)
+* connection_timeout: 30s
+* persistence_type: Sqlite("./downloads.db")
+* progress_throttle: ProgressThrottleConfig::default()
+* file_conflict_strategy: Resume
+* debug: true
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Examples
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Download two files with 8 worker threads into /tmp/dls:
 
-## License
-For open source projects, say how it is licensed.
+```bash
+paradown -u https://example.com/one.iso -u https://example.com/two.iso -w 8 -d /tmp/dls
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Run interactively and type commands to pause/resume/cancel or change rate limit (stdin mode).
+
+## Building & testing
+
+```bash
+# build
+cargo build --release
+
+# run (examples)
+cargo run -- --urls https://example.com/file.iso
+
+# run tests (if any)
+cargo test
+```

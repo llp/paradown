@@ -1,4 +1,7 @@
 mod chunk;
+mod coordinator_events;
+mod coordinator_queue;
+mod coordinator_registry;
 mod job_finalize;
 mod job_prepare;
 mod runtime;

@@ -336,8 +336,9 @@ impl DownloadManager {
     where
         F: FnOnce(
             Arc<DownloadTask>,
-        )
-            -> Pin<Box<dyn std::future::Future<Output = Result<(), DownloadError>> + Send + 'a>>,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<(), DownloadError>> + Send + 'a>,
+        >,
     {
         let Some(permit) = acquire_task_permit_or_queue(self, task_id, action).await? else {
             return Ok(task_id);

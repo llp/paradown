@@ -144,49 +144,83 @@
 - `manager.rs` 同时承担事件消费、排队调度、恢复组装、注册逻辑
 - 协调器壳层太厚，不利于后续继续演进
 
+### 3.4 第四轮：拆分 DownloadJob 的 worker、state 与 storage 逻辑
+
+提交：
+
+- 见本轮提交记录
+
+已完成内容：
+
+- 新增 worker 协调模块：[job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+  - worker 事件监听
+  - worker 创建与装配
+  - worker 启动与 join 收敛
+  - worker 级进度/完成/错误/取消事件处理
+- 新增作业状态模块：[job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
+  - `start` 前状态判断
+  - pause/resume/cancel/delete 状态流转
+  - reset/delete file/clear workers 等状态辅助逻辑
+- 新增作业存储模块：[job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
+  - task/checksum/worker 持久化
+  - task/workers/checksums 清理
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 收敛为作业门面
+  - 保留结构定义、`new`、`snapshot`、`init`、`start`
+  - 保留文件名/文件路径辅助方法
+- [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1) 接入新的内部模块
+- `task.rs` 体量从重构前的 `884` 行下降到本轮后的 `247` 行
+
+这一轮解决的主要问题：
+
+- `task.rs` 同时承担 worker 生命周期、状态机、持久化辅助和文件清理
+- `DownloadJob` 作为门面类型仍然过重，不利于继续演进
+- 后续如果继续修 worker 协调或状态流转，需要频繁修改超大文件
+
 ## 4. 本轮重构具体改了什么
 
-如果只聚焦“这一轮”即第三轮，已经修改的重点如下：
+如果只聚焦“这一轮”即第四轮，已经修改的重点如下：
 
 ### 4.1 已改
 
-- 把 manager 的事件消费循环从 [manager.rs](/Users/liulipeng/workspace/rust/paradown/src/manager.rs:1) 拆到 [coordinator_events.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_events.rs:1)
-- 把 permit 和排队逻辑从 `manager.rs` 拆到 [coordinator_queue.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_queue.rs:1)
-- 把任务恢复和任务注册逻辑从 `manager.rs` 拆到 [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
-- 保留 `DownloadManager` 作为协调器门面，让对外 API 仍然稳定
+- 把 worker 事件循环从 [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 拆到 [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- 把 worker 创建、装配、启动和 join 收敛从 `task.rs` 拆到 [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- 把 pause/resume/cancel/delete/reset 等状态流转从 `task.rs` 拆到 [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
+- 把 task/checksum/worker 的持久化与清理辅助从 `task.rs` 拆到 [job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
+- 保留 `DownloadTask` 作为下载作业门面，让对外 API 仍然稳定
 
 ### 4.2 还没改完
 
-- `start_task / resume_task / cancel_task / delete_task / *_all` 这些 API 还都留在 `manager.rs`
-- `manager.rs` 里仍然有一些共享任务访问和批量操作逻辑
-- `task.rs` 仍然偏大，worker 生命周期调度仍集中在里面
+- `job_prepare.rs` 仍然同时包含下载前目录准备、文件策略和协议探测
+- `worker.rs` 里仍然混着 HTTP 协议判断、重试、节流和写文件逻辑
+- `persistence.rs` 与 `repository/*` 的模型边界还没真正重构
+- `main.rs` 的 interactive mode 仍未完整接线
 
 ### 4.3 本轮实际触达的文件
 
-本轮第三轮重构实际触达的核心文件如下：
+本轮第四轮重构实际触达的核心文件如下：
 
-- [manager.rs](/Users/liulipeng/workspace/rust/paradown/src/manager.rs:1)
-- [coordinator_events.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_events.rs:1)
-- [coordinator_queue.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_queue.rs:1)
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1)
+- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
+- [job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
 - [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1)
 
-本轮的重构重点不是新增功能，而是把协调器内部拆成更清楚的几块：
+本轮的重构重点不是新增功能，而是把下载作业内部拆成更清楚的几块：
 
-- `manager.rs` 继续保留对外门面和公共 API
-- `coordinator_events.rs` 负责事件消费与状态收敛
-- `coordinator_queue.rs` 负责并发 permit、排队与触发后续任务
-- `coordinator_registry.rs` 负责任务恢复、注册与装配
+- `task.rs` 继续保留对外门面和公共 API
+- `job_workers.rs` 负责 worker 协调和 worker 事件收敛
+- `job_state.rs` 负责作业状态流转
+- `job_storage.rs` 负责作业落盘和清理辅助
 
-这样做的直接收益是：后续如果继续改队列策略、恢复策略或事件收敛逻辑，不需要再在一个超大 `manager.rs` 里来回穿梭。
+这样做的直接收益是：后续如果继续改 worker 协调、任务生命周期或存储策略，不需要再在一个超大 `task.rs` 里来回穿梭。
 
 ### 4.4 本轮明确未触达的范围
 
-这轮有意识地没有去碰下面这些区域，原因是先把协调器壳层收紧，再进入下一层复杂度中心：
+这轮有意识地没有去碰下面这些区域，原因是先把作业内部边界收紧，再进入协议和存储正确性层：
 
-- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 里的 worker 生命周期主流程
 - [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 里的协议正确性、重试与速率控制
 - [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 与 `repository/*` 的持久化模型一致性
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的协议探测与文件策略混杂问题
 - [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
 - README、CLI 帮助文案、默认值说明的一致性问题
 
@@ -194,22 +228,20 @@
 
 下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
 
-### 5.1 `task.rs` 仍然过大
+### 5.1 `DownloadJob` 已拆开，但协议与存储边界还未收口
 
-当前仍未完全拆分的职责：
+这一轮之后，`task.rs` 本身已经明显瘦身，但作业层仍未完全收口的职责主要变成：
 
-- worker 创建与启动
-- worker join 和失败收敛
-- pause/resume/cancel/delete 状态流转
-- 持久化辅助接口
-- 文件删除和重置逻辑
+- `job_prepare.rs` 里的协议探测与文件策略
+- `job_workers.rs` 里的 worker 行为正确性仍然依赖当前 `worker.rs`
+- `job_storage.rs` 只是抽离了调用位置，还没有重构底层存储模型
 
-建议后续进一步拆为：
+建议后续进一步收敛为：
 
-- `job_lifecycle`
-- `job_workers`
-- `job_state`
-- `job_storage`
+- `protocol_probe`
+- `job_prepare`
+- `storage model`
+- `worker runtime`
 
 ### 5.2 持久化层命名和模型还未真正重构
 
@@ -279,6 +311,11 @@
 - 拆作业重置/删除逻辑
 - 拆作业持久化辅助逻辑
 
+状态：
+
+- 已完成
+- 当前 `task.rs` 已收敛为门面层，后续不再优先做表面拆分
+
 ### 阶段 B：重构协议探测与下载正确性层
 
 目标：
@@ -335,16 +372,15 @@
 
 建议按照下面顺序继续：
 
-1. 继续拆 `task.rs`
-2. 抽协议探测与 range 能力判断
-3. 重构持久化模型
-4. 补自动化测试
-5. 最后再收 CLI/README/交互体验
+1. 抽协议探测与 range 能力判断
+2. 重构持久化模型
+3. 补自动化测试
+4. 最后再收 CLI/README/交互体验
 
 原因：
 
-- 当前最大的结构复杂度仍在 `task.rs`
-- 当前最大的正确性风险在协议层和恢复层
+- 当前最大的结构复杂度已经从 `task.rs` 转移到了协议层和存储层
+- 当前最大的正确性风险仍然在协议层和恢复层
 - 如果先做 UI 或 CLI 体验，只会把错误行为包装得更漂亮
 
 ## 9. 文档维护规则
@@ -360,11 +396,12 @@
 
 ## 10. 当前判断
 
-截至 2026-04-15，重构工作已经完成了三轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了四轮，当前可以认为：
 
 - 对外命名和主干分层已经开始稳定
 - `manager.rs` 的结构性压力已经明显下降
-- `task.rs` 仍然是当前最大的复杂度中心
+- `task.rs` 已经从复杂度中心退回到门面层
+- `job_prepare.rs`、`worker.rs` 和持久化模型成为新的主要复杂度中心
 - 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
 
-因此，下一轮不建议再做表面命名调整，而应该直接进入 `task.rs`、协议探测层和持久化模型的实质性重构。
+因此，下一轮不建议再做表面命名调整，而应该直接进入协议探测层、持久化模型和 worker 正确性的实质性重构。

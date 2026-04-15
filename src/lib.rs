@@ -4,6 +4,9 @@ mod coordinator_queue;
 mod coordinator_registry;
 mod job_finalize;
 mod job_prepare;
+mod job_state;
+mod job_storage;
+mod job_workers;
 mod runtime;
 
 pub mod checksum;

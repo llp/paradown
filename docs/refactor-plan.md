@@ -281,7 +281,7 @@
 
 提交：
 
-- 见本轮提交记录
+- `084c852` `拆分下载 worker 的运行时与传输重试逻辑`
 
 已完成内容：
 
@@ -313,48 +313,80 @@
 - worker 失败路径和 `is_running` 收尾逻辑分散，后续很难继续收紧
 - `resume()` 的锁顺序和状态切换存在明显缺陷
 
+### 3.9 第九轮：拆分 recovery 规则与 storage 模型转换层
+
+提交：
+
+- 见本轮提交记录
+
+已完成内容：
+
+- 新增恢复模块：[recovery.rs](/Users/liulipeng/workspace/rust/paradown/src/recovery.rs:1)
+  - 把恢复计划、状态降级、worker 布局校验从 `coordinator_registry.rs` 迁出
+  - 让恢复层直接消费统一的 storage bundle，而不是耦合协调器实现
+  - 为 completed 文件尺寸不匹配场景补了针对性测试
+- 新增存储映射模块：[storage_mapping.rs](/Users/liulipeng/workspace/rust/paradown/src/storage_mapping.rs:1)
+  - 把 runtime -> DB 的 task/worker/checksum 转换迁出 `persistence.rs`
+  - 把 DB -> restore request 的转换迁出 `persistence.rs`
+  - 为文本字段归一化和 worker 请求映射补了单测
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 收敛为注册层
+  - `restore_tasks()` 现在只负责读取 bundle、调用 recovery、注册任务
+  - worker 恢复装配单独收成 helper，不再混着恢复规则
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 收敛为存储门面
+  - 保留 repository 调用、bundle 加载、task/worker/checksum 保存入口
+  - 不再直接承载一整套模型转换细节
+- [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1) 接入新的内部模块
+
+这一轮解决的主要问题：
+
+- `coordinator_registry.rs` 之前仍然夹着完整恢复规则，职责边界不清
+- `persistence.rs` 之前同时承担存储入口和模型映射，文件过厚
+- 恢复规则与存储转换都不方便独立测试
+- 协调器、恢复层、存储层之间还缺一层明确的“恢复输入/恢复决策”边界
+
 ## 4. 本轮重构具体改了什么
 
-如果只聚焦“这一轮”即第八轮，已经修改的重点如下：
+如果只聚焦“这一轮”即第九轮，已经修改的重点如下：
 
 ### 4.1 已改
 
-- `worker.rs` 不再承担完整下载主循环，运行时逻辑已经下沉到 `worker_runtime.rs`
-- 请求构建、响应校验、文件写入和进度节流已经迁到 `worker_transfer.rs`
-- retry/backoff 策略已经迁到 `worker_retry.rs`，并接上现有 retry 配置
-- `resume()` 的锁顺序和状态更新已经修正，不再在持锁状态下递归进入 `start()`
-- `pause()` 现在会发 worker 级暂停事件，任务层能真正持久化 worker 的暂停状态
+- 恢复计划和恢复规则已经整体迁到 `recovery.rs`
+- `persistence.rs` 里的模型转换已经迁到 `storage_mapping.rs`
+- `coordinator_registry.rs` 现在基本只保留任务注册、恢复装配和去重逻辑
+- storage mapping 和 recovery 都补了独立测试，恢复层的 completed 文件尺寸校验也补齐了
+- 这轮后 `persistence.rs` 和 `coordinator_registry.rs` 都不再是“既当门面又当规则中心”的混合角色
 
 ### 4.2 还没改完
 
-- `persistence.rs` 仍然还包含 task/worker/checksum 的运行时模型转换细节
-- `coordinator_registry.rs` 仍然还在承担恢复计划的业务规则，后续可以继续收成独立 recovery 层
-- `worker.rs` 虽然已经瘦身，但 runtime 级限速、I/O 错误分类和更细的可观测性还没继续收口
+- `persistence.rs` 这个命名仍然偏历史包袱，对外虽然有 `storage`，内部还没彻底对齐
+- `request.rs` 里的 task/worker request 还没有按 job/segment 拆开
+- `worker` runtime 的限速、I/O 错误分类和更细的可观测性还没继续收口
+- 恢复路径虽然已经模块化，但还缺少更完整的跨进程端到端验证
 - `main.rs` 的 interactive mode 仍未完整接线
 
 ### 4.3 本轮实际触达的文件
 
-本轮第八轮重构实际触达的核心文件如下：
+本轮第九轮重构实际触达的核心文件如下：
 
-- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1)
-- [worker_runtime.rs](/Users/liulipeng/workspace/rust/paradown/src/worker_runtime.rs:1)
-- [worker_transfer.rs](/Users/liulipeng/workspace/rust/paradown/src/worker_transfer.rs:1)
-- [worker_retry.rs](/Users/liulipeng/workspace/rust/paradown/src/worker_retry.rs:1)
+- [recovery.rs](/Users/liulipeng/workspace/rust/paradown/src/recovery.rs:1)
+- [storage_mapping.rs](/Users/liulipeng/workspace/rust/paradown/src/storage_mapping.rs:1)
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1)
 - [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1)
 
-本轮的重构重点不是新增功能，而是让 worker 运行时内部成为三层明确职责：
+本轮的重构重点不是新增功能，而是让恢复链路和存储映射成为两层明确职责：
 
-- `worker_runtime.rs` 负责 worker 生命周期和重试主循环
-- `worker_transfer.rs` 负责请求、协议、写文件和进度节流
-- `worker_retry.rs` 负责 backoff 策略
+- `recovery.rs` 负责恢复输入的可信性判断和恢复计划构建
+- `storage_mapping.rs` 负责 runtime 模型和存储模型之间的转换
+- `coordinator_registry.rs` 负责把恢复计划装配回运行时任务
 
-这样做的直接收益是：后续如果继续补 rate limit、I/O 分类、worker 端到端测试，不需要再在一个超大 `worker.rs` 里混着改。
+这样做的直接收益是：后续如果继续补恢复集成测试、重构 storage 命名或调整恢复规则，不需要再改协调器和存储门面的大文件。
 
 ### 4.4 本轮明确未触达的范围
 
-这轮有意识地没有去碰下面这些区域，原因是先把 worker runtime 的主流程拆开，再进入更细的限速、恢复与用户层收口：
+这轮有意识地没有去碰下面这些区域，原因是先把恢复边界和存储映射层拉直，再进入更细的运行时与用户层收口：
 
-- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 仍然承载了不少模型转换细节
+- `storage` 的内部命名仍然还没有完全替换掉 `persistence`
 - `rate_limit_kbps` 还没有真正接到 worker 运行时
 - [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的目录准备、文件策略和协议结果消费仍然混杂
 - [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
@@ -364,12 +396,12 @@
 
 下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
 
-### 5.1 恢复层已经开始收口，但 recovery API 和 worker runtime 还未彻底收口
+### 5.1 recovery/storage 边界已经明确，但还没完全产品化
 
 这一轮之后，恢复链路已经更稳，但仍未完全收口的职责主要变成：
 
-- `persistence.rs` 里的 DB/运行时模型转换
-- `coordinator_registry.rs` 里的恢复计划和恢复策略
+- `storage` 命名空间和 `persistence.rs` 历史命名之间的不一致
+- `request.rs` 里的恢复请求模型仍然偏杂
 - worker runtime 里剩余的限速、I/O 分类与更细的错误分层
 
 建议后续进一步收敛为：
@@ -411,13 +443,14 @@
 - CLI 参数与配置覆盖策略统一
 - 帮助信息与 README 对齐
 
-### 5.5 协议正确性主干已建立，但 worker runtime 还未完全收口
+### 5.5 协议正确性主干已建立，但运行时与恢复验证还未完全收口
 
 目前还没做完的关键结构性工作：
 
 - 让 `rate_limit_kbps` 这类配置真正影响运行时行为
 - 为 worker 的 I/O 错误和协议错误补更细的分类
 - 为跨进程恢复补更完整的端到端验证
+- 为 recovery/storage 边界补更靠近真实场景的集成测试
 
 这部分会直接决定“恢复后是否真的能稳定继续下载”。
 
@@ -426,7 +459,7 @@
 这些问题不是“结构还不够漂亮”，而是会影响正确性和稳定性：
 
 - 断点续传仍未真正闭环
-- 恢复路径仍然偏信任持久化数据，缺少更严格的校验
+- 恢复路径虽然已模块化，但还缺端到端验证来证明规则真的可靠
 - worker 运行时职责仍然偏杂，出错路径较难继续收紧
 - CLI/README 仍然存在偏差
 - 测试覆盖仍然很薄
@@ -487,7 +520,8 @@
 
 - 已完成第一阶段
 - 已完成第二阶段
-- 仍需继续把 `persistence.rs` 的转换边界和 `coordinator_registry.rs` 的恢复规则继续收成更明确的 recovery API
+- 已完成第三阶段
+- 仍需继续补 recovery/storage 的集成测试与对外命名收口
 
 ### 阶段 D：补测试
 
@@ -519,13 +553,13 @@
 
 建议按照下面顺序继续：
 
-1. 继续收紧 recovery/storage API
-2. 补 worker 与恢复路径的自动化测试
+1. 补 worker 与恢复路径的端到端测试
+2. 接上 `rate_limit_kbps` 和更细的运行时错误分类
 3. 最后再收 CLI/README/交互体验
 
 原因：
 
-- 当前最大的结构复杂度已经从 `task.rs` 转移到了 `persistence.rs`、恢复层和 worker runtime 的剩余细节
+- 当前最大的结构复杂度已经从 `task.rs` 转移到了 worker runtime 的剩余细节和缺失的恢复集成验证
 - 当前最大的正确性风险仍然在协议层和恢复层
 - 如果先做 UI 或 CLI 体验，只会把错误行为包装得更漂亮
 
@@ -542,13 +576,14 @@
 
 ## 10. 当前判断
 
-截至 2026-04-15，重构工作已经完成了八轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了九轮，当前可以认为：
 
 - 对外命名和主干分层已经开始稳定
 - `manager.rs` 的结构性压力已经明显下降
 - `task.rs` 已经从复杂度中心退回到门面层
 - `protocol_probe.rs` 已经补齐，存储后端的主键/时间模型也更稳定了
-- `worker.rs` 已经明显瘦身，但 `persistence.rs`、恢复路径和 worker runtime 剩余细节仍是新的主要复杂度中心
+- `worker.rs`、`coordinator_registry.rs`、`persistence.rs` 都已经明显瘦身，恢复规则和存储映射也开始独立
+- 当前更需要优先补的是恢复/运行时的真实场景验证，而不只是继续拆文件
 - 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
 
-因此，下一轮不建议再做表面命名调整，而应该直接进入 recovery/storage API 的继续收口和端到端测试补齐。
+因此，下一轮不建议再做表面命名调整，而应该直接进入恢复链路与 worker runtime 的端到端测试和运行时行为补齐。

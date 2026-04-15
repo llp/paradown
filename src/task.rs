@@ -1,8 +1,10 @@
 use crate::checksum::DownloadChecksum;
 use crate::chunk::plan_download_chunks;
-use crate::config::{DownloadConfig, FileConflictStrategy};
+use crate::config::DownloadConfig;
 use crate::error::DownloadError;
 use crate::events::DownloadEvent;
+use crate::job_finalize::finalize_download;
+use crate::job_prepare::{PreparationOutcome, prepare_download};
 use crate::manager::DownloadManager;
 use crate::persistence::DownloadPersistenceManager;
 use crate::stats::DownloadStats;
@@ -10,15 +12,13 @@ use crate::status::DownloadStatus;
 use crate::worker::DownloadWorker;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
-use url::Url;
 
 pub struct DownloadTask {
     pub id: u32,
@@ -225,77 +225,16 @@ impl DownloadTask {
                                     );
 
                                     stats_clone.snapshot().await;
-
-                                    let checksum_ok = if let Some(path) = task_clone.file_path.get()
-                                    {
-                                        let mut ok = true;
-                                        let mut checksums = task_clone.checksums.lock().await;
-                                        for checksum in checksums.iter_mut() {
-                                            match checksum.verify(path.as_ref()) {
-                                                Ok(true) => {
-                                                    checksum.verified = Some(true);
-                                                    checksum.verified_at = Some(Utc::now());
-                                                    debug!(
-                                                        "[Task {}] Checksum {:?} passed for file {:?}",
-                                                        task_clone.id, checksum.algorithm, path
-                                                    );
-                                                }
-                                                Ok(false) => {
-                                                    debug!(
-                                                        "[Task {}] Checksum {:?} FAILED for file {:?}",
-                                                        task_clone.id, checksum.algorithm, path
-                                                    );
-                                                    ok = false;
-                                                    checksum.verified = Some(false);
-                                                    checksum.verified_at = Some(Utc::now());
-                                                    break;
-                                                }
-                                                Err(e) => {
-                                                    debug!(
-                                                        "[Task {}] Checksum {:?} ERROR for file {:?}: {:?}",
-                                                        task_clone.id, checksum.algorithm, path, e
-                                                    );
-                                                    ok = false;
-                                                    checksum.verified = Some(false);
-                                                    checksum.verified_at = Some(Utc::now());
-                                                    break;
-                                                }
-                                            }
+                                    if let Err(err) = finalize_download(&task_clone).await {
+                                        debug!(
+                                            "[Task {}] Finalization failed: {:?}",
+                                            task_clone.id, err
+                                        );
+                                        if let Some(manager) = task_clone.manager.upgrade() {
+                                            let _ = manager
+                                                .task_event_tx
+                                                .send(DownloadEvent::Error(task_clone.id, err));
                                         }
-                                        ok
-                                    } else {
-                                        debug!(
-                                            "[Task {}] No file path set for task, cannot verify checksum",
-                                            task_clone.id
-                                        );
-                                        false
-                                    };
-
-                                    let final_error =
-                                        DownloadError::Other("Checksum failed".into());
-                                    let mut status = task_clone.status.lock().await;
-                                    *status = if checksum_ok {
-                                        debug!(
-                                            "[Task {}] All workers finished and checksum passed",
-                                            task_clone.id
-                                        );
-                                        debug!("[Task {}] Download task completed", task_clone.id);
-                                        DownloadStatus::Completed
-                                    } else {
-                                        debug!(
-                                            "[Task {}] Checksum verification failed",
-                                            task_clone.id
-                                        );
-                                        DownloadStatus::Failed(final_error.clone())
-                                    };
-                                    drop(status);
-
-                                    if let Some(manager) = task_clone.manager.upgrade() {
-                                        let _ = manager.task_event_tx.send(if checksum_ok {
-                                            DownloadEvent::Complete(task_clone.id)
-                                        } else {
-                                            DownloadEvent::Error(task_clone.id, final_error.clone())
-                                        });
                                     }
                                 }
                             }
@@ -462,189 +401,10 @@ impl DownloadTask {
         }
         //Preparing
         self.persist_task().await?;
-
-        //-----------------------------------------------------------------------
-        let download_dir = &self.config.download_dir;
-        if !Path::new(download_dir).exists() {
-            fs::create_dir_all(download_dir).await.map_err(|e| {
-                DownloadError::Io(format!("Failed to create download directory: {}", e))
-            })?;
-            debug!(
-                "[Task {}] Created download directory: {}",
-                self.id,
-                download_dir.display()
-            );
-        }
-
-        //---------------------------------file_name---------------------------------------------
-        let file_name = if let Some(name) = self.file_name.get() {
-            name.clone()
-        } else if let Ok(url) = Url::parse(&self.url) {
-            url.path_segments()
-                .and_then(|segments| segments.last())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("download_{}.tmp", self.id))
-        } else {
-            format!("download_{}.tmp", self.id)
+        let file_path = match prepare_download(self).await? {
+            PreparationOutcome::Ready(prepared) => prepared.file_path,
+            PreparationOutcome::Finished => return Ok(()),
         };
-
-        let _ = self.file_name.set(file_name.clone());
-
-        //---------------------------------file_path---------------------------------------------
-        let file_path = self.get_or_init_file_path(download_dir)?;
-        debug!("[Task {}] Download file path: {:?}", self.id, file_path);
-
-        //-----------------------------------total_size-------------------------------------------
-        let total_size = if self.total_size.load(Ordering::Relaxed) == 0 {
-            let resp = self.client.head(&self.url).send().await?;
-            if !resp.status().is_success() {
-                return Err(format!("Failed to fetch file info: {}", resp.status()).into());
-            }
-            let size = resp
-                .headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .ok_or("No Content-Length")?
-                .to_str()?
-                .parse::<u64>()?;
-            self.total_size.store(size, Ordering::Relaxed);
-            size
-        } else {
-            self.total_size.load(Ordering::Relaxed)
-        };
-        debug!("[Task {}] Total file size: {} bytes", self.id, total_size);
-
-        //-----------------------------------------------------------------------
-        if file_path.as_ref().exists() {
-            let metadata = fs::metadata(file_path.as_ref())
-                .await
-                .map_err(|e| DownloadError::Io(format!("Failed to read file metadata: {}", e)))?;
-            let current_size = metadata.len();
-
-            let checksum_ok = {
-                let mut checksums = self.checksums.lock().await;
-                checksums.iter_mut().all(|c| {
-                    if c.verified.unwrap_or(false) {
-                        true
-                    } else {
-                        match c.verify(file_path.as_ref()) {
-                            Ok(true) => {
-                                c.verified = Some(true);
-                                c.verified_at = Some(Utc::now());
-                                true
-                            }
-                            _ => false,
-                        }
-                    }
-                })
-            };
-
-            match self.config.file_conflict_strategy {
-                FileConflictStrategy::Overwrite => {
-                    fs::remove_file(file_path.as_ref()).await.map_err(|e| {
-                        DownloadError::Io(format!("Failed to remove existing file: {}", e))
-                    })?;
-                    debug!("[Task {}] Overwriting existing file", self.id);
-                }
-                FileConflictStrategy::SkipIfValid => {
-                    if checksum_ok {
-                        {
-                            let mut status = self.status.lock().await;
-                            *status = DownloadStatus::Completed;
-                        }
-                        info!(
-                            "[Task {}] File exists and valid, skipping download",
-                            self.id
-                        );
-                        if let Some(manager) = self.manager.upgrade() {
-                            let _ = manager.task_event_tx.send(DownloadEvent::Complete(self.id));
-                        }
-                        return Ok(());
-                    } else {
-                        debug!(
-                            "[Task {}] File exists but invalid, will redownload",
-                            self.id
-                        );
-                        fs::remove_file(file_path.as_ref()).await?;
-                    }
-                }
-                FileConflictStrategy::Resume => {
-                    if current_size < self.total_size.load(Ordering::Relaxed) {
-                        debug!(
-                            "[Task {}] Resuming download from byte {}",
-                            self.id, current_size
-                        );
-                    } else if checksum_ok {
-                        {
-                            let mut status = self.status.lock().await;
-                            *status = DownloadStatus::Completed;
-                        }
-                        info!(
-                            "[Task {}] File exists and valid, skipping download",
-                            self.id
-                        );
-                        if let Some(manager) = self.manager.upgrade() {
-                            let _ = manager.task_event_tx.send(DownloadEvent::Complete(self.id));
-                        }
-                        return Ok(());
-                    } else {
-                        debug!(
-                            "[Task {}] File exists but invalid, will redownload",
-                            self.id
-                        );
-                        fs::remove_file(file_path.as_ref()).await?;
-                    }
-                }
-            }
-        }
-
-        if total_size == 0 {
-            tokio::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(file_path.as_ref())
-                .await?;
-
-            let checksum_ok = {
-                let mut checksums = self.checksums.lock().await;
-                checksums
-                    .iter_mut()
-                    .all(|checksum| match checksum.verify(file_path.as_ref()) {
-                        Ok(true) => {
-                            checksum.verified = Some(true);
-                            checksum.verified_at = Some(Utc::now());
-                            true
-                        }
-                        Ok(false) | Err(_) => {
-                            checksum.verified = Some(false);
-                            checksum.verified_at = Some(Utc::now());
-                            false
-                        }
-                    })
-            };
-
-            {
-                let mut status = self.status.lock().await;
-                *status = if checksum_ok {
-                    DownloadStatus::Completed
-                } else {
-                    DownloadStatus::Failed(DownloadError::Other("Checksum failed".into()))
-                };
-            }
-
-            self.persist_task_checksums().await?;
-            self.persist_task().await?;
-
-            if let Some(manager) = self.manager.upgrade() {
-                let _ = manager.task_event_tx.send(if checksum_ok {
-                    DownloadEvent::Complete(self.id)
-                } else {
-                    DownloadEvent::Error(self.id, DownloadError::Other("Checksum failed".into()))
-                });
-            }
-            return Ok(());
-        }
 
         //-----------------------------------------------------------------------
         {
@@ -1045,8 +805,30 @@ impl DownloadTask {
     }
 
     //-----------------------------------------------------------------------------------------------
+    pub(crate) fn resolve_or_init_file_name(&self) -> String {
+        if let Some(name) = self.file_name.get() {
+            return name.clone();
+        }
+
+        let file_name = if let Ok(url) = url::Url::parse(&self.url) {
+            url.path_segments()
+                .and_then(|segments| segments.last())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("download_{}.tmp", self.id))
+        } else {
+            format!("download_{}.tmp", self.id)
+        };
+
+        let _ = self.file_name.set(file_name.clone());
+        file_name
+    }
+
     /// 获取或初始化文件路径
-    fn get_or_init_file_path(&self, download_dir: &Path) -> Result<Arc<PathBuf>, DownloadError> {
+    pub(crate) fn get_or_init_file_path(
+        &self,
+        download_dir: &Path,
+    ) -> Result<Arc<PathBuf>, DownloadError> {
         // 1. 如果已经设置过，就直接返回
         if let Some(existing_path) = self.file_path.get() {
             let file_path = Arc::new(existing_path.clone());
@@ -1058,10 +840,7 @@ impl DownloadTask {
         }
 
         // 2. 构造文件名（从 file_name 获取，没设置则用 task_id）
-        let file_name = match self.file_name.get().as_deref() {
-            Some(name) if !name.trim().is_empty() => name.to_string(),
-            _ => format!("download_{}.tmp", self.id),
-        };
+        let file_name = self.resolve_or_init_file_name();
 
         // 3. 构造文件路径
         let path = download_dir.join(&file_name);

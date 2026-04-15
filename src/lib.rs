@@ -1,4 +1,6 @@
 mod chunk;
+mod job_finalize;
+mod job_prepare;
 mod runtime;
 
 pub mod checksum;

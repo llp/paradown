@@ -23,6 +23,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, Semaphore, broadcast};
 
@@ -31,6 +32,7 @@ pub struct Manager {
     pub tasks: Arc<DashMap<u32, Arc<Task>>>,
     pub persistence: OnceCell<Arc<Store>>,
     pub pending_queue: Arc<Mutex<VecDeque<(u32, PendingAction)>>>,
+    pub(crate) progress_persist_state: Arc<DashMap<u32, ProgressPersistState>>,
     pub task_event_tx: broadcast::Sender<Event>,
     pub http_client: Arc<reqwest::Client>,
     pub(crate) rate_limiter: Arc<DownloadRateLimiter>,
@@ -43,6 +45,12 @@ pub enum PendingAction {
     Start,
     Resume,
     Retry,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProgressPersistState {
+    pub(crate) last_persisted_at: Instant,
+    pub(crate) last_downloaded: u64,
 }
 
 impl Manager {
@@ -58,6 +66,7 @@ impl Manager {
             persistence: OnceCell::new(),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
+            progress_persist_state: Arc::new(DashMap::new()),
             task_event_tx,
             http_client,
             rate_limiter,
@@ -330,6 +339,40 @@ impl Manager {
         self.task_event_tx.subscribe()
     }
 
+    pub(crate) fn should_persist_progress(&self, task_id: u32, downloaded: u64) -> bool {
+        let threshold = self.config.progress_throttle.threshold_bytes;
+        let interval = Duration::from_millis(self.config.progress_throttle.interval_ms);
+        let now = Instant::now();
+
+        match self.progress_persist_state.get_mut(&task_id) {
+            Some(mut state) => {
+                let bytes_due = downloaded.saturating_sub(state.last_downloaded) >= threshold;
+                let time_due = now.duration_since(state.last_persisted_at) >= interval;
+                if bytes_due || time_due {
+                    state.last_downloaded = downloaded;
+                    state.last_persisted_at = now;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.progress_persist_state.insert(
+                    task_id,
+                    ProgressPersistState {
+                        last_persisted_at: now,
+                        last_downloaded: downloaded,
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    pub(crate) fn clear_progress_persist_state(&self, task_id: u32) {
+        self.progress_persist_state.remove(&task_id);
+    }
+
     pub async fn set_rate_limit_kbps(&self, limit_kbps: Option<NonZeroU64>) {
         self.rate_limiter.set_limit_kbps(limit_kbps).await;
     }
@@ -426,5 +469,23 @@ impl Manager {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Manager;
+    use crate::Config;
+
+    #[test]
+    fn throttles_progress_persistence_until_threshold_or_interval() {
+        let mut config = Config::default();
+        config.progress_throttle.interval_ms = 60_000;
+        config.progress_throttle.threshold_bytes = 1024;
+        let manager = Manager::new(config).unwrap();
+
+        assert!(manager.should_persist_progress(1, 128));
+        assert!(!manager.should_persist_progress(1, 256));
+        assert!(manager.should_persist_progress(1, 2048));
     }
 }

@@ -1,0 +1,2 @@
+https://example.com/file-1.iso
+https://example.com/file-2.iso

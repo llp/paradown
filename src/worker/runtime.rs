@@ -58,6 +58,10 @@ impl Worker {
 
             let use_range_requests = self.supports_range_requests();
             let range_start = self.start.saturating_add(downloaded_size);
+            let is_resume_attempt = use_range_requests && range_start > self.start;
+            if is_resume_attempt {
+                self.stats.record_resume_attempt();
+            }
 
             let request = match driver
                 .build_request(self, range_start, use_range_requests)
@@ -84,6 +88,10 @@ impl Worker {
                         continue;
                     }
 
+                    if is_resume_attempt {
+                        self.stats.record_resume_hit();
+                    }
+
                     response
                 }
                 Err(err) => {
@@ -107,7 +115,7 @@ impl Worker {
                 self.id, response_length
             );
 
-            driver
+            if let Err(err) = driver
                 .stream_response(
                     self,
                     response,
@@ -116,7 +124,11 @@ impl Worker {
                     use_range_requests,
                     range_start,
                 )
-                .await?;
+                .await
+            {
+                self.retry_or_fail(&mut retry_count, err).await?;
+                continue;
+            }
 
             if self.should_stop_gracefully() {
                 return Ok(());

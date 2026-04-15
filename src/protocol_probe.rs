@@ -1,5 +1,6 @@
-use crate::domain::HttpResourceIdentity;
+use crate::domain::{HttpRequestOptions, HttpResourceIdentity};
 use crate::error::Error;
+use crate::runtime::apply_http_request_options;
 use reqwest::header::{
     ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE,
 };
@@ -31,8 +32,9 @@ struct HeadProbe {
 pub(crate) async fn probe_download_target(
     client: &Client,
     url: &str,
+    request_options: &HttpRequestOptions,
 ) -> Result<DownloadProtocolProbe, Error> {
-    let head_probe = probe_with_head(client, url).await?;
+    let head_probe = probe_with_head(client, url, request_options).await?;
 
     if let Some(ref head) = head_probe
         && head.total_size == Some(0)
@@ -45,7 +47,9 @@ pub(crate) async fn probe_download_target(
         });
     }
 
-    let response = client.get(url).header(RANGE, "bytes=0-0").send().await?;
+    let response = apply_http_request_options(client.get(url).header(RANGE, "bytes=0-0"), request_options)?
+        .send()
+        .await?;
     probe_with_range_response(response, head_probe)
 }
 
@@ -70,8 +74,15 @@ pub(crate) fn parse_content_range(value: &str) -> Option<ContentRange> {
     })
 }
 
-async fn probe_with_head(client: &Client, url: &str) -> Result<Option<HeadProbe>, Error> {
-    let response = match client.head(url).send().await {
+async fn probe_with_head(
+    client: &Client,
+    url: &str,
+    request_options: &HttpRequestOptions,
+) -> Result<Option<HeadProbe>, Error> {
+    let response = match apply_http_request_options(client.head(url), request_options)?
+        .send()
+        .await
+    {
         Ok(response) => response,
         Err(_) => return Ok(None),
     };
@@ -272,6 +283,7 @@ fn parse_content_length(
 #[cfg(test)]
 mod tests {
     use super::{parse_content_range, probe_download_target};
+    use crate::domain::HttpRequestOptions;
     use reqwest::Client;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -291,7 +303,9 @@ mod tests {
         let server = TestHttpServer::spawn(TestServerMode::RangeSupported).await;
         let client = Client::new();
 
-        let probe = probe_download_target(&client, &server.url()).await.unwrap();
+        let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
+            .await
+            .unwrap();
         assert_eq!(probe.total_size, 5);
         assert!(probe.supports_range_requests);
     }
@@ -301,7 +315,9 @@ mod tests {
         let server = TestHttpServer::spawn(TestServerMode::RangeIgnored).await;
         let client = Client::new();
 
-        let probe = probe_download_target(&client, &server.url()).await.unwrap();
+        let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
+            .await
+            .unwrap();
         assert_eq!(probe.total_size, 5);
         assert!(!probe.supports_range_requests);
     }
@@ -311,7 +327,9 @@ mod tests {
         let server = TestHttpServer::spawn(TestServerMode::HeadRejected).await;
         let client = Client::new();
 
-        let probe = probe_download_target(&client, &server.url()).await.unwrap();
+        let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
+            .await
+            .unwrap();
         assert_eq!(probe.total_size, 5);
         assert!(probe.supports_range_requests);
     }
@@ -321,7 +339,7 @@ mod tests {
         let server = TestHttpServer::spawn(TestServerMode::NoContentLength).await;
         let client = Client::new();
 
-        let err = probe_download_target(&client, &server.url())
+        let err = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
             .unwrap_err();
         assert!(

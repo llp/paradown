@@ -3,7 +3,10 @@ mod manifest;
 mod piece;
 mod spec;
 
-pub use http::HttpResourceIdentity;
+pub use http::{
+    HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions,
+    HttpResourceIdentity, ProxyOptions,
+};
 pub use manifest::{FileManifest, SessionManifest};
 pub use piece::{
     PieceBlock, PieceLayout, PieceState, completed_piece_count, initialize_piece_states,

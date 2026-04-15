@@ -6,10 +6,11 @@ use self::render::{DashboardHandle, DashboardMessageTx, PlainTextHandle};
 use clap::Parser;
 use log::{LevelFilter, error, info, warn};
 use paradown::download::{DownloadSpec, Event, Manager, TaskSnapshot};
-use paradown::{Config, Error, init_logger_with_level};
+use paradown::{Config, Error, HttpAuth, HttpHeader, init_logger_with_level};
 use std::io::IsTerminal;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -31,6 +32,33 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "KBPS")]
     rate_limit_kbps: Option<u64>,
 
+    #[arg(long = "header", value_name = "NAME:VALUE")]
+    headers: Vec<String>,
+
+    #[arg(long, value_name = "COOKIE")]
+    cookie: Option<String>,
+
+    #[arg(long = "user-agent", value_name = "USER_AGENT")]
+    user_agent: Option<String>,
+
+    #[arg(long = "basic-auth", value_name = "USER[:PASS]")]
+    basic_auth: Option<String>,
+
+    #[arg(long = "bearer-token", value_name = "TOKEN")]
+    bearer_token: Option<String>,
+
+    #[arg(long = "http-proxy", value_name = "URL")]
+    http_proxy: Option<String>,
+
+    #[arg(long = "https-proxy", value_name = "URL")]
+    https_proxy: Option<String>,
+
+    #[arg(long = "no-proxy", value_name = "PATTERN")]
+    no_proxy: Option<String>,
+
+    #[arg(long = "no-env-proxy")]
+    no_env_proxy: bool,
+
     #[arg(short, long)]
     shuffle: bool,
 
@@ -44,7 +72,7 @@ pub(crate) struct Cli {
     urls: Vec<String>,
 }
 
-pub(crate) async fn run() -> Result<(), Error> {
+pub(crate) async fn run() -> Result<ExitCode, Error> {
     let cli = Cli::parse();
     let config = build_config(&cli)?;
     let output_mode = select_output_mode(&cli);
@@ -104,7 +132,7 @@ pub(crate) async fn run() -> Result<(), Error> {
 
     print_completion_summary(&completion_summary);
 
-    Ok(())
+    Ok(exit_code_from_summary(&completion_summary))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +165,7 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
         Some(path) => Config::from_file(path)?,
         None => Config::default(),
     };
+    config.apply_env_overrides()?;
 
     if let Some(download_dir) = &cli.download_dir {
         config.download_dir = download_dir.clone();
@@ -153,9 +182,83 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     if let Some(rate_limit_kbps) = cli.rate_limit_kbps {
         config.rate_limit_kbps = NonZeroU64::new(rate_limit_kbps);
     }
+    if cli.no_env_proxy {
+        config.http.client.proxy.use_env_proxy = false;
+    }
+    if let Some(proxy) = &cli.http_proxy {
+        config.http.client.proxy.http_proxy = Some(proxy.clone());
+    }
+    if let Some(proxy) = &cli.https_proxy {
+        config.http.client.proxy.https_proxy = Some(proxy.clone());
+    }
+    if let Some(no_proxy) = &cli.no_proxy {
+        config.http.client.proxy.no_proxy = Some(no_proxy.clone());
+    }
+    if !cli.headers.is_empty() {
+        config.http.request.headers = parse_cli_headers(&cli.headers)?;
+    }
+    if let Some(cookie) = &cli.cookie {
+        config.http.request.cookie = Some(cookie.clone());
+    }
+    if let Some(user_agent) = &cli.user_agent {
+        config.http.request.user_agent = Some(user_agent.clone());
+    }
+    if let Some(auth) = &cli.basic_auth {
+        config.http.request.auth = Some(parse_basic_auth(auth)?);
+    }
+    if let Some(token) = &cli.bearer_token {
+        config.http.request.auth = Some(HttpAuth::Bearer {
+            token: token.clone(),
+        });
+    }
 
     config.validate().map_err(Error::from)?;
     Ok(config)
+}
+
+fn parse_cli_headers(values: &[String]) -> Result<Vec<HttpHeader>, Error> {
+    values.iter().map(|value| parse_single_header(value)).collect()
+}
+
+fn parse_single_header(value: &str) -> Result<HttpHeader, Error> {
+    let Some((name, header_value)) = value.split_once(':') else {
+        return Err(Error::ConfigError(format!(
+            "invalid header '{}', expected NAME:VALUE",
+            value
+        )));
+    };
+
+    let name = name.trim();
+    let header_value = header_value.trim();
+    if name.is_empty() || header_value.is_empty() {
+        return Err(Error::ConfigError(format!(
+            "invalid header '{}', expected non-empty NAME and VALUE",
+            value
+        )));
+    }
+
+    Ok(HttpHeader {
+        name: name.to_string(),
+        value: header_value.to_string(),
+    })
+}
+
+fn parse_basic_auth(value: &str) -> Result<HttpAuth, Error> {
+    let (username, password) = match value.split_once(':') {
+        Some((username, password)) => (
+            username.trim().to_string(),
+            Some(password.trim().to_string()).filter(|inner| !inner.is_empty()),
+        ),
+        None => (value.trim().to_string(), None),
+    };
+
+    if username.is_empty() {
+        return Err(Error::ConfigError(
+            "basic auth expects USER[:PASS]".to_string(),
+        ));
+    }
+
+    Ok(HttpAuth::Basic { username, password })
 }
 
 fn prepare_urls(urls: &[String], shuffle: bool) -> Vec<String> {
@@ -553,6 +656,14 @@ fn print_completion_summary(summary: &CompletionSummary) {
     );
     for snapshot in &summary.snapshots {
         println!("  {}", format_status_line(snapshot));
+    }
+}
+
+fn exit_code_from_summary(summary: &CompletionSummary) -> ExitCode {
+    if summary.failed > 0 || summary.canceled > 0 {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

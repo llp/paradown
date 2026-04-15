@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::protocol_probe::parse_content_range;
+use crate::runtime::apply_http_request_options;
 use crate::transfer::driver::TransferDriver;
 use crate::worker::Worker;
 use crate::worker::transfer::ProgressReporter;
@@ -19,14 +20,15 @@ impl TransferDriver for HttpTransferDriver {
         range_start: u64,
         use_range_requests: bool,
     ) -> Result<reqwest::RequestBuilder, Error> {
-        let mut request = worker.client.get(worker.spec.locator());
+        let task = worker.task.upgrade().ok_or_else(|| {
+            Error::Other(format!("Worker {} lost its parent task", worker.id))
+        })?;
+        let mut request =
+            apply_http_request_options(worker.client.get(worker.spec.locator()), task.http_request_options())?;
         if use_range_requests && range_start <= worker.end {
             request = request.header("Range", format!("bytes={}-{}", range_start, worker.end));
 
             if range_start > worker.start {
-                let task = worker.task.upgrade().ok_or_else(|| {
-                    Error::Other(format!("Worker {} lost its parent task", worker.id))
-                })?;
                 if let Some(validator) = task.resume_validator().await {
                     request = request.header(header::IF_RANGE, validator);
                 }

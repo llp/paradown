@@ -10,8 +10,9 @@ use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
 use crate::domain::{
-    DownloadSpec, HttpResourceIdentity, PieceState, SessionManifest, completed_piece_count,
-    file_name_hint_from_locator, initialize_piece_states, mark_completed_pieces,
+    DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState, SessionManifest,
+    completed_piece_count, file_name_hint_from_locator, initialize_piece_states,
+    mark_completed_pieces,
 };
 use crate::error::Error;
 use crate::events::Event;
@@ -36,6 +37,7 @@ pub struct Task {
     pub file_name: OnceCell<String>,
     pub file_path: Arc<OnceCell<PathBuf>>,
     http_resource_identity: RwLock<HttpResourceIdentity>,
+    http_request: HttpRequestOptions,
     pub checksums: Mutex<Vec<Checksum>>,
     manifest: RwLock<Option<SessionManifest>>,
     piece_states: RwLock<Vec<PieceState>>,
@@ -87,6 +89,7 @@ impl Task {
         file_name: Option<String>,
         file_path: Option<String>,
         resource_identity: Option<HttpResourceIdentity>,
+        http_request: HttpRequestOptions,
         piece_states: Option<Vec<PieceState>>,
         status: Option<Status>,
         downloaded_size: Option<u64>,
@@ -120,6 +123,7 @@ impl Task {
             file_name: file_name_cell,
             file_path: file_path_cell,
             http_resource_identity: RwLock::new(resource_identity.unwrap_or_default()),
+            http_request,
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
             piece_states: RwLock::new(piece_states.unwrap_or_default()),
@@ -317,6 +321,10 @@ impl Task {
 
     pub(crate) async fn http_resource_identity(&self) -> HttpResourceIdentity {
         self.http_resource_identity.read().await.clone()
+    }
+
+    pub(crate) fn http_request_options(&self) -> &HttpRequestOptions {
+        &self.http_request
     }
 
     pub(crate) async fn set_http_resource_identity(&self, identity: HttpResourceIdentity) {

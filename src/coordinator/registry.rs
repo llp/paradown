@@ -74,6 +74,11 @@ pub(crate) async fn add_task_with_workers(
         file_name,
         file_path,
         task_request.resource_identity.clone(),
+        manager
+            .config
+            .http
+            .request
+            .merged(&task_request.http_request.clone().unwrap_or_default()),
         task_request.piece_states.clone(),
         task_request.status,
         task_request.downloaded_size,

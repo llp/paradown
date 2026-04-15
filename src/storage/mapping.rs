@@ -103,6 +103,7 @@ pub(crate) fn db_task_to_request(
             entity_tag: normalized_text_field(&task.entity_tag),
             last_modified: normalized_text_field(&task.last_modified),
         }),
+        http_request: None,
         piece_states: Some(db_pieces_to_piece_states(pieces)),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),

@@ -26,7 +26,8 @@ pub use config::{
     Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
 pub use domain::{
-    FileManifest, HttpResourceIdentity, PieceBlock, PieceLayout, PieceState, SessionManifest,
+    FileManifest, HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions,
+    HttpResourceIdentity, PieceBlock, PieceLayout, PieceState, ProxyOptions, SessionManifest,
 };
 pub use download::{
     DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionSnapshot,

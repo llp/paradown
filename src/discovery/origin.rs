@@ -1,4 +1,4 @@
-use crate::domain::{DownloadSpec, HttpResourceIdentity};
+use crate::domain::{DownloadSpec, HttpRequestOptions, HttpResourceIdentity};
 use crate::error::Error;
 use crate::protocol_probe::probe_download_target;
 use async_trait::async_trait;
@@ -17,6 +17,7 @@ pub(crate) trait DiscoveryDriver: Send + Sync {
         &self,
         client: &reqwest::Client,
         spec: &DownloadSpec,
+        request: &HttpRequestOptions,
     ) -> Result<OriginMetadata, Error>;
 }
 
@@ -29,13 +30,14 @@ static FTP_DISCOVERY_DRIVER: FtpDiscoveryDriver = FtpDiscoveryDriver;
 pub(crate) async fn discover_origin(
     client: &reqwest::Client,
     spec: &DownloadSpec,
+    request: &HttpRequestOptions,
 ) -> Result<OriginMetadata, Error> {
     let driver: &dyn DiscoveryDriver = match spec {
         DownloadSpec::Http { .. } | DownloadSpec::Https { .. } => &HTTP_DISCOVERY_DRIVER,
         DownloadSpec::Ftp { .. } => &FTP_DISCOVERY_DRIVER,
     };
 
-    driver.discover(client, spec).await
+    driver.discover(client, spec, request).await
 }
 
 #[async_trait]
@@ -44,8 +46,9 @@ impl DiscoveryDriver for HttpDiscoveryDriver {
         &self,
         client: &reqwest::Client,
         spec: &DownloadSpec,
+        request: &HttpRequestOptions,
     ) -> Result<OriginMetadata, Error> {
-        let probe = probe_download_target(client, spec.locator()).await?;
+        let probe = probe_download_target(client, spec.locator(), request).await?;
         Ok(OriginMetadata {
             total_size: probe.total_size,
             supports_range_requests: probe.supports_range_requests,
@@ -61,6 +64,7 @@ impl DiscoveryDriver for FtpDiscoveryDriver {
         &self,
         _client: &reqwest::Client,
         _spec: &DownloadSpec,
+        _request: &HttpRequestOptions,
     ) -> Result<OriginMetadata, Error> {
         Err(Error::UnsupportedProtocol(
             "ftp discovery is not implemented yet".into(),

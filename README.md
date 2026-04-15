@@ -1,5 +1,8 @@
 # paradown
 
+[![CI](https://github.com/llp/paradown/actions/workflows/ci.yml/badge.svg)](https://github.com/llp/paradown/actions/workflows/ci.yml)
+[![Release](https://github.com/llp/paradown/actions/workflows/release.yml/badge.svg)](https://github.com/llp/paradown/actions/workflows/release.yml)
+
 `paradown` is a Rust download manager with resumable state, segmented downloads, SQLite persistence, and a CLI-focused runtime.
 
 Release-facing references:
@@ -75,6 +78,11 @@ Build a distributable archive:
 ```bash
 ./scripts/build-release.sh
 ```
+
+Release automation:
+
+- CI workflow: [ci.yml](/Users/liulipeng/workspace/rust/paradown/.github/workflows/ci.yml)
+- GitHub Release workflow: [release.yml](/Users/liulipeng/workspace/rust/paradown/.github/workflows/release.yml)
 
 ## CLI flags
 
@@ -201,3 +209,39 @@ The suite currently includes:
 - recovery rule tests
 - worker runtime tests
 - integration tests for actual downloads, restart recovery, safe resume, redirect/content-disposition handling, and HTTP error cases
+
+## Release process
+
+The repository now supports an automated tag-to-release flow.
+
+Maintainer steps:
+
+1. Update `Cargo.toml` version and add the matching section to [CHANGELOG.md](/Users/liulipeng/workspace/rust/paradown/CHANGELOG.md).
+2. Run the local quality gate:
+
+```bash
+cargo fmt --check
+cargo clippy --all-features -- -D warnings
+cargo test --all-features
+```
+
+3. Optionally build a local release bundle:
+
+```bash
+./scripts/build-release.sh
+```
+
+4. Create and push a version tag:
+
+```bash
+git tag v0.1.2
+git push origin main
+git push origin v0.1.2
+```
+
+What happens after the tag is pushed:
+
+- `release.yml` validates that the tag version matches `Cargo.toml`
+- it runs [scripts/build-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-release.sh) on Linux and macOS
+- it uploads the generated `tar.gz` and `sha256` files
+- it publishes a GitHub Release using the matching section from [CHANGELOG.md](/Users/liulipeng/workspace/rust/paradown/CHANGELOG.md)

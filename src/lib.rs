@@ -1,6 +1,7 @@
 mod checksum;
 mod config;
 mod coordinator;
+mod diagnostics;
 mod discovery;
 mod domain;
 pub mod download;

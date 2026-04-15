@@ -2,11 +2,12 @@ mod commands;
 mod render;
 
 use self::commands::{Command, CommandTarget, help_lines, parse_command};
-use self::render::{DashboardHandle, DashboardMessageTx, PlainTextHandle};
+use self::render::{DashboardHandle, DashboardMessageTx, JsonHandle, PlainTextHandle};
 use clap::Parser;
 use log::{LevelFilter, error, info, warn};
 use paradown::download::{DownloadSpec, Event, Manager, TaskSnapshot};
 use paradown::{Config, Error, HttpAuth, HttpHeader, init_logger_with_level};
+use serde::Serialize;
 use std::io::IsTerminal;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -66,6 +67,9 @@ pub(crate) struct Cli {
     verbose: bool,
 
     #[arg(long)]
+    json: bool,
+
+    #[arg(long)]
     interactive: bool,
 
     #[arg(short = 'u', long = "urls", value_name = "URL", num_args = 1.., required = true)]
@@ -91,6 +95,10 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
     };
     let plain_reporter = match output_mode {
         OutputMode::PlainText => Some(PlainTextHandle::spawn(Arc::clone(&manager))),
+        _ => None,
+    };
+    let json_reporter = match output_mode {
+        OutputMode::Json => Some(JsonHandle::spawn(Arc::clone(&manager))),
         _ => None,
     };
 
@@ -121,6 +129,9 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
     if let Some(handle) = plain_reporter {
         handle.shutdown().await;
     }
+    if let Some(handle) = json_reporter {
+        handle.shutdown().await;
+    }
     if let Some(task) = command_task {
         task.abort();
         let _ = task.await;
@@ -130,7 +141,10 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
         let _ = task.await;
     }
 
-    print_completion_summary(&completion_summary);
+    match output_mode {
+        OutputMode::Json => print_json_completion_summary(&completion_summary),
+        _ => print_completion_summary(&completion_summary),
+    }
 
     Ok(exit_code_from_summary(&completion_summary))
 }
@@ -139,11 +153,14 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
 enum OutputMode {
     Dashboard,
     PlainText,
+    Json,
     LogOnly,
 }
 
 fn select_output_mode(cli: &Cli) -> OutputMode {
-    if cli.verbose {
+    if cli.json {
+        OutputMode::Json
+    } else if cli.verbose {
         OutputMode::LogOnly
     } else if std::io::stdout().is_terminal() {
         OutputMode::Dashboard
@@ -169,6 +186,16 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
 
     if let Some(download_dir) = &cli.download_dir {
         config.download_dir = download_dir.clone();
+    }
+    if cli.json && cli.interactive {
+        return Err(Error::ConfigError(
+            "--json and --interactive cannot be used together".into(),
+        ));
+    }
+    if cli.json && cli.verbose {
+        return Err(Error::ConfigError(
+            "--json and --verbose cannot be used together".into(),
+        ));
     }
     if let Some(workers) = cli.workers {
         config.segments_per_task = workers;
@@ -596,6 +623,7 @@ fn status_hint(control: TaskControl, snapshot: &TaskSnapshot) -> &'static str {
     }
 }
 
+#[derive(Serialize)]
 struct CompletionSummary {
     snapshots: Vec<TaskSnapshot>,
     completed: usize,
@@ -604,6 +632,10 @@ struct CompletionSummary {
     deleted: usize,
     total_downloaded: u64,
     total_size: u64,
+    average_speed_bps: u64,
+    retry_count: u64,
+    resume_attempts: u64,
+    resume_hits: u64,
 }
 
 async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
@@ -617,11 +649,19 @@ async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
     let mut deleted = 0usize;
     let mut total_downloaded = 0u64;
     let mut total_size = 0u64;
+    let mut average_speed_bps = 0u64;
+    let mut retry_count = 0u64;
+    let mut resume_attempts = 0u64;
+    let mut resume_hits = 0u64;
 
     for task in tasks {
         let snapshot = task.snapshot().await;
         total_downloaded = total_downloaded.saturating_add(snapshot.downloaded_size);
         total_size = total_size.saturating_add(snapshot.total_size);
+        average_speed_bps = average_speed_bps.saturating_add(snapshot.stats.average_speed_bps);
+        retry_count = retry_count.saturating_add(snapshot.stats.retry_count);
+        resume_attempts = resume_attempts.saturating_add(snapshot.stats.resume_attempts);
+        resume_hits = resume_hits.saturating_add(snapshot.stats.resume_hits);
         match snapshot.status.as_str() {
             "Completed" => completed += 1,
             "Canceled" => canceled += 1,
@@ -640,12 +680,16 @@ async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
         deleted,
         total_downloaded,
         total_size,
+        average_speed_bps,
+        retry_count,
+        resume_attempts,
+        resume_hits,
     }
 }
 
 fn print_completion_summary(summary: &CompletionSummary) {
     println!(
-        "Final summary: tasks={} completed={} failed={} canceled={} deleted={} total={} / {}",
+        "Final summary: tasks={} completed={} failed={} canceled={} deleted={} total={} / {} avg_speed={} retries={} resume_hits={}/{}",
         summary.snapshots.len(),
         summary.completed,
         summary.failed,
@@ -653,10 +697,31 @@ fn print_completion_summary(summary: &CompletionSummary) {
         summary.deleted,
         format_bytes(summary.total_downloaded),
         format_bytes(summary.total_size),
+        format_bytes(summary.average_speed_bps),
+        summary.retry_count,
+        summary.resume_hits,
+        summary.resume_attempts,
     );
     for snapshot in &summary.snapshots {
         println!("  {}", format_status_line(snapshot));
     }
+}
+
+fn print_json_completion_summary(summary: &CompletionSummary) {
+    #[derive(Serialize)]
+    struct JsonSummary<'a> {
+        kind: &'static str,
+        summary: &'a CompletionSummary,
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string(&JsonSummary {
+            kind: "summary",
+            summary,
+        })
+        .unwrap_or_else(|_| "{\"kind\":\"summary-error\"}".into())
+    );
 }
 
 fn exit_code_from_summary(summary: &CompletionSummary) -> ExitCode {

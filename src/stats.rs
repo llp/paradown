@@ -19,6 +19,11 @@ pub struct StatsSnapshot {
     pub average_speed_bps: u64,
     pub elapsed: f64,
     pub worker_count: usize,
+    pub successful_downloads: u64,
+    pub failed_downloads: u64,
+    pub retry_count: u64,
+    pub resume_attempts: u64,
+    pub resume_hits: u64,
 }
 
 pub struct Stats {
@@ -29,6 +34,8 @@ pub struct Stats {
     successful_downloads: AtomicU64,
     failed_downloads: AtomicU64,
     retry_count: AtomicU64,
+    resume_attempts: AtomicU64,
+    resume_hits: AtomicU64,
 }
 
 impl Stats {
@@ -41,6 +48,8 @@ impl Stats {
             successful_downloads: AtomicU64::new(0),
             failed_downloads: AtomicU64::new(0),
             retry_count: AtomicU64::new(0),
+            resume_attempts: AtomicU64::new(0),
+            resume_hits: AtomicU64::new(0),
         }
     }
 
@@ -61,6 +70,14 @@ impl Stats {
 
     pub fn record_retry(&self) {
         self.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_resume_attempt(&self) {
+        self.resume_attempts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_resume_hit(&self) {
+        self.resume_hits.fetch_add(1, Ordering::Relaxed);
     }
 
     pub async fn update_worker(&self, worker_id: u32, bytes: u64) {
@@ -146,6 +163,11 @@ impl Stats {
             average_speed_bps: average_speed,
             elapsed,
             worker_count: workers.len(),
+            successful_downloads: self.successful_downloads.load(Ordering::Relaxed),
+            failed_downloads: self.failed_downloads.load(Ordering::Relaxed),
+            retry_count: self.retry_count.load(Ordering::Relaxed),
+            resume_attempts: self.resume_attempts.load(Ordering::Relaxed),
+            resume_hits: self.resume_hits.load(Ordering::Relaxed),
         }
     }
 

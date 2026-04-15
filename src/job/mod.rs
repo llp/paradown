@@ -17,7 +17,7 @@ use crate::domain::{
 use crate::error::Error;
 use crate::events::Event;
 use crate::payload::store::PayloadStore;
-use crate::stats::Stats;
+use crate::stats::{Stats, StatsSnapshot};
 use crate::status::Status;
 use crate::storage::Store;
 use crate::worker::Worker;
@@ -32,6 +32,7 @@ use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
 
 pub struct Task {
     pub id: u32,
+    trace_id: String,
     pub spec: DownloadSpec,
     pub status: Mutex<Status>,
     pub file_name: OnceCell<String>,
@@ -60,9 +61,10 @@ pub struct Task {
     pub permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSnapshot {
     pub id: u32,
+    pub trace_id: String,
     pub url: String,
     pub file_name: Option<String>,
     pub file_path: Option<PathBuf>,
@@ -74,6 +76,7 @@ pub struct TaskSnapshot {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub checksums: Vec<Checksum>,
+    pub stats: StatsSnapshot,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +122,7 @@ impl Task {
 
         Ok(Arc::new(Self {
             id,
+            trace_id: format!("task-{id:06}"),
             spec,
             file_name: file_name_cell,
             file_path: file_path_cell,
@@ -157,8 +161,10 @@ impl Task {
         let piece_states = self.piece_states.read().await;
         let completed_pieces = completed_piece_count(&piece_states);
         let piece_count = piece_states.len() as u32;
+        let stats = self.stats.snapshot().await;
         TaskSnapshot {
             id: self.id,
+            trace_id: self.trace_id.clone(),
             url: self.spec.locator().to_string(),
             file_name: self.file_name.get().cloned(),
             file_path: self.file_path.get().cloned(),
@@ -170,6 +176,7 @@ impl Task {
             created_at: self.created_at,
             updated_at: *updated_at_guard,
             checksums: self.checksums.lock().await.clone(),
+            stats,
         }
     }
 
@@ -325,6 +332,10 @@ impl Task {
 
     pub(crate) fn http_request_options(&self) -> &HttpRequestOptions {
         &self.http_request
+    }
+
+    pub(crate) fn trace_id(&self) -> &str {
+        &self.trace_id
     }
 
     pub(crate) async fn set_http_resource_identity(&self, identity: HttpResourceIdentity) {

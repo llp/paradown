@@ -1,3 +1,4 @@
+use crate::diagnostics::write_failure_diagnostic;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
@@ -74,6 +75,12 @@ impl Task {
 
     pub(crate) async fn fail_with_error(&self, err: Error) {
         self.set_status(Status::Failed(err.clone())).await;
+        if let Err(diag_err) = write_failure_diagnostic(self, &err).await {
+            warn!(
+                "[Task {}] Failed to write failure diagnostic: {}",
+                self.id, diag_err
+            );
+        }
         debug!("[Task {}] Marked as failed: {:?}", self.id, err);
         self.emit_manager_event(Event::Error(self.id, err));
     }

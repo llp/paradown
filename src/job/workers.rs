@@ -40,10 +40,8 @@ impl Task {
     ) -> Result<Vec<Arc<Worker>>, Error> {
         {
             let workers = self.workers.read().await;
-            if !workers.is_empty() {
-                if self.can_reuse_existing_workers(&workers).await {
-                    return Ok(workers.clone());
-                }
+            if !workers.is_empty() && self.can_reuse_existing_workers(&workers).await {
+                return Ok(workers.clone());
             }
         }
 
@@ -77,12 +75,10 @@ impl Task {
         file_path: &Arc<PathBuf>,
     ) -> Result<Vec<Arc<Worker>>, Error> {
         let created_at = Utc::now();
-        let manifest = self
-            .manifest
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| Error::Other(format!("Task {} manifest not initialized", self.id)))?;
+        let manifest =
+            self.manifest.read().await.clone().ok_or_else(|| {
+                Error::Other(format!("Task {} manifest not initialized", self.id))
+            })?;
         let piece_states = self.piece_states.read().await.clone();
         let assignments = self.plan_worker_assignments().await?;
 

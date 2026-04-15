@@ -44,12 +44,15 @@ async fn resume_requests_include_if_range_validator() {
     assert_eq!(downloaded, *body);
 
     let requests = server.recorded_requests().await;
-    assert!(requests.iter().any(|request| {
-        request.path == "/file.bin"
-            && request.method == "GET"
-            && request.range.as_deref() == Some("bytes=5-9")
-            && request.if_range.as_deref() == Some("\"etag-v1\"")
-    }), "requests: {requests:?}");
+    assert!(
+        requests.iter().any(|request| {
+            request.path == "/file.bin"
+                && request.method == "GET"
+                && request.range.as_deref() == Some("bytes=5-9")
+                && request.if_range.as_deref() == Some("\"etag-v1\"")
+        }),
+        "requests: {requests:?}"
+    );
 }
 
 #[tokio::test]
@@ -87,12 +90,15 @@ async fn resume_restarts_from_scratch_when_remote_validator_changes() {
     assert_eq!(downloaded, *body);
 
     let requests = server.recorded_requests().await;
-    assert!(requests.iter().any(|request| {
-        request.path == "/file.bin"
-            && request.method == "GET"
-            && request.range.as_deref() == Some("bytes=0-11")
-            && request.if_range.is_none()
-    }), "requests: {requests:?}");
+    assert!(
+        requests.iter().any(|request| {
+            request.path == "/file.bin"
+                && request.method == "GET"
+                && request.range.as_deref() == Some("bytes=0-11")
+                && request.if_range.is_none()
+        }),
+        "requests: {requests:?}"
+    );
 }
 
 async fn seed_paused_resume_task(
@@ -313,7 +319,8 @@ fn extract_header(request: &str, name: &str) -> Option<String> {
     request.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with(&expected) {
-            line.split_once(':').map(|(_, value)| value.trim().to_string())
+            line.split_once(':')
+                .map(|(_, value)| value.trim().to_string())
         } else {
             None
         }

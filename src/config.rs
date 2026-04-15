@@ -165,6 +165,12 @@ impl ConfigBuilder {
     }
 }
 
+impl Default for ConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("Invalid download directory: {0}")]
@@ -179,14 +185,14 @@ pub enum ConfigError {
 
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !self.download_dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(&self.download_dir) {
-                return Err(ConfigError::InvalidDownloadDir(format!(
-                    "Cannot create directory '{}': {}",
-                    self.download_dir.display(),
-                    e
-                )));
-            }
+        if !self.download_dir.exists()
+            && let Err(e) = std::fs::create_dir_all(&self.download_dir)
+        {
+            return Err(ConfigError::InvalidDownloadDir(format!(
+                "Cannot create directory '{}': {}",
+                self.download_dir.display(),
+                e
+            )));
         }
 
         if self.segments_per_task == 0 || self.segments_per_task > 100 {

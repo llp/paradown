@@ -46,7 +46,8 @@ pub fn help_lines() -> Vec<String> {
     vec![
         "Interactive commands:".into(),
         "  help                         Show available commands".into(),
-        "  status [all|id ...]          Print task summary for all tasks or selected task ids".into(),
+        "  status [all|id ...]          Print task summary for all tasks or selected task ids"
+            .into(),
         "  pause [all|id ...]           Pause all tasks or selected task ids".into(),
         "  resume [all|id ...]          Resume all tasks or selected task ids".into(),
         "  retry [all|id ...]           Restart failed, canceled, or pending tasks".into(),

@@ -1,7 +1,7 @@
 mod support;
 
-use std::sync::Arc;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use support::{MultiFileServerConfig, MultiFileTestServer, TestAsset};
 use tempfile::TempDir;
 use tokio::time::Duration;

@@ -24,6 +24,7 @@ impl PayloadStore {
 
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&segment.path)
@@ -39,6 +40,7 @@ impl PayloadStore {
         for write in writes {
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&write.path)

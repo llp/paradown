@@ -26,9 +26,6 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, Semaphore, broadcast};
 
-/**
- *
- */
 pub struct Manager {
     pub config: Arc<Config>,
     pub tasks: Arc<DashMap<u32, Arc<Task>>>,
@@ -218,7 +215,7 @@ impl Manager {
         }
 
         // 等待所有尝试入队/启动的任务完成（不等待下载本身完成）
-        while let Some(_) = futures.next().await {}
+        while futures.next().await.is_some() {}
 
         Ok(())
     }
@@ -268,7 +265,7 @@ impl Manager {
                 }
             }));
         }
-        while let Some(_) = futures.next().await {}
+        while futures.next().await.is_some() {}
 
         Ok(())
     }
@@ -324,7 +321,7 @@ impl Manager {
     pub fn get_all_tasks(&self) -> Vec<Arc<Task>> {
         self.tasks
             .iter()
-            .map(|entry| Arc::clone(&*entry.value()))
+            .map(|entry| Arc::clone(entry.value()))
             .collect()
     }
 
@@ -370,6 +367,7 @@ impl Manager {
         }
     }
 
+    #[allow(clippy::needless_lifetimes)]
     async fn run_task_transition<'a, F>(
         self: &'a Arc<Self>,
         task_id: u32,

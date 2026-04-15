@@ -42,6 +42,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u32,
         config: Arc<Config>,

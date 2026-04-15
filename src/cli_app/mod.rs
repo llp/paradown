@@ -55,7 +55,10 @@ pub(crate) async fn run() -> Result<(), Error> {
     manager.init().await?;
 
     let dashboard = match output_mode {
-        OutputMode::Dashboard => Some(DashboardHandle::spawn(Arc::clone(&manager), cli.interactive)),
+        OutputMode::Dashboard => Some(DashboardHandle::spawn(
+            Arc::clone(&manager),
+            cli.interactive,
+        )),
         _ => None,
     };
     let plain_reporter = match output_mode {
@@ -298,7 +301,11 @@ async fn apply_task_command(
         CommandTarget::All if !matches!(control, TaskControl::Retry) => {
             return apply_global_command(manager, control).await;
         }
-        CommandTarget::All => manager.get_all_tasks().into_iter().map(|task| task.id).collect(),
+        CommandTarget::All => manager
+            .get_all_tasks()
+            .into_iter()
+            .map(|task| task.id)
+            .collect(),
         CommandTarget::Tasks(ids) => ids,
     };
 
@@ -331,7 +338,10 @@ async fn apply_global_command(manager: &Arc<Manager>, control: TaskControl) -> V
 
     match result {
         Ok(()) => vec![format!("{} all tasks", control.past_tense_label())],
-        Err(err) => vec![format!("Failed to {} all tasks: {err}", control.verb_label())],
+        Err(err) => vec![format!(
+            "Failed to {} all tasks: {err}",
+            control.verb_label()
+        )],
     }
 }
 
@@ -355,7 +365,10 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
         "-".into()
     };
     let piece_label = if snapshot.piece_count > 0 {
-        format!(" pieces:{}/{}", snapshot.completed_pieces, snapshot.piece_count)
+        format!(
+            " pieces:{}/{}",
+            snapshot.completed_pieces, snapshot.piece_count
+        )
     } else {
         String::new()
     };
@@ -368,7 +381,10 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
         format_bytes(snapshot.downloaded_size),
         format_bytes(snapshot.total_size),
         piece_label,
-        snapshot.file_name.as_deref().unwrap_or(snapshot.url.as_str())
+        snapshot
+            .file_name
+            .as_deref()
+            .unwrap_or(snapshot.url.as_str())
     )
 }
 
@@ -410,7 +426,11 @@ async fn describe_task_error(
     err: &Error,
 ) -> String {
     let available_ids = {
-        let mut ids: Vec<_> = manager.get_all_tasks().into_iter().map(|task| task.id).collect();
+        let mut ids: Vec<_> = manager
+            .get_all_tasks()
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
         ids.sort_unstable();
         ids
     };

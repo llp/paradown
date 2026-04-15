@@ -48,7 +48,7 @@ impl DownloadSpec {
 pub fn file_name_hint_from_locator(locator: &str) -> Option<String> {
     url::Url::parse(locator).ok().and_then(|url| {
         url.path_segments()
-            .and_then(|segments| segments.last())
+            .and_then(|mut segments| segments.next_back())
             .filter(|segment| !segment.is_empty())
             .map(|segment| segment.to_string())
     })

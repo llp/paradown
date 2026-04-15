@@ -23,12 +23,12 @@ impl SqliteRepository {
             cwd.join(db_path)
         };
 
-        if let Some(parent) = db_abs.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    Error::Other(format!("Failed to create directory {:?}: {}", parent, e))
-                })?;
-            }
+        if let Some(parent) = db_abs.parent()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent).map_err(|e| {
+                Error::Other(format!("Failed to create directory {:?}: {}", parent, e))
+            })?;
         }
 
         if !db_abs.exists() {
@@ -320,12 +320,11 @@ impl Repository for SqliteRepository {
     }
 
     async fn load_pieces(&self, task_id: u32) -> Result<Vec<DBDownloadPiece>, Error> {
-        let rows = sqlx::query(
-            "SELECT * FROM download_pieces WHERE task_id = ?1 ORDER BY piece_index",
-        )
-        .bind(task_id)
-        .fetch_all(&*self.pool)
-        .await?;
+        let rows =
+            sqlx::query("SELECT * FROM download_pieces WHERE task_id = ?1 ORDER BY piece_index")
+                .bind(task_id)
+                .fetch_all(&*self.pool)
+                .await?;
 
         Ok(rows
             .into_iter()

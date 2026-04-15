@@ -34,15 +34,15 @@ pub(crate) async fn probe_download_target(
 ) -> Result<DownloadProtocolProbe, Error> {
     let head_probe = probe_with_head(client, url).await?;
 
-    if let Some(ref head) = head_probe {
-        if head.total_size == Some(0) {
-            return Ok(DownloadProtocolProbe {
-                total_size: 0,
-                supports_range_requests: head.accepts_ranges,
-                resource_identity: head.resource_identity.clone(),
-                suggested_file_name: head.suggested_file_name.clone(),
-            });
-        }
+    if let Some(ref head) = head_probe
+        && head.total_size == Some(0)
+    {
+        return Ok(DownloadProtocolProbe {
+            total_size: 0,
+            supports_range_requests: head.accepts_ranges,
+            resource_identity: head.resource_identity.clone(),
+            suggested_file_name: head.suggested_file_name.clone(),
+        });
     }
 
     let response = client.get(url).header(RANGE, "bytes=0-0").send().await?;

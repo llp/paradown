@@ -80,6 +80,7 @@ pub(crate) struct PieceProgressSnapshot {
 }
 
 impl Task {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u32,
         spec: DownloadSpec,
@@ -162,8 +163,8 @@ impl Task {
             total_size: self.total_size.load(Ordering::Relaxed),
             completed_pieces,
             piece_count,
-            created_at: self.created_at.clone(),
-            updated_at: updated_at_guard.clone(),
+            created_at: self.created_at,
+            updated_at: *updated_at_guard,
             checksums: self.checksums.lock().await.clone(),
         }
     }

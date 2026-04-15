@@ -200,7 +200,9 @@ impl DashboardRunner {
                         return None;
                     }
 
-                    let delta = snapshot.downloaded_size.saturating_sub(previous.downloaded_size);
+                    let delta = snapshot
+                        .downloaded_size
+                        .saturating_sub(previous.downloaded_size);
                     let sample_speed = delta as f64 / elapsed;
                     let smoothed = if previous.smoothed_bps > 0.0 {
                         previous.smoothed_bps * 0.6 + sample_speed * 0.4
@@ -224,7 +226,8 @@ impl DashboardRunner {
             total_speed += speed_bps;
         }
 
-        self.speed_state.retain(|task_id, _| active_ids.contains(task_id));
+        self.speed_state
+            .retain(|task_id, _| active_ids.contains(task_id));
 
         RenderState {
             task_speeds,
@@ -292,7 +295,11 @@ impl PlainTextRunner {
             self.manager.current_rate_limit_kbps(),
             final_frame,
         );
-        let signature = plain_signature(&snapshots, self.manager.current_rate_limit_kbps(), final_frame);
+        let signature = plain_signature(
+            &snapshots,
+            self.manager.current_rate_limit_kbps(),
+            final_frame,
+        );
 
         if !final_frame && self.last_signature.as_deref() == Some(signature.as_str()) {
             return Ok(());
@@ -319,7 +326,9 @@ impl PlainTextRunner {
                         return None;
                     }
 
-                    let delta = snapshot.downloaded_size.saturating_sub(previous.downloaded_size);
+                    let delta = snapshot
+                        .downloaded_size
+                        .saturating_sub(previous.downloaded_size);
                     Some(delta as f64 / elapsed)
                 })
                 .unwrap_or(0.0);
@@ -337,7 +346,8 @@ impl PlainTextRunner {
             total_speed += speed_bps;
         }
 
-        self.speed_state.retain(|task_id, _| active_ids.contains(task_id));
+        self.speed_state
+            .retain(|task_id, _| active_ids.contains(task_id));
 
         RenderState {
             task_speeds,
@@ -382,7 +392,10 @@ fn render_dashboard(
     output.push_str("paradown download dashboard\n");
 
     let status_summary = summarize_statuses(snapshots);
-    let total_downloaded: u64 = snapshots.iter().map(|snapshot| snapshot.downloaded_size).sum();
+    let total_downloaded: u64 = snapshots
+        .iter()
+        .map(|snapshot| snapshot.downloaded_size)
+        .sum();
     let total_size: u64 = snapshots.iter().map(|snapshot| snapshot.total_size).sum();
 
     output.push_str(&format!(
@@ -404,7 +417,8 @@ fn render_dashboard(
             "Commands: help | status [all|id ...] | pause [all|id ...] | resume [all|id ...] | retry [all|id ...] | cancel [all|id ...] | delete [all|id ...] | limit <kbps|off>\n",
         );
     } else {
-        output.push_str("Run with --interactive to control tasks while the dashboard is visible.\n");
+        output
+            .push_str("Run with --interactive to control tasks while the dashboard is visible.\n");
     }
 
     if final_frame {
@@ -451,7 +465,10 @@ fn render_plain_progress(
 ) -> String {
     let mut output = String::new();
     let status_summary = summarize_statuses(snapshots);
-    let total_downloaded: u64 = snapshots.iter().map(|snapshot| snapshot.downloaded_size).sum();
+    let total_downloaded: u64 = snapshots
+        .iter()
+        .map(|snapshot| snapshot.downloaded_size)
+        .sum();
     let total_size: u64 = snapshots.iter().map(|snapshot| snapshot.total_size).sum();
 
     output.push_str(&format!(
@@ -529,7 +546,10 @@ fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {
         .unwrap_or_else(|| snapshot.url.clone());
     let label = truncate_middle(&label, 30);
     let piece_label = if snapshot.piece_count > 0 {
-        format!(" {}/{} pieces", snapshot.completed_pieces, snapshot.piece_count)
+        format!(
+            " {}/{} pieces",
+            snapshot.completed_pieces, snapshot.piece_count
+        )
     } else {
         String::new()
     };
@@ -674,6 +694,9 @@ mod tests {
 
     #[test]
     fn truncates_long_labels_in_the_middle() {
-        assert_eq!(truncate_middle("abcdefghijklmnopqrstuvwxyz", 10), "abc...xyz");
+        assert_eq!(
+            truncate_middle("abcdefghijklmnopqrstuvwxyz", 10),
+            "abc...xyz"
+        );
     }
 }

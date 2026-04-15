@@ -137,7 +137,10 @@ impl Worker {
         let current_status = self.status.lock().await.clone();
         match current_status {
             Status::Paused => {
-                debug!("[Worker {}] Restarting paused worker after reprobe", self.id);
+                debug!(
+                    "[Worker {}] Restarting paused worker after reprobe",
+                    self.id
+                );
                 self.paused.store(false, Ordering::Relaxed);
             }
             Status::Canceled | Status::Deleted => {

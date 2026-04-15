@@ -156,14 +156,15 @@ fn sanitize_worker_requests(
             return Vec::new();
         }
 
-        if let Some(total_size) = total_size {
-            if total_size > 0 && worker.end >= total_size {
-                warn!(
-                    "[Restore Task {}] Rejecting worker layout because worker {} range end {} exceeds total_size {}",
-                    task_id, worker.index, worker.end, total_size
-                );
-                return Vec::new();
-            }
+        if let Some(total_size) = total_size
+            && total_size > 0
+            && worker.end >= total_size
+        {
+            warn!(
+                "[Restore Task {}] Rejecting worker layout because worker {} range end {} exceeds total_size {}",
+                task_id, worker.index, worker.end, total_size
+            );
+            return Vec::new();
         }
 
         if worker.start != expected_start {
@@ -179,14 +180,15 @@ fn sanitize_worker_requests(
         sanitized.push(worker);
     }
 
-    if let Some(total_size) = total_size {
-        if total_size > 0 && expected_start != total_size {
-            warn!(
-                "[Restore Task {}] Rejecting worker layout because restored ranges end at {}, expected total_size {}",
-                task_id, expected_start, total_size
-            );
-            return Vec::new();
-        }
+    if let Some(total_size) = total_size
+        && total_size > 0
+        && expected_start != total_size
+    {
+        warn!(
+            "[Restore Task {}] Rejecting worker layout because restored ranges end at {}, expected total_size {}",
+            task_id, expected_start, total_size
+        );
+        return Vec::new();
     }
 
     sanitized

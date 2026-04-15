@@ -18,7 +18,7 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
     let file_name = task.file_name.get().cloned().unwrap_or_default();
-    let updated_at = task.updated_at.lock().await.clone();
+    let updated_at = *task.updated_at.lock().await;
     let resource_identity = task.http_resource_identity().await;
 
     DBDownloadTask {
@@ -32,13 +32,13 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
         status: task.status.lock().await.to_string(),
         downloaded_size: task.downloaded_size.load(Ordering::Relaxed),
         total_size: Some(task.total_size.load(Ordering::Relaxed)),
-        created_at: task.created_at.clone(),
+        created_at: task.created_at,
         updated_at,
     }
 }
 
 pub(crate) async fn worker_to_db(worker: &Arc<Worker>) -> DBDownloadWorker {
-    let updated_at = worker.updated_at.lock().await.clone();
+    let updated_at = *worker.updated_at.lock().await;
 
     DBDownloadWorker {
         id: worker.id,
@@ -68,7 +68,7 @@ pub(crate) fn checksum_to_db(checksum: &Checksum, task_id: u32) -> DBDownloadChe
         },
         value: checksum.value.clone().unwrap_or_default(),
         verified: checksum.verified.unwrap_or(false),
-        verified_at: checksum.verified_at.clone(),
+        verified_at: checksum.verified_at,
     }
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> Checksum {
         },
         value: Some(model.value.clone()),
         verified: Some(model.verified),
-        verified_at: model.verified_at.clone(),
+        verified_at: model.verified_at,
     }
 }
 
@@ -108,12 +108,15 @@ pub(crate) fn db_task_to_request(
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
         total_size: task.total_size,
-        created_at: task.created_at.clone(),
-        updated_at: task.updated_at.clone(),
+        created_at: task.created_at,
+        updated_at: task.updated_at,
     }
 }
 
-pub(crate) fn piece_states_to_db(task_id: u32, piece_states: &[PieceState]) -> Vec<DBDownloadPiece> {
+pub(crate) fn piece_states_to_db(
+    task_id: u32,
+    piece_states: &[PieceState],
+) -> Vec<DBDownloadPiece> {
     piece_states
         .iter()
         .map(|piece| DBDownloadPiece {
@@ -148,7 +151,7 @@ pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<Segmen
             end: worker.end,
             downloaded: Some(worker.downloaded),
             status: Some(worker.status.clone()),
-            updated_at: worker.updated_at.clone(),
+            updated_at: worker.updated_at,
         })
         .collect()
 }
@@ -164,7 +167,7 @@ fn normalized_text_field(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_task_to_request, db_pieces_to_piece_states, db_workers_to_requests};
+    use super::{db_pieces_to_piece_states, db_task_to_request, db_workers_to_requests};
     use crate::repository::models::{
         DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
     };

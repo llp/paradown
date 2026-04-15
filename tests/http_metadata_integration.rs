@@ -11,13 +11,11 @@ use tokio::time::{Duration, timeout};
 #[tokio::test]
 async fn follows_redirect_and_uses_content_disposition_filename() {
     let body = Arc::new(b"redirected-payload".to_vec());
-    let server = MetadataTestServer::spawn(
-        MetadataMode::RedirectToDisposition {
-            body: Arc::clone(&body),
-            file_name: "release-header.bin",
-            final_path: "/files/final.bin?token=abc",
-        },
-    )
+    let server = MetadataTestServer::spawn(MetadataMode::RedirectToDisposition {
+        body: Arc::clone(&body),
+        file_name: "release-header.bin",
+        final_path: "/files/final.bin?token=abc",
+    })
     .await;
 
     let sandbox = TempDir::new().unwrap();
@@ -25,11 +23,7 @@ async fn follows_redirect_and_uses_content_disposition_filename() {
     let db_path = sandbox.path().join("state.db");
     tokio::fs::create_dir_all(&download_dir).await.unwrap();
 
-    let config = build_config(
-        &download_dir,
-        &db_path,
-        FileConflictStrategy::Overwrite,
-    );
+    let config = build_config(&download_dir, &db_path, FileConflictStrategy::Overwrite);
     let manager = Manager::new(config.clone()).unwrap();
     manager.init().await.unwrap();
 
@@ -64,11 +58,7 @@ async fn surfaces_clear_error_when_content_length_is_missing() {
     let db_path = sandbox.path().join("state.db");
     tokio::fs::create_dir_all(&download_dir).await.unwrap();
 
-    let config = build_config(
-        &download_dir,
-        &db_path,
-        FileConflictStrategy::Overwrite,
-    );
+    let config = build_config(&download_dir, &db_path, FileConflictStrategy::Overwrite);
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
@@ -98,11 +88,7 @@ async fn redownloads_existing_file_when_no_validator_can_prove_it_is_valid() {
         .await
         .unwrap();
 
-    let config = build_config(
-        &download_dir,
-        &db_path,
-        FileConflictStrategy::SkipIfValid,
-    );
+    let config = build_config(&download_dir, &db_path, FileConflictStrategy::SkipIfValid);
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
@@ -197,13 +183,8 @@ impl MetadataTestServer {
                         let final_path = (*final_path).to_string();
                         let file_name = (*file_name).to_string();
                         tokio::spawn(async move {
-                            handle_redirect_request(
-                                &mut socket,
-                                &body,
-                                &final_path,
-                                &file_name,
-                            )
-                            .await;
+                            handle_redirect_request(&mut socket, &body, &final_path, &file_name)
+                                .await;
                         });
                     }
                     MetadataMode::MissingContentLength { body } => {
@@ -362,7 +343,11 @@ async fn write_http_payload(
             end,
             body.len()
         ));
-        ("HTTP/1.1 206 Partial Content", slice.to_vec(), response_headers)
+        (
+            "HTTP/1.1 206 Partial Content",
+            slice.to_vec(),
+            response_headers,
+        )
     } else {
         if include_length {
             headers.push_str(&format!("Content-Length: {}\r\n", body.len()));
@@ -410,7 +395,8 @@ fn extract_header_from_request(request: &str, name: &str) -> Option<String> {
     request.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with(&expected) {
-            line.split_once(':').map(|(_, value)| value.trim().to_string())
+            line.split_once(':')
+                .map(|(_, value)| value.trim().to_string())
         } else {
             None
         }

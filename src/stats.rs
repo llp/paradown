@@ -160,6 +160,12 @@ impl Stats {
     }
 }
 
+impl Default for Stats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 将字节数格式化为更友好的字符串（B / KB / MB / GB）
 fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;

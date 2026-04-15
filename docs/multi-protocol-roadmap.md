@@ -61,7 +61,7 @@ flowchart LR
 - `P2` 已完成：`discovery / transfer` trait 边界已经立住
 - `P3` 已完成第一阶段：`SessionManifest / PieceLayout / PayloadStore` 已经接入 HTTP 单文件下载主路径
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `P4` 尚未开始：worker 仍以 range chunk 为调度单元，还没有切到 piece/block 调度
+- `P4` 已启动第一阶段：HTTP worker 规划已切到 piece-aware scheduler，但恢复和进度仍主要按 worker byte 聚合
 
 ## 3. 当前代码与目标代码的映射
 
@@ -75,8 +75,8 @@ flowchart LR
 - `src/storage/`
 - `src/repository/`
 - `src/request/`
+- `src/scheduler/`
 - `src/protocol_probe.rs`
-- `src/chunk.rs`
 
 ### 3.2 目标核心模块
 
@@ -127,7 +127,7 @@ src/
 - 当前 `job::Task` -> 未来 `domain::session::Session`
 - 当前 `worker::Worker` -> 未来 `transfer` 层的执行单元
 - 当前 `protocol_probe.rs` -> 未来 `discovery::origin`
-- 当前 `chunk.rs` -> 未来 `scheduler::planner` 的一个 origin-range 子实现
+- 当前 `scheduler::planner` -> 未来可继续细化为 piece picker / bandwidth / source scoring
 - 当前 `storage::Store` -> 未来 `state::store::StateStore`
 - 新增 `payload::store::PayloadStore`
 

@@ -518,9 +518,34 @@
 - checksum 校验逻辑在准备阶段和完成阶段重复实现
 - 后续要接 BT、磁力或多源时，缺少统一的 payload 抽象
 
+### 3.16 第十六轮：引入 piece-aware 调度规划骨架
+
+提交：
+
+- 见当前这轮 P4 提交
+
+已完成内容：
+
+- 新增调度模块：
+  - [planner.rs](/Users/liulipeng/workspace/rust/paradown/src/scheduler/planner.rs:1)
+  - 基于 `SessionManifest.pieces` 生成 worker assignment
+  - 新增 HTTP 场景的 piece size 建议策略
+- [prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1) 不再只按固定默认 piece size 生成 manifest
+  - 会根据 `segments_per_task` 和 range 能力生成更适合并行的 piece 布局
+- [workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job/workers.rs:1) 不再从总字节数直接切 chunk
+  - worker 创建改为消费 scheduler 生成的 piece-aligned assignment
+- [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1) 接入 `scheduler/` 子域
+- 为 scheduler 补上 piece size 与 assignment 规划测试
+
+这一轮解决的主要问题：
+
+- `P3` 虽然已经有 piece/manifest 模型，但 worker 规划仍然停留在 `total_size -> byte chunk`
+- 小文件在进入 piece 模型后容易退化成单 piece / 单 worker
+- 调度真相还没有真正从 `chunk.rs` 迁到 `manifest + scheduler`
+
 ## 4. 当前状态
 
-截至当前，主干架构重构已经完成，多协议基础改造已经推进到 P3。
+截至当前，主干架构重构已经完成，多协议基础改造已经推进到 P4 的第一阶段。
 
 已经完成的核心收口：
 
@@ -533,6 +558,7 @@
 - 对外 API 已经切换到新的正式出口，不再保留旧兼容别名
 - 自动化验证已经覆盖单元测试、恢复测试、真实下载集成测试、限速集成测试
 - HTTP/HTTPS 已经跑在 `DownloadSpec + discovery + transfer + SessionManifest + PayloadStore` 这条新主线上
+- HTTP worker 规划已经切到 `SessionManifest.pieces -> scheduler::planner -> Worker`
 - FTP 目前已经有发现层/传输层架构占位，但真实协议实现还没开始
 
 ## 5. 仍可继续优化的点
@@ -545,10 +571,11 @@
 
 ## 6. 当前判断
 
-截至 2026-04-15，重构工作已经完成了十五轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了十六轮，当前可以认为：
 
 - 主干架构重构已经完成
 - 多协议演进的前三步骨架已经落地
+- `P4` 已经开始进入真实代码路径
 - 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态
 - 项目从“原型结构”推进到了“有清晰边界和回归基线的可演进结构”
-- 后续更值得投入的是 `P4` 的 piece 调度、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件
+- 后续更值得投入的是 `P4` 剩余的 piece bitmap/恢复聚合、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件

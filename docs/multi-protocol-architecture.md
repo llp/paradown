@@ -61,8 +61,8 @@
 - `src/worker/`：单 worker 传输、重试、运行时
 - `src/storage/`：任务状态持久化与模型映射
 - `src/repository/`：sqlite / memory 状态仓储
+- `src/scheduler/`：piece-aware 的 worker 规划
 - `src/protocol_probe.rs`：HTTP 资源探测
-- `src/chunk.rs`：字节区间切块
 
 对照当前公开 API，可以看到它的中心模型还是：
 
@@ -210,9 +210,9 @@
 
 这显然已经不是 probe 一个 URL 的问题了。
 
-### 4.4 `chunk.rs` 假设的是连续字节区间切分
+### 4.4 当前调度器仍主要服务连续字节空间
 
-当前 `src/chunk.rs` 的切块模型是：
+当前运行时虽然已经切到 `src/scheduler/planner.rs`，但它的核心输出仍然是：
 
 - 总长度 `total_size`
 - 切成多个 `[start, end]`
@@ -229,7 +229,7 @@
 - `block`
 - 文件和 piece 的映射关系
 
-未来如果还保留现在的 `chunk.rs` 作为统一调度基础，就会把整个系统绑死在“Range 下载器”模型上。
+如果后续 scheduler 仍长期只输出这种连续区间 assignment，就会把整个系统继续绑死在“Range 下载器”模型上。
 
 ### 4.5 `Store` 当前保存的是任务状态，不是下载内容状态
 
@@ -505,7 +505,7 @@ flowchart TB
 2. `Task` 升级为 `Session`
 3. `Worker` 升级为 `TransferWorker`
 4. `protocol_probe.rs` 改成 `discovery/origin.rs`
-5. `chunk.rs` 保留，但明确只服务 `origin-range`
+5. 引入 `scheduler/planner.rs`，并明确当前只服务 `origin-range`
 6. `Store` 改名并收窄为 `StateStore`
 
 这个阶段完成后，框架就不再把“下载 = HTTP Range”写死在核心模型里。
@@ -654,7 +654,7 @@ src/
 
 - `discovery_state`
 
-### 10.4 `chunk.rs` 作为统一分块入口
+### 10.4 连续区间调度器作为统一分块入口
 
 原因：
 

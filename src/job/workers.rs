@@ -1,8 +1,8 @@
-use crate::chunk::plan_download_chunks;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
 use crate::job::finalize::finalize_download;
+use crate::scheduler::planner::{PieceAssignment, plan_piece_assignments};
 use crate::status::Status;
 use crate::worker::Worker;
 use chrono::Utc;
@@ -77,24 +77,18 @@ impl Task {
         file_path: &Arc<PathBuf>,
     ) -> Result<Vec<Arc<Worker>>, Error> {
         let created_at = Utc::now();
-        let requested_workers = if self.supports_range_requests() {
-            self.config.segments_per_task
-        } else {
-            1
-        };
-        let chunks =
-            plan_download_chunks(self.total_size.load(Ordering::Relaxed), requested_workers);
+        let assignments = self.plan_worker_assignments().await?;
 
-        let mut workers = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
+        let mut workers = Vec::with_capacity(assignments.len());
+        for assignment in assignments {
             let worker = Arc::new(Worker::new(
-                chunk.index,
+                assignment.index,
                 Arc::clone(&self.config),
                 Arc::downgrade(self),
                 Arc::clone(&self.client),
                 self.spec.clone(),
-                chunk.start,
-                chunk.end,
+                assignment.start,
+                assignment.end,
                 Some(0),
                 Arc::clone(file_path),
                 Some(Status::Pending),
@@ -116,6 +110,24 @@ impl Task {
         }
 
         Ok(workers)
+    }
+
+    async fn plan_worker_assignments(&self) -> Result<Vec<PieceAssignment>, Error> {
+        let manifest =
+            self.manifest.read().await.clone().ok_or_else(|| {
+                Error::Other(format!("Task {} manifest not initialized", self.id))
+            })?;
+        let requested_workers = if self.supports_range_requests() {
+            self.config.segments_per_task
+        } else {
+            1
+        };
+
+        Ok(plan_piece_assignments(
+            &manifest,
+            requested_workers,
+            self.supports_range_requests(),
+        ))
     }
 
     async fn can_reuse_existing_workers(&self, workers: &[Arc<Worker>]) -> bool {

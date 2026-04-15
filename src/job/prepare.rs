@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
 use crate::payload::verifier::verify_file_checksums;
+use crate::scheduler::planner::suggested_http_piece_size;
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,7 +48,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
         job.id, protocol_probe.total_size, protocol_probe.supports_range_requests
     );
 
-    let manifest = build_single_file_manifest(job, &file_path, protocol_probe.total_size).await;
+    let manifest = build_single_file_manifest(job, &file_path, protocol_probe).await;
     let payload_store = job.install_manifest(manifest).await;
 
     if handle_existing_file(job, &file_path, protocol_probe).await? {
@@ -72,14 +73,22 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
 async fn build_single_file_manifest(
     job: &Arc<Task>,
     file_path: &Arc<PathBuf>,
-    total_size: u64,
+    probe: OriginMetadata,
 ) -> SessionManifest {
     let checksums = job.checksums.lock().await.clone();
-    SessionManifest::for_single_file(
+    let requested_workers = if probe.supports_range_requests {
+        job.config.segments_per_task
+    } else {
+        1
+    };
+    let piece_size = suggested_http_piece_size(probe.total_size, requested_workers);
+
+    SessionManifest::for_single_file_with_piece_size(
         job.spec.clone(),
         job.resolve_or_init_file_name(),
         file_path.as_ref().clone(),
-        total_size,
+        probe.total_size,
+        piece_size,
         checksums,
     )
 }

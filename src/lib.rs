@@ -1,5 +1,4 @@
 mod checksum;
-mod chunk;
 pub mod cli;
 mod config;
 mod coordinator;
@@ -16,6 +15,7 @@ mod recovery;
 pub mod repository;
 mod request;
 mod runtime;
+mod scheduler;
 mod stats;
 mod status;
 pub mod storage;

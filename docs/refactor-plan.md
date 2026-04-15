@@ -216,54 +216,76 @@
 - worker 恢复时没有使用已持久化的下载偏移
 - `HEAD` 不可用时没有合适的探测回退路径
 
+### 3.6 第六轮：修正存储模型一致性并补恢复层测试
+
+提交：
+
+- 见本轮提交记录
+
+已完成内容：
+
+- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1) 修正了 task 持久化主键语义
+  - `download_tasks` 改为按 `id` upsert，而不是按 `url` upsert
+  - 保存 task 时显式写入 `id`
+  - 避免 task id 与 URL upsert 语义漂移
+- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1) 修正了时间字段 round-trip
+  - 新写入的时间戳统一为 RFC3339 风格文本
+  - 读取时兼容 RFC3339 和 SQLite `CURRENT_TIMESTAMP` 旧格式
+- [memory_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory_repository.rs:1) 修正了 worker/checksum 的 key 冲突
+  - worker 改为按 `(task_id, index)` 存储
+  - checksum 改为按 `(task_id, algorithm)` 存储
+  - 避免多任务下相同 worker index 或 checksum id 相互覆盖
+- 为 repository 层补了针对性测试
+  - memory backend 的 worker/checksum 隔离测试
+  - sqlite backend 的 task id/timestamp round-trip 测试
+
+这一轮解决的主要问题：
+
+- SQLite task upsert 以 URL 为主键，导致 task id 语义不稳定
+- SQLite 时间字段格式前后不一致，读取时可能丢失时间信息
+- Memory backend 在多任务场景下会出现 worker/checksum 覆盖
+- 持久化模型缺少最基本的回归测试
+
 ## 4. 本轮重构具体改了什么
 
-如果只聚焦“这一轮”即第五轮，已经修改的重点如下：
+如果只聚焦“这一轮”即第六轮，已经修改的重点如下：
 
 ### 4.1 已改
 
-- 新增 [protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)，把资源探测从 `job_prepare` 的局部细节升级成单独的协议层
-- `job_prepare.rs` 现在基于协议探测结果决定是否允许 resume、是否允许多 worker，而不是隐式假设服务端支持 range
-- `worker.rs` 现在会按探测结果区分 `206 Partial Content` 和 `200 OK` 两种合法路径
-- `worker.rs` 现在会从自身已持久化的 `downloaded_size` 继续，而不是每次重启都从 0 开始
-- `job_state.rs` 现在会在“恢复到当前进程但尚未重新探测”的场景下重新走准备流程
-- `job_workers.rs` 会在协议能力与历史 worker 布局不兼容时重建 worker 集合
+- `sqlite_repository.rs` 现在按 task `id` 做 upsert，不再按 `url` 做主冲突键
+- `sqlite_repository.rs` 现在统一写入 RFC3339 风格时间戳，并兼容读取旧格式 SQLite 时间文本
+- `memory_repository.rs` 现在用复合 key 存 worker 和 checksum，避免多任务覆盖
+- repository 层新增了 4 个针对性测试，补齐了最核心的模型回归检查
 
 ### 4.2 还没改完
 
-- `job_prepare.rs` 仍然同时包含下载前目录准备、文件策略和协议探测结果消费
+- `persistence.rs` 仍然只是 manager/repository 之间的转换层，还没有继续收紧 storage API
 - `worker.rs` 里仍然混着协议判断、重试、节流和写文件逻辑
-- `persistence.rs` 与 `repository/*` 的模型边界还没真正重构
+- `coordinator_registry.rs` 的恢复装配还没有显式校验“持久化 worker 布局是否可信”
 - `main.rs` 的 interactive mode 仍未完整接线
 
 ### 4.3 本轮实际触达的文件
 
-本轮第五轮重构实际触达的核心文件如下：
+本轮第六轮重构实际触达的核心文件如下：
 
-- [protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1)
-- [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
-- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
-- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1)
-- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1)
-- [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1)
+- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1)
+- [memory_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory_repository.rs:1)
 
-本轮的重构重点不是新增功能，而是把“资源协议事实”真正变成可被作业层和 worker 层共享的显式能力：
+本轮的重构重点不是新增功能，而是让“同一份下载状态”在不同存储后端里表达成同一件事：
 
-- `protocol_probe.rs` 负责探测 total size 和 range 能力
-- `job_prepare.rs` 负责消费探测结果并决定是否允许安全 resume
-- `job_workers.rs` 负责根据探测结果决定 worker 布局
-- `worker.rs` 负责对运行时响应做最终协议校验
+- sqlite 的 task 记录要以 task id 为准
+- 时间字段要能稳定写回并正确读出
+- memory backend 不能因为 key 设计把多任务状态互相覆盖
 
-这样做的直接收益是：后续如果继续改协议退化策略或下载正确性，不需要再让 `job_prepare` 和 `worker` 各自维护一套隐式假设。
+这样做的直接收益是：后续如果继续做恢复路径和存储层重构，就不会建立在已经漂移的状态模型之上。
 
 ### 4.4 本轮明确未触达的范围
 
-这轮有意识地没有去碰下面这些区域，原因是先把协议探测与响应校验拉直，再进入存储模型和剩余运行时细节：
+这轮有意识地没有去碰下面这些区域，原因是先把后端模型对齐，再进入更高一层的 storage API 和恢复流程：
 
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 仍然承载了不少模型转换细节
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 的恢复路径仍然偏“信任持久化数据”
 - [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 里的重试、节流和写文件流程仍然混在一起
-- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 与 `repository/*` 的持久化模型一致性
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的目录准备、文件策略和协议结果消费仍然混杂
 - [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
 - README、CLI 帮助文案、默认值说明的一致性问题
 
@@ -271,13 +293,13 @@
 
 下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
 
-### 5.1 协议探测已经独立，但 prepare / worker / storage 边界还未彻底收口
+### 5.1 存储后端的模型已经对齐一部分，但 storage API 和恢复层还未彻底收口
 
-这一轮之后，协议层已经有了独立入口，但仍未完全收口的职责主要变成：
+这一轮之后，后端模型已经更稳定，但仍未完全收口的职责主要变成：
 
-- `job_prepare.rs` 里的目录准备、文件策略与 resume 决策
+- `persistence.rs` 里的 DB/运行时模型转换
+- `coordinator_registry.rs` 里的恢复装配和信任边界
 - `worker.rs` 里的重试、节流与文件写入细节
-- `job_storage.rs` 只是抽离了调用位置，还没有重构底层存储模型
 
 建议后续进一步收敛为：
 
@@ -317,25 +339,24 @@
 - CLI 参数与配置覆盖策略统一
 - 帮助信息与 README 对齐
 
-### 5.5 协议正确性层还没正式抽象
+### 5.5 协议正确性主干已建立，但 worker runtime 还未完全收口
 
-目前还没做的关键结构性工作：
+目前还没做完的关键结构性工作：
 
-- 把 range 能力探测独立成协议探测层
-- 显式校验 `206 Partial Content`
-- 显式校验 `Content-Range`
-- 把“服务器支持多段下载吗”从 job_prepare 里再细分出来
+- 把 `worker.rs` 里的重试、节流、写文件流程继续拆开
+- 让 retry 配置真正完整接线，而不是只用了 `max_retries`
+- 让 `rate_limit_kbps` 这类配置真正影响运行时行为
+- 为跨进程恢复补更完整的端到端验证
 
-这部分会直接决定后续下载正确性。
+这部分会直接决定“恢复后是否真的能稳定继续下载”。
 
 ## 6. 当前未重构但高优先级的问题
 
 这些问题不是“结构还不够漂亮”，而是会影响正确性和稳定性：
 
 - 断点续传仍未真正闭环
-- 不支持 range 的服务端场景仍未严谨处理
-- SQLite 持久化模型的一致性问题仍在
-- Memory backend 的 key 设计问题仍在
+- 恢复路径仍然偏信任持久化数据，缺少更严格的校验
+- worker 运行时职责仍然偏杂，出错路径较难继续收紧
 - CLI/README 仍然存在偏差
 - 测试覆盖仍然很薄
 
@@ -390,6 +411,11 @@
 - 修正 memory backend 的冲突问题
 - 为恢复路径补集成测试
 
+状态：
+
+- 已完成第一阶段
+- 仍需继续收紧 `persistence.rs` 的转换边界，以及 `coordinator_registry.rs` 的恢复校验
+
 ### 阶段 D：补测试
 
 目标：
@@ -420,13 +446,13 @@
 
 建议按照下面顺序继续：
 
-1. 重构持久化模型
+1. 继续收紧恢复路径和 storage API
 2. 补自动化测试
 3. 最后再收 CLI/README/交互体验
 
 原因：
 
-- 当前最大的结构复杂度已经从 `task.rs` 转移到了 `worker.rs` 和存储层
+- 当前最大的结构复杂度已经从 `task.rs` 转移到了 `worker.rs`、`persistence.rs` 和恢复层
 - 当前最大的正确性风险仍然在协议层和恢复层
 - 如果先做 UI 或 CLI 体验，只会把错误行为包装得更漂亮
 
@@ -443,12 +469,13 @@
 
 ## 10. 当前判断
 
-截至 2026-04-15，重构工作已经完成了五轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了六轮，当前可以认为：
 
 - 对外命名和主干分层已经开始稳定
 - `manager.rs` 的结构性压力已经明显下降
 - `task.rs` 已经从复杂度中心退回到门面层
-- `protocol_probe.rs` 已经补齐，但 `job_prepare.rs`、`worker.rs` 和持久化模型成为新的主要复杂度中心
+- `protocol_probe.rs` 已经补齐，存储后端的主键/时间模型也更稳定了
+- `worker.rs`、`persistence.rs` 和恢复路径成为新的主要复杂度中心
 - 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
 
-因此，下一轮不建议再做表面命名调整，而应该直接进入持久化模型和 `worker.rs` 运行时职责的实质性重构。
+因此，下一轮不建议再做表面命名调整，而应该直接进入恢复路径、storage API 和 `worker.rs` 运行时职责的实质性重构。

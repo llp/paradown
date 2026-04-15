@@ -11,12 +11,6 @@ pub(crate) struct OriginMetadata {
     pub suggested_file_name: Option<String>,
 }
 
-impl OriginMetadata {
-    pub(crate) fn has_resume_validator(&self) -> bool {
-        self.resource_identity.has_resume_validator()
-    }
-}
-
 #[async_trait]
 pub(crate) trait DiscoveryDriver: Send + Sync {
     async fn discover(

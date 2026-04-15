@@ -22,6 +22,9 @@ pub enum Error {
     #[error("Network error for file {0}: {1}")]
     NetworkError(u32, String),
 
+    #[error("Resume invalidated for file {0}: {1}")]
+    ResumeInvalidated(u32, String),
+
     #[error("Checksum mismatch for file {0}: expected {1}, got {2}")]
     ChecksumMismatch(u32, String, String),
 

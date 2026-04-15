@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 
 pub(crate) enum StartDirective {
     Continue,
-    Resume,
 }
 
 impl Task {
@@ -33,16 +32,11 @@ impl Task {
                 )))
             }
             Status::Paused => {
-                if self.protocol_probe_completed() {
-                    debug!("[Task {}] Resuming paused task", self.id);
-                    Ok(StartDirective::Resume)
-                } else {
-                    debug!(
-                        "[Task {}] Paused task has not been probed in this process, restarting preparation",
-                        self.id
-                    );
-                    Ok(StartDirective::Continue)
-                }
+                debug!(
+                    "[Task {}] Paused task will restart preparation before resuming",
+                    self.id
+                );
+                Ok(StartDirective::Continue)
             }
             Status::Completed => {
                 debug!("[Task {}] Task already completed, skipping start", self.id);
@@ -119,7 +113,7 @@ impl Task {
     }
 
     pub async fn resume(self: &Arc<Self>) -> Result<(), Error> {
-        let should_resume_workers = {
+        let should_restart = {
             let mut status = self.status.lock().await;
             match *status {
                 Status::Pending | Status::Running => {
@@ -127,28 +121,12 @@ impl Task {
                     return Box::pin(self.start()).await;
                 }
                 Status::Paused => {
-                    if !self.protocol_probe_completed() {
-                        debug!(
-                            "[Task {}] Paused task has no protocol probe state, restarting through start()",
-                            self.id
-                        );
-                        *status = Status::Pending;
-                        drop(status);
-                        return Box::pin(self.start()).await;
-                    }
-
-                    if self.total_size.load(Ordering::Relaxed) == 0 {
-                        debug!(
-                            "[Task {}] Resuming paused task in Preparing/Pending phase",
-                            self.id
-                        );
-                        *status = Status::Preparing;
-                        false
-                    } else {
-                        debug!("[Task {}] Resuming paused task", self.id);
-                        *status = Status::Running;
-                        true
-                    }
+                    debug!(
+                        "[Task {}] Resuming paused task through fresh preparation",
+                        self.id
+                    );
+                    *status = Status::Pending;
+                    true
                 }
                 Status::Completed
                 | Status::Preparing
@@ -163,14 +141,9 @@ impl Task {
             }
         };
 
-        self.persist_task().await?;
-
-        if should_resume_workers {
-            let workers = { self.workers.read().await.clone() };
-            for worker in workers {
-                let _ = worker.resume().await;
-            }
-            self.emit_manager_event(Event::Start(self.id));
+        if should_restart {
+            self.persist_task().await?;
+            return Box::pin(self.start()).await;
         }
 
         Ok(())

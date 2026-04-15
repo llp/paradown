@@ -179,10 +179,7 @@ impl Task {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
-        match self.prepare_for_start().await? {
-            StartDirective::Continue => {}
-            StartDirective::Resume => return self.resume().await,
-        }
+        let StartDirective::Continue = self.prepare_for_start().await?;
 
         self.set_status(Status::Preparing).await;
         debug!("[Task {}] Preparing download", self.id);
@@ -220,10 +217,6 @@ impl Task {
 
     pub(crate) fn supports_range_requests(&self) -> bool {
         self.range_requests_supported.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn protocol_probe_completed(&self) -> bool {
-        self.protocol_probe_completed.load(Ordering::Relaxed)
     }
 
     pub(crate) fn resolve_or_init_file_name(&self) -> String {

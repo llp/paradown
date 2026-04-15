@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub(crate) trait TransferDriver: Send + Sync {
-    fn build_request(
+    async fn build_request(
         &self,
         worker: &Worker,
         range_start: u64,

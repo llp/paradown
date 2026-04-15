@@ -13,7 +13,7 @@ pub(crate) struct HttpTransferDriver;
 
 #[async_trait]
 impl TransferDriver for HttpTransferDriver {
-    fn build_request(
+    async fn build_request(
         &self,
         worker: &Worker,
         range_start: u64,
@@ -22,6 +22,15 @@ impl TransferDriver for HttpTransferDriver {
         let mut request = worker.client.get(worker.spec.locator());
         if use_range_requests && range_start <= worker.end {
             request = request.header("Range", format!("bytes={}-{}", range_start, worker.end));
+
+            if range_start > worker.start {
+                let task = worker.task.upgrade().ok_or_else(|| {
+                    Error::Other(format!("Worker {} lost its parent task", worker.id))
+                })?;
+                if let Some(validator) = task.resume_validator().await {
+                    request = request.header(header::IF_RANGE, validator);
+                }
+            }
         }
         Ok(request)
     }
@@ -50,6 +59,13 @@ impl TransferDriver for HttpTransferDriver {
         expected_start: u64,
     ) -> Result<(), Error> {
         if use_range_requests {
+            if expected_start > worker.start && response.status() == StatusCode::OK {
+                return Err(Error::ResumeInvalidated(
+                    worker.id,
+                    "remote resource no longer matches stored validator".into(),
+                ));
+            }
+
             if response.status() != StatusCode::PARTIAL_CONTENT {
                 return Err(Error::Other(format!(
                     "Expected 206 Partial Content, got {}",

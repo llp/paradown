@@ -59,7 +59,10 @@ impl Worker {
             let use_range_requests = self.supports_range_requests();
             let range_start = self.start.saturating_add(downloaded_size);
 
-            let request = match driver.build_request(self, range_start, use_range_requests) {
+            let request = match driver
+                .build_request(self, range_start, use_range_requests)
+                .await
+            {
                 Ok(request) => request,
                 Err(err) => {
                     self.retry_or_fail(&mut retry_count, err).await?;
@@ -134,8 +137,8 @@ impl Worker {
         let current_status = self.status.lock().await.clone();
         match current_status {
             Status::Paused => {
-                debug!("[Worker {}] Resuming paused task", self.id);
-                self.paused.store(true, Ordering::Relaxed);
+                debug!("[Worker {}] Restarting paused worker after reprobe", self.id);
+                self.paused.store(false, Ordering::Relaxed);
             }
             Status::Canceled | Status::Deleted => {
                 debug!(
@@ -181,6 +184,10 @@ impl Worker {
             self.id, err, retry_count
         );
         self.stats.record_failure();
+
+        if matches!(err, Error::ResumeInvalidated(_, _)) {
+            return Err(err);
+        }
 
         let Some(delay) = next_retry_delay(&self.config.retry, *retry_count) else {
             return Err(err);

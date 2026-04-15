@@ -8,7 +8,7 @@ pub(crate) struct FtpTransferDriver;
 
 #[async_trait]
 impl TransferDriver for FtpTransferDriver {
-    fn build_request(
+    async fn build_request(
         &self,
         _worker: &Worker,
         _range_start: u64,

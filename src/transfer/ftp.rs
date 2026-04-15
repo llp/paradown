@@ -41,7 +41,7 @@ impl TransferDriver for FtpTransferDriver {
         ))
     }
 
-    async fn stream_response_to_file(
+    async fn stream_response(
         &self,
         _worker: &Worker,
         _response: reqwest::Response,

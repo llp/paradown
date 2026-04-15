@@ -2,7 +2,7 @@ use crate::Status;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
-use chrono::Utc;
+use crate::payload::verifier::verify_file_checksums as verify_payload_checksums;
 use log::debug;
 use std::path::Path;
 use std::sync::Arc;
@@ -62,37 +62,10 @@ pub(crate) async fn finish_job(job: &Arc<Task>, outcome: Result<(), Error>) -> R
 
 pub(crate) async fn verify_checksums(job: &Arc<Task>, file_path: &Path) -> Result<bool, Error> {
     let mut checksums = job.checksums.lock().await;
-
-    for checksum in checksums.iter_mut() {
-        match checksum.verify(file_path) {
-            Ok(true) => {
-                checksum.verified = Some(true);
-                checksum.verified_at = Some(Utc::now());
-                debug!(
-                    "[Task {}] Checksum {:?} passed for file {:?}",
-                    job.id, checksum.algorithm, file_path
-                );
-            }
-            Ok(false) => {
-                checksum.verified = Some(false);
-                checksum.verified_at = Some(Utc::now());
-                debug!(
-                    "[Task {}] Checksum {:?} FAILED for file {:?}",
-                    job.id, checksum.algorithm, file_path
-                );
-                return Ok(false);
-            }
-            Err(err) => {
-                checksum.verified = Some(false);
-                checksum.verified_at = Some(Utc::now());
-                debug!(
-                    "[Task {}] Checksum {:?} ERROR for file {:?}: {:?}",
-                    job.id, checksum.algorithm, file_path, err
-                );
-                return Err(err);
-            }
-        }
-    }
-
-    Ok(true)
+    let verified = verify_payload_checksums(checksums.as_mut_slice(), file_path)?;
+    debug!(
+        "[Task {}] Checksum verification result for {:?}: {}",
+        job.id, file_path, verified
+    );
+    Ok(verified)
 }

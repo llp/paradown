@@ -417,7 +417,7 @@
 
 提交：
 
-- 待提交
+- `384efd6` `重组包结构并重塑公开接口`
 
 已完成内容：
 
@@ -461,9 +461,66 @@
 - `repository/` 内部文件命名和 trait 命名不统一
 - 旧进度模块长期未接线，但仍然参与编译和告警
 
+### 3.14 第十四轮：引入下载规格并拆出单源发现传输边界
+
+提交：
+
+- `59d7517` `引入下载规格并拆出单源发现传输边界`
+
+已完成内容：
+
+- 新增下载规格模型：
+  - [spec.rs](/Users/liulipeng/workspace/rust/paradown/src/domain/spec.rs:1)
+  - `DownloadSpec` 统一表达 `HTTP / HTTPS / FTP`
+- 新增发现层边界：
+  - [origin.rs](/Users/liulipeng/workspace/rust/paradown/src/discovery/origin.rs:1)
+  - 统一把资源探测收口成 `OriginMetadata`
+- 新增传输驱动边界：
+  - [driver.rs](/Users/liulipeng/workspace/rust/paradown/src/transfer/driver.rs:1)
+  - [http.rs](/Users/liulipeng/workspace/rust/paradown/src/transfer/http.rs:1)
+  - [ftp.rs](/Users/liulipeng/workspace/rust/paradown/src/transfer/ftp.rs:1)
+- `Manager / TaskRequest / Task / Worker` 都开始面向 `DownloadSpec` 工作
+- `Manager` 增加 `add_download(DownloadSpec)` 入口
+- 对外导出 `Session / SessionSnapshot`，把“会话”概念先立起来
+
+这一轮解决的主要问题：
+
+- 系统内部仍把裸 `url` 当作唯一真相
+- 协议差异散落在 worker 执行层，不利于后续扩协议
+- 发现逻辑、传输逻辑和作业生命周期之间缺少明确边界
+
+### 3.15 第十五轮：引入会话 Manifest 与 PayloadStore
+
+提交：
+
+- 见当前这轮 P3 提交
+
+已完成内容：
+
+- 新增统一资源描述模型：
+  - [manifest.rs](/Users/liulipeng/workspace/rust/paradown/src/domain/manifest.rs:1)
+  - [piece.rs](/Users/liulipeng/workspace/rust/paradown/src/domain/piece.rs:1)
+  - `SessionManifest / FileManifest / PieceLayout / PieceBlock`
+- 新增 payload 层：
+  - [store.rs](/Users/liulipeng/workspace/rust/paradown/src/payload/store.rs:1)
+  - [file_map.rs](/Users/liulipeng/workspace/rust/paradown/src/payload/file_map.rs:1)
+  - [verifier.rs](/Users/liulipeng/workspace/rust/paradown/src/payload/verifier.rs:1)
+- [mod.rs](/Users/liulipeng/workspace/rust/paradown/src/job/mod.rs:1) 现在持有 manifest 和 payload store
+- [prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1) 会先把 HTTP 单文件转换成 `SessionManifest`，再准备 payload store
+- [http.rs](/Users/liulipeng/workspace/rust/paradown/src/transfer/http.rs:1) 不再直接决定文件 seek/write，而是通过 payload store 以全局偏移写入
+- [finalize.rs](/Users/liulipeng/workspace/rust/paradown/src/job/finalize.rs:1) 与准备阶段复用统一的 payload checksum 校验逻辑
+- 对外公开导出 `SessionManifest / FileManifest / PieceLayout / PieceBlock`
+
+这一轮解决的主要问题：
+
+- manifest / piece 模型只停留在设计文档，没有真正进入运行时
+- worker 仍直接面向单文件写入，无法为多文件/piece/block 模型让路
+- checksum 校验逻辑在准备阶段和完成阶段重复实现
+- 后续要接 BT、磁力或多源时，缺少统一的 payload 抽象
+
 ## 4. 当前状态
 
-截至当前，主干架构重构已经完成。
+截至当前，主干架构重构已经完成，多协议基础改造已经推进到 P3。
 
 已经完成的核心收口：
 
@@ -475,6 +532,8 @@
 - CLI、interactive mode、README、`--help` 已经和当前实现基本对齐
 - 对外 API 已经切换到新的正式出口，不再保留旧兼容别名
 - 自动化验证已经覆盖单元测试、恢复测试、真实下载集成测试、限速集成测试
+- HTTP/HTTPS 已经跑在 `DownloadSpec + discovery + transfer + SessionManifest + PayloadStore` 这条新主线上
+- FTP 目前已经有发现层/传输层架构占位，但真实协议实现还没开始
 
 ## 5. 仍可继续优化的点
 
@@ -486,9 +545,10 @@
 
 ## 6. 当前判断
 
-截至 2026-04-15，重构工作已经完成了十三轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了十五轮，当前可以认为：
 
 - 主干架构重构已经完成
+- 多协议演进的前三步骨架已经落地
 - 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态
 - 项目从“原型结构”推进到了“有清晰边界和回归基线的可演进结构”
-- 后续更值得投入的是功能增强和体验优化，而不是继续大规模拆主干文件
+- 后续更值得投入的是 `P4` 的 piece 调度、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件

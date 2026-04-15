@@ -53,6 +53,16 @@ flowchart LR
 3. 新模型先“并行引入”，后“切断旧模型”
 4. 不要在一个阶段里同时引入“新抽象 + 新协议 + 新调度”
 
+### 2.1 当前进度
+
+截至当前代码状态：
+
+- `P1` 已完成：`DownloadSpec` 已经进入主路径
+- `P2` 已完成：`discovery / transfer` trait 边界已经立住
+- `P3` 已完成第一阶段：`SessionManifest / PieceLayout / PayloadStore` 已经接入 HTTP 单文件下载主路径
+- `FTP` 目前只有架构占位，真实发现与传输实现还未开始
+- `P4` 尚未开始：worker 仍以 range chunk 为调度单元，还没有切到 piece/block 调度
+
 ## 3. 当前代码与目标代码的映射
 
 先把当前核心模块和未来目标位置对齐。

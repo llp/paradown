@@ -37,14 +37,12 @@ impl DownloadSpec {
     }
 
     pub fn file_name_hint(&self) -> Option<String> {
-        url::Url::parse(self.locator())
-            .ok()
-            .and_then(|url| {
-                url.path_segments()
-                    .and_then(|segments| segments.last())
-                    .filter(|segment| !segment.is_empty())
-                    .map(|segment| segment.to_string())
-            })
+        url::Url::parse(self.locator()).ok().and_then(|url| {
+            url.path_segments()
+                .and_then(|segments| segments.last())
+                .filter(|segment| !segment.is_empty())
+                .map(|segment| segment.to_string())
+        })
     }
 
     pub fn supports_origin_discovery(&self) -> bool {

@@ -209,6 +209,7 @@ impl Task {
             let _ = worker.delete().await;
         }
         self.clear_task_workers().await?;
+        self.clear_manifest_state().await;
 
         self.delete_task_file().await?;
         self.purge_task_workers().await?;
@@ -229,6 +230,7 @@ impl Task {
             .store(false, Ordering::Relaxed);
         self.protocol_probe_completed
             .store(false, Ordering::Relaxed);
+        self.clear_manifest_state().await;
 
         self.delete_task_file().await?;
         Ok(())

@@ -9,9 +9,10 @@ use self::state::StartDirective;
 use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
-use crate::domain::DownloadSpec;
+use crate::domain::{DownloadSpec, SessionManifest};
 use crate::error::Error;
 use crate::events::Event;
+use crate::payload::store::PayloadStore;
 use crate::stats::Stats;
 use crate::status::Status;
 use crate::storage::Store;
@@ -32,6 +33,8 @@ pub struct Task {
     pub file_name: OnceCell<String>,
     pub file_path: Arc<OnceCell<PathBuf>>,
     pub checksums: Mutex<Vec<Checksum>>,
+    manifest: RwLock<Option<SessionManifest>>,
+    payload_store: RwLock<Option<Arc<PayloadStore>>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
@@ -102,6 +105,8 @@ impl Task {
             file_name: file_name_cell,
             file_path: file_path_cell,
             checksums: Mutex::new(checksums),
+            manifest: RwLock::new(None),
+            payload_store: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
@@ -239,6 +244,29 @@ impl Task {
 
         Ok(file_path)
     }
+
+    pub(crate) async fn install_manifest(
+        self: &Arc<Self>,
+        manifest: SessionManifest,
+    ) -> Arc<PayloadStore> {
+        let payload_store = Arc::new(PayloadStore::new(&manifest));
+        *self.manifest.write().await = Some(manifest);
+        *self.payload_store.write().await = Some(Arc::clone(&payload_store));
+        payload_store
+    }
+
+    pub(crate) async fn payload_store(&self) -> Result<Arc<PayloadStore>, Error> {
+        self.payload_store
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| Error::Other(format!("Task {} payload store not initialized", self.id)))
+    }
+
+    pub(crate) async fn clear_manifest_state(&self) {
+        *self.manifest.write().await = None;
+        *self.payload_store.write().await = None;
+    }
 }
 
 impl fmt::Debug for Task {
@@ -250,6 +278,8 @@ impl fmt::Debug for Task {
             .field("file_name", &self.file_name)
             .field("file_path", &self.file_path)
             .field("checksums", &self.checksums)
+            .field("manifest", &self.manifest)
+            .field("payload_store", &self.payload_store)
             .field("downloaded_size", &self.downloaded_size)
             .field("config", &self.config)
             .field("workers", &self.workers)

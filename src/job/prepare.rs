@@ -1,8 +1,10 @@
 use crate::config::FileConflictStrategy;
 use crate::discovery::origin::{OriginMetadata, discover_origin};
+use crate::domain::SessionManifest;
 use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
+use crate::payload::verifier::verify_file_checksums;
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,18 +47,16 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
         job.id, protocol_probe.total_size, protocol_probe.supports_range_requests
     );
 
+    let manifest = build_single_file_manifest(job, &file_path, protocol_probe.total_size).await;
+    let payload_store = job.install_manifest(manifest).await;
+
     if handle_existing_file(job, &file_path, protocol_probe).await? {
         return Ok(PreparationOutcome::Finished);
     }
 
-    if protocol_probe.total_size == 0 {
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(file_path.as_ref())
-            .await?;
+    payload_store.prepare().await?;
 
+    if protocol_probe.total_size == 0 {
         let outcome = match verify_checksums(job, file_path.as_ref()).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(Error::Other("Checksum failed".into())),
@@ -67,6 +67,21 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     }
 
     Ok(PreparationOutcome::Ready(PreparedDownload { file_path }))
+}
+
+async fn build_single_file_manifest(
+    job: &Arc<Task>,
+    file_path: &Arc<PathBuf>,
+    total_size: u64,
+) -> SessionManifest {
+    let checksums = job.checksums.lock().await.clone();
+    SessionManifest::for_single_file(
+        job.spec.clone(),
+        job.resolve_or_init_file_name(),
+        file_path.as_ref().clone(),
+        total_size,
+        checksums,
+    )
 }
 
 async fn handle_existing_file(
@@ -141,23 +156,7 @@ async fn handle_existing_file(
 
 async fn verify_existing_file(job: &Arc<Task>, file_path: &Arc<PathBuf>) -> Result<bool, Error> {
     let mut checksums = job.checksums.lock().await;
-
-    for checksum in checksums.iter_mut() {
-        if checksum.verified.unwrap_or(false) {
-            continue;
-        }
-
-        match checksum.verify(file_path.as_ref()) {
-            Ok(true) => {
-                checksum.verified = Some(true);
-                checksum.verified_at = Some(chrono::Utc::now());
-            }
-            Ok(false) => return Ok(false),
-            Err(err) => return Err(err),
-        }
-    }
-
-    Ok(true)
+    verify_file_checksums(checksums.as_mut_slice(), file_path.as_ref())
 }
 
 async fn can_resume_partial_download(job: &Arc<Task>, supports_range_requests: bool) -> bool {

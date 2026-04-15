@@ -8,7 +8,6 @@ use futures_util::StreamExt;
 use log::debug;
 use reqwest::{StatusCode, header};
 use std::sync::atomic::Ordering;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 pub(crate) struct HttpTransferDriver;
 
@@ -86,7 +85,7 @@ impl TransferDriver for HttpTransferDriver {
         Ok(())
     }
 
-    async fn stream_response_to_file(
+    async fn stream_response(
         &self,
         worker: &Worker,
         response: reqwest::Response,
@@ -95,22 +94,23 @@ impl TransferDriver for HttpTransferDriver {
         use_range_requests: bool,
         range_start: u64,
     ) -> Result<(), Error> {
-        let file_path = &*worker.file_path;
-        debug!("[Worker {}] Writing to file: {:?}", worker.id, file_path);
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(file_path)
-            .await?;
-
-        let file_offset = if use_range_requests {
+        let task = worker
+            .task
+            .upgrade()
+            .ok_or_else(|| Error::Other(format!("Worker {} lost its parent task", worker.id)))?;
+        let payload_store = task.payload_store().await?;
+        let mut write_offset = if use_range_requests {
             range_start
         } else {
             worker.start
         };
-        file.seek(tokio::io::SeekFrom::Start(file_offset)).await?;
+
+        debug!(
+            "[Worker {}] Writing locator {} at payload offset {}",
+            worker.id,
+            worker.spec.locator(),
+            write_offset
+        );
 
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
@@ -125,7 +125,8 @@ impl TransferDriver for HttpTransferDriver {
             let chunk = chunk.map_err(|err| Error::NetworkError(worker.id, err.to_string()))?;
             let chunk_len = chunk.len() as u64;
             worker.acquire_rate_limit(chunk_len).await;
-            file.write_all(&chunk).await?;
+            payload_store.write_at(write_offset, &chunk).await?;
+            write_offset = write_offset.saturating_add(chunk_len);
             *downloaded_size += chunk_len;
 
             worker.stats.update_worker(worker.id, chunk_len).await;

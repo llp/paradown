@@ -105,7 +105,7 @@ impl Worker {
             );
 
             driver
-                .stream_response_to_file(
+                .stream_response(
                     self,
                     response,
                     &mut downloaded_size,

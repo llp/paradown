@@ -4,11 +4,12 @@ pub mod cli;
 mod config;
 mod coordinator;
 mod discovery;
-pub mod download;
 mod domain;
+pub mod download;
 mod error;
 mod events;
 mod job;
+mod payload;
 mod protocol_probe;
 mod rate_limiter;
 mod recovery;
@@ -25,9 +26,10 @@ pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
     Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
+pub use domain::{FileManifest, PieceBlock, PieceLayout, SessionManifest};
 pub use download::{
-    DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session,
-    SessionSnapshot, Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
+    DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionSnapshot,
+    Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
 };
 pub use error::Error;
 pub use runtime::init_logger;

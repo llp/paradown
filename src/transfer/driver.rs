@@ -31,7 +31,7 @@ pub(crate) trait TransferDriver: Send + Sync {
         expected_start: u64,
     ) -> Result<(), Error>;
 
-    async fn stream_response_to_file(
+    async fn stream_response(
         &self,
         worker: &Worker,
         response: reqwest::Response,

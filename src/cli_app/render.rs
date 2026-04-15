@@ -18,6 +18,31 @@ pub(crate) struct DashboardHandle {
     render_task: JoinHandle<()>,
 }
 
+pub(crate) struct PlainTextHandle {
+    stop_tx: watch::Sender<bool>,
+    render_task: JoinHandle<()>,
+}
+
+impl PlainTextHandle {
+    pub(crate) fn spawn(manager: Arc<Manager>) -> Self {
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let render_task = tokio::spawn(async move {
+            let mut runner = PlainTextRunner::new(manager);
+            runner.run(stop_rx).await;
+        });
+
+        Self {
+            stop_tx,
+            render_task,
+        }
+    }
+
+    pub(crate) async fn shutdown(self) {
+        let _ = self.stop_tx.send(true);
+        let _ = self.render_task.await;
+    }
+}
+
 impl DashboardHandle {
     pub(crate) fn spawn(manager: Arc<Manager>, interactive: bool) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
@@ -44,16 +69,18 @@ impl DashboardHandle {
     }
 }
 
-pub(crate) fn should_render_dashboard(verbose: bool) -> bool {
-    std::io::stdout().is_terminal() && !verbose
-}
-
 struct DashboardRunner {
     manager: Arc<Manager>,
     interactive: bool,
     message_rx: mpsc::UnboundedReceiver<String>,
     messages: VecDeque<String>,
     speed_state: HashMap<u32, SpeedSample>,
+}
+
+struct PlainTextRunner {
+    manager: Arc<Manager>,
+    speed_state: HashMap<u32, SpeedSample>,
+    last_signature: Option<String>,
 }
 
 impl DashboardRunner {
@@ -206,6 +233,119 @@ impl DashboardRunner {
     }
 }
 
+impl PlainTextRunner {
+    fn new(manager: Arc<Manager>) -> Self {
+        Self {
+            manager,
+            speed_state: HashMap::new(),
+            last_signature: None,
+        }
+    }
+
+    async fn run(&mut self, mut stop_rx: watch::Receiver<bool>) {
+        let mut event_rx = self.manager.subscribe_events();
+        let mut ticker = interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        let _ = self.render(false).await;
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let _ = self.render(false).await;
+                }
+                event = event_rx.recv() => {
+                    if self.handle_event(event) {
+                        let _ = self.render(false).await;
+                    }
+                }
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        let _ = self.render(true).await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_event(&self, event: Result<Event, broadcast::error::RecvError>) -> bool {
+        matches!(
+            event,
+            Ok(Event::Start(_))
+                | Ok(Event::Pause(_))
+                | Ok(Event::Complete(_))
+                | Ok(Event::Cancel(_))
+                | Ok(Event::Delete(_))
+                | Ok(Event::Error(_, _))
+                | Err(broadcast::error::RecvError::Lagged(_))
+                | Err(broadcast::error::RecvError::Closed)
+        )
+    }
+
+    async fn render(&mut self, final_frame: bool) -> std::io::Result<()> {
+        let snapshots = collect_snapshots(&self.manager).await;
+        let render_state = self.sample_render_state(&snapshots);
+        let frame = render_plain_progress(
+            &snapshots,
+            &render_state,
+            self.manager.current_rate_limit_kbps(),
+            final_frame,
+        );
+        let signature = plain_signature(&snapshots, self.manager.current_rate_limit_kbps(), final_frame);
+
+        if !final_frame && self.last_signature.as_deref() == Some(signature.as_str()) {
+            return Ok(());
+        }
+        self.last_signature = Some(signature);
+
+        let mut stdout = std::io::stdout();
+        stdout.write_all(frame.as_bytes())?;
+        stdout.flush()
+    }
+
+    fn sample_render_state(&mut self, snapshots: &[TaskSnapshot]) -> RenderState {
+        let now = Instant::now();
+        let mut task_speeds = HashMap::with_capacity(snapshots.len());
+        let mut active_ids = Vec::with_capacity(snapshots.len());
+        let mut total_speed = 0f64;
+
+        for snapshot in snapshots {
+            let previous = self.speed_state.get(&snapshot.id).cloned();
+            let speed_bps = previous
+                .and_then(|previous| {
+                    let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
+                    if elapsed <= f64::EPSILON {
+                        return None;
+                    }
+
+                    let delta = snapshot.downloaded_size.saturating_sub(previous.downloaded_size);
+                    Some(delta as f64 / elapsed)
+                })
+                .unwrap_or(0.0);
+
+            self.speed_state.insert(
+                snapshot.id,
+                SpeedSample {
+                    downloaded_size: snapshot.downloaded_size,
+                    observed_at: now,
+                    smoothed_bps: speed_bps,
+                },
+            );
+            active_ids.push(snapshot.id);
+            task_speeds.insert(snapshot.id, speed_bps);
+            total_speed += speed_bps;
+        }
+
+        self.speed_state.retain(|task_id, _| active_ids.contains(task_id));
+
+        RenderState {
+            task_speeds,
+            total_speed_bps: total_speed,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SpeedSample {
     downloaded_size: u64,
@@ -261,7 +401,7 @@ fn render_dashboard(
 
     if interactive {
         output.push_str(
-            "Commands: help | status [all|id ...] | pause [all|id ...] | resume [all|id ...] | cancel [all|id ...] | limit <kbps|off>\n",
+            "Commands: help | status [all|id ...] | pause [all|id ...] | resume [all|id ...] | retry [all|id ...] | cancel [all|id ...] | delete [all|id ...] | limit <kbps|off>\n",
         );
     } else {
         output.push_str("Run with --interactive to control tasks while the dashboard is visible.\n");
@@ -301,6 +441,79 @@ fn render_dashboard(
     }
 
     output
+}
+
+fn render_plain_progress(
+    snapshots: &[TaskSnapshot],
+    render_state: &RenderState,
+    rate_limit_kbps: Option<u64>,
+    final_frame: bool,
+) -> String {
+    let mut output = String::new();
+    let status_summary = summarize_statuses(snapshots);
+    let total_downloaded: u64 = snapshots.iter().map(|snapshot| snapshot.downloaded_size).sum();
+    let total_size: u64 = snapshots.iter().map(|snapshot| snapshot.total_size).sum();
+
+    output.push_str(&format!(
+        "{} tasks={} running={} preparing={} paused={} pending={} finished={} total={} / {} speed={} rate={}\n",
+        if final_frame { "final" } else { "progress" },
+        snapshots.len(),
+        status_summary.running,
+        status_summary.preparing,
+        status_summary.paused,
+        status_summary.pending,
+        status_summary.terminal,
+        format_bytes(total_downloaded),
+        format_bytes(total_size),
+        format_speed(render_state.total_speed_bps),
+        format_rate_limit(rate_limit_kbps),
+    ));
+
+    for snapshot in snapshots {
+        let speed_bps = render_state
+            .task_speeds
+            .get(&snapshot.id)
+            .copied()
+            .unwrap_or_default();
+        output.push_str(&format!(
+            "  #{} {:<10} {:>6.1}% {:>10} / {:<10} {:>10} {}\n",
+            snapshot.id,
+            snapshot.status,
+            if snapshot.total_size > 0 {
+                snapshot.downloaded_size as f64 / snapshot.total_size as f64 * 100.0
+            } else {
+                0.0
+            },
+            format_bytes(snapshot.downloaded_size),
+            format_bytes(snapshot.total_size),
+            format_speed(speed_bps),
+            snapshot
+                .file_name
+                .as_deref()
+                .unwrap_or(snapshot.url.as_str()),
+        ));
+    }
+    output.push('\n');
+    output
+}
+
+fn plain_signature(
+    snapshots: &[TaskSnapshot],
+    rate_limit_kbps: Option<u64>,
+    final_frame: bool,
+) -> String {
+    let mut signature = format!("rate={rate_limit_kbps:?};final={final_frame};");
+    for snapshot in snapshots {
+        signature.push_str(&format!(
+            "{}:{}:{}:{}:{};",
+            snapshot.id,
+            snapshot.status,
+            snapshot.downloaded_size,
+            snapshot.total_size,
+            snapshot.completed_pieces
+        ));
+    }
+    signature
 }
 
 fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {

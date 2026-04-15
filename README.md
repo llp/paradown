@@ -90,11 +90,15 @@ Supported commands:
 - `status [all|id ...]`
 - `pause [all|id ...]`
 - `resume [all|id ...]`
+- `retry [all|id ...]`
 - `cancel [all|id ...]`
+- `delete [all|id ...]`
 - `limit <kbps|off>`
 
 If no task ids are provided, `status / pause / resume / cancel` default to `all`.
+If no task ids are provided, `retry / delete` also default to `all`.
 If `--verbose` is enabled, the CLI falls back to log-oriented output instead of the live dashboard.
+If stdout is not a TTY, the CLI automatically degrades to line-oriented progress output and still prints a final summary.
 
 ## Configuration
 

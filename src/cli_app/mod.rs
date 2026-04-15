@@ -2,11 +2,12 @@ mod commands;
 mod render;
 
 use self::commands::{Command, CommandTarget, help_lines, parse_command};
-use self::render::{DashboardHandle, DashboardMessageTx, should_render_dashboard};
+use self::render::{DashboardHandle, DashboardMessageTx, PlainTextHandle};
 use clap::Parser;
 use log::{LevelFilter, error, info, warn};
 use paradown::download::{DownloadSpec, Event, Manager, TaskSnapshot};
 use paradown::{Config, Error, init_logger_with_level};
+use std::io::IsTerminal;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,17 +47,20 @@ pub(crate) struct Cli {
 pub(crate) async fn run() -> Result<(), Error> {
     let cli = Cli::parse();
     let config = build_config(&cli)?;
-    let dashboard_enabled = should_render_dashboard(cli.verbose);
+    let output_mode = select_output_mode(&cli);
 
-    init_logger_with_level(select_log_level(&cli, dashboard_enabled));
+    init_logger_with_level(select_log_level(output_mode));
 
     let manager = Manager::new(config.clone())?;
     manager.init().await?;
 
-    let dashboard = if dashboard_enabled {
-        Some(DashboardHandle::spawn(Arc::clone(&manager), cli.interactive))
-    } else {
-        None
+    let dashboard = match output_mode {
+        OutputMode::Dashboard => Some(DashboardHandle::spawn(Arc::clone(&manager), cli.interactive)),
+        _ => None,
+    };
+    let plain_reporter = match output_mode {
+        OutputMode::PlainText => Some(PlainTextHandle::spawn(Arc::clone(&manager))),
+        _ => None,
     };
 
     let command_task = if cli.interactive {
@@ -65,10 +69,9 @@ pub(crate) async fn run() -> Result<(), Error> {
     } else {
         None
     };
-    let event_task = if dashboard_enabled {
-        None
-    } else {
-        Some(spawn_event_reporter(Arc::clone(&manager)))
+    let event_task = match output_mode {
+        OutputMode::LogOnly => Some(spawn_event_reporter(Arc::clone(&manager))),
+        _ => None,
     };
 
     for url in prepare_urls(&cli.urls, config.shuffle) {
@@ -79,8 +82,12 @@ pub(crate) async fn run() -> Result<(), Error> {
     }
 
     manager.wait_for_all_tasks().await?;
+    let completion_summary = build_completion_summary(&manager).await;
 
     if let Some(handle) = dashboard {
+        handle.shutdown().await;
+    }
+    if let Some(handle) = plain_reporter {
         handle.shutdown().await;
     }
     if let Some(task) = command_task {
@@ -92,16 +99,33 @@ pub(crate) async fn run() -> Result<(), Error> {
         let _ = task.await;
     }
 
+    print_completion_summary(&completion_summary);
+
     Ok(())
 }
 
-fn select_log_level(cli: &Cli, dashboard_enabled: bool) -> LevelFilter {
-    if dashboard_enabled {
-        LevelFilter::Warn
-    } else if cli.verbose {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Dashboard,
+    PlainText,
+    LogOnly,
+}
+
+fn select_output_mode(cli: &Cli) -> OutputMode {
+    if cli.verbose {
+        OutputMode::LogOnly
+    } else if std::io::stdout().is_terminal() {
+        OutputMode::Dashboard
+    } else {
+        OutputMode::PlainText
+    }
+}
+
+fn select_log_level(output_mode: OutputMode) -> LevelFilter {
+    if matches!(output_mode, OutputMode::LogOnly) {
         LevelFilter::Debug
     } else {
-        LevelFilter::Info
+        LevelFilter::Warn
     }
 }
 
@@ -215,7 +239,9 @@ async fn execute_command(manager: &Arc<Manager>, command: Command) -> Vec<String
         Command::Status(target) => status_messages(manager, target).await,
         Command::Pause(target) => apply_task_command(manager, target, TaskControl::Pause).await,
         Command::Resume(target) => apply_task_command(manager, target, TaskControl::Resume).await,
+        Command::Retry(target) => apply_task_command(manager, target, TaskControl::Retry).await,
         Command::Cancel(target) => apply_task_command(manager, target, TaskControl::Cancel).await,
+        Command::Delete(target) => apply_task_command(manager, target, TaskControl::Delete).await,
         Command::SetRateLimit(limit_kbps) => {
             manager.set_rate_limit_kbps(limit_kbps).await;
             vec![format!(
@@ -269,7 +295,10 @@ async fn apply_task_command(
     control: TaskControl,
 ) -> Vec<String> {
     let task_ids = match target {
-        CommandTarget::All => return apply_global_command(manager, control).await,
+        CommandTarget::All if !matches!(control, TaskControl::Retry) => {
+            return apply_global_command(manager, control).await;
+        }
+        CommandTarget::All => manager.get_all_tasks().into_iter().map(|task| task.id).collect(),
         CommandTarget::Tasks(ids) => ids,
     };
 
@@ -278,15 +307,14 @@ async fn apply_task_command(
         let result = match control {
             TaskControl::Pause => manager.pause_task(task_id).await.map(|_| ()),
             TaskControl::Resume => manager.resume_task(task_id).await.map(|_| ()),
+            TaskControl::Retry => manager.start_task(task_id).await.map(|_| ()),
             TaskControl::Cancel => manager.cancel_task(task_id).await.map(|_| ()),
+            TaskControl::Delete => manager.delete_task(task_id).await.map(|_| ()),
         };
 
         match result {
             Ok(()) => messages.push(format!("{} task #{task_id}", control.past_tense_label())),
-            Err(err) => messages.push(format!(
-                "Failed to {} task #{task_id}: {err}",
-                control.verb_label()
-            )),
+            Err(err) => messages.push(describe_task_error(manager, task_id, control, &err).await),
         }
     }
     messages
@@ -296,7 +324,9 @@ async fn apply_global_command(manager: &Arc<Manager>, control: TaskControl) -> V
     let result = match control {
         TaskControl::Pause => manager.pause_all().await,
         TaskControl::Resume => manager.resume_all().await,
+        TaskControl::Retry => Ok(()),
         TaskControl::Cancel => manager.cancel_all().await,
+        TaskControl::Delete => manager.delete_all().await,
     };
 
     match result {
@@ -331,13 +361,14 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
     };
 
     format!(
-        "#{} {} {} {}/{}{}",
+        "#{} {} {} {}/{}{} {}",
         snapshot.id,
         snapshot.status,
         progress,
-        snapshot.downloaded_size,
-        snapshot.total_size,
-        piece_label
+        format_bytes(snapshot.downloaded_size),
+        format_bytes(snapshot.total_size),
+        piece_label,
+        snapshot.file_name.as_deref().unwrap_or(snapshot.url.as_str())
     )
 }
 
@@ -345,7 +376,9 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
 enum TaskControl {
     Pause,
     Resume,
+    Retry,
     Cancel,
+    Delete,
 }
 
 impl TaskControl {
@@ -353,7 +386,9 @@ impl TaskControl {
         match self {
             TaskControl::Pause => "pause",
             TaskControl::Resume => "resume",
+            TaskControl::Retry => "retry",
             TaskControl::Cancel => "cancel",
+            TaskControl::Delete => "delete",
         }
     }
 
@@ -361,7 +396,159 @@ impl TaskControl {
         match self {
             TaskControl::Pause => "Paused",
             TaskControl::Resume => "Resumed",
+            TaskControl::Retry => "Retried",
             TaskControl::Cancel => "Canceled",
+            TaskControl::Delete => "Deleted",
         }
+    }
+}
+
+async fn describe_task_error(
+    manager: &Arc<Manager>,
+    task_id: u32,
+    control: TaskControl,
+    err: &Error,
+) -> String {
+    let available_ids = {
+        let mut ids: Vec<_> = manager.get_all_tasks().into_iter().map(|task| task.id).collect();
+        ids.sort_unstable();
+        ids
+    };
+
+    if matches!(err, Error::TaskNotFound(_)) {
+        return if available_ids.is_empty() {
+            format!(
+                "Failed to {} task #{task_id}: task does not exist and there are no active tasks",
+                control.verb_label()
+            )
+        } else {
+            format!(
+                "Failed to {} task #{task_id}: task does not exist. Available task ids: {}",
+                control.verb_label(),
+                available_ids
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+    }
+
+    let Some(task) = manager.get_task_by_id(task_id) else {
+        return format!("Failed to {} task #{task_id}: {err}", control.verb_label());
+    };
+    let snapshot = task.snapshot().await;
+    let hint = status_hint(control, &snapshot);
+    if hint.is_empty() {
+        format!(
+            "Failed to {} task #{} (current state: {}): {}",
+            control.verb_label(),
+            task_id,
+            snapshot.status,
+            err
+        )
+    } else {
+        format!(
+            "Failed to {} task #{} (current state: {}): {}. Hint: {}",
+            control.verb_label(),
+            task_id,
+            snapshot.status,
+            err,
+            hint
+        )
+    }
+}
+
+fn status_hint(control: TaskControl, snapshot: &TaskSnapshot) -> &'static str {
+    match (control, snapshot.status.as_str()) {
+        (TaskControl::Retry, "Completed") => {
+            "completed tasks are not retried automatically; use delete <id> and add the URL again if you want a fresh download"
+        }
+        (TaskControl::Pause, "Paused") => "the task is already paused",
+        (TaskControl::Resume, "Running") => "the task is already running",
+        (TaskControl::Resume, "Completed") => "completed tasks cannot be resumed",
+        (TaskControl::Cancel, "Canceled") => "the task is already canceled",
+        (TaskControl::Delete, "Deleted") => "the task has already been deleted",
+        _ => "",
+    }
+}
+
+struct CompletionSummary {
+    snapshots: Vec<TaskSnapshot>,
+    completed: usize,
+    failed: usize,
+    canceled: usize,
+    deleted: usize,
+    total_downloaded: u64,
+    total_size: u64,
+}
+
+async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
+    let mut tasks = manager.get_all_tasks();
+    tasks.sort_by_key(|task| task.id);
+
+    let mut snapshots = Vec::with_capacity(tasks.len());
+    let mut completed = 0usize;
+    let mut failed = 0usize;
+    let mut canceled = 0usize;
+    let mut deleted = 0usize;
+    let mut total_downloaded = 0u64;
+    let mut total_size = 0u64;
+
+    for task in tasks {
+        let snapshot = task.snapshot().await;
+        total_downloaded = total_downloaded.saturating_add(snapshot.downloaded_size);
+        total_size = total_size.saturating_add(snapshot.total_size);
+        match snapshot.status.as_str() {
+            "Completed" => completed += 1,
+            "Canceled" => canceled += 1,
+            "Deleted" => deleted += 1,
+            status if status.starts_with("Failed") => failed += 1,
+            _ => {}
+        }
+        snapshots.push(snapshot);
+    }
+
+    CompletionSummary {
+        snapshots,
+        completed,
+        failed,
+        canceled,
+        deleted,
+        total_downloaded,
+        total_size,
+    }
+}
+
+fn print_completion_summary(summary: &CompletionSummary) {
+    println!(
+        "Final summary: tasks={} completed={} failed={} canceled={} deleted={} total={} / {}",
+        summary.snapshots.len(),
+        summary.completed,
+        summary.failed,
+        summary.canceled,
+        summary.deleted,
+        format_bytes(summary.total_downloaded),
+        format_bytes(summary.total_size),
+    );
+    for snapshot in &summary.snapshots {
+        println!("  {}", format_status_line(snapshot));
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }

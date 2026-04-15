@@ -12,7 +12,9 @@ pub enum Command {
     Status(CommandTarget),
     Pause(CommandTarget),
     Resume(CommandTarget),
+    Retry(CommandTarget),
     Cancel(CommandTarget),
+    Delete(CommandTarget),
     SetRateLimit(Option<NonZeroU64>),
 }
 
@@ -32,7 +34,9 @@ pub fn parse_command(input: &str) -> Result<Command, String> {
         "status" => Ok(Command::Status(parse_target(&arguments, true)?)),
         "pause" => Ok(Command::Pause(parse_target(&arguments, true)?)),
         "resume" => Ok(Command::Resume(parse_target(&arguments, true)?)),
+        "retry" => Ok(Command::Retry(parse_target(&arguments, true)?)),
         "cancel" => Ok(Command::Cancel(parse_target(&arguments, true)?)),
+        "delete" => Ok(Command::Delete(parse_target(&arguments, true)?)),
         "limit" => parse_limit_command(&arguments),
         _ => Err(format!("Unknown command: {input}. Type 'help' for usage.")),
     }
@@ -45,7 +49,9 @@ pub fn help_lines() -> Vec<String> {
         "  status [all|id ...]          Print task summary for all tasks or selected task ids".into(),
         "  pause [all|id ...]           Pause all tasks or selected task ids".into(),
         "  resume [all|id ...]          Resume all tasks or selected task ids".into(),
+        "  retry [all|id ...]           Restart failed, canceled, or pending tasks".into(),
         "  cancel [all|id ...]          Cancel all tasks or selected task ids".into(),
+        "  delete [all|id ...]          Delete tasks and remove their local files".into(),
         "  limit <kbps|off>             Set global rate limit, or disable it".into(),
     ]
 }
@@ -111,6 +117,22 @@ mod tests {
         assert!(matches!(
             parse_command("resume 1 2").unwrap(),
             Command::Resume(CommandTarget::Tasks(ids)) if ids == vec![1, 2]
+        ));
+    }
+
+    #[test]
+    fn parses_retry_command() {
+        assert!(matches!(
+            parse_command("retry all").unwrap(),
+            Command::Retry(CommandTarget::All)
+        ));
+    }
+
+    #[test]
+    fn parses_delete_command() {
+        assert!(matches!(
+            parse_command("delete 4").unwrap(),
+            Command::Delete(CommandTarget::Tasks(ids)) if ids == vec![4]
         ));
     }
 

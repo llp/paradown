@@ -1,0 +1,7 @@
+target
+dist
+dist-test
+.git
+.github
+downloads
+*.db

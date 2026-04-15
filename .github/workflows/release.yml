@@ -56,6 +56,9 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/*.sbom.json
+            dist/*.sig
+            dist/*.asc
           if-no-files-found: error
 
   publish:
@@ -104,3 +107,6 @@ jobs:
           files: |
             release-artifacts/**/*.tar.gz
             release-artifacts/**/*.sha256
+            release-artifacts/**/*.sbom.json
+            release-artifacts/**/*.sig
+            release-artifacts/**/*.asc

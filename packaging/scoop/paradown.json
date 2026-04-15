@@ -1,0 +1,23 @@
+{
+  "version": "0.1.1",
+  "description": "HTTP-focused download manager with resume, SQLite recovery, and CLI dashboard",
+  "homepage": "https://github.com/llp/paradown",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/llp/paradown/releases/download/v0.1.1/paradown-v0.1.1-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_WINDOWS_X64_SHA256"
+    }
+  },
+  "bin": "paradown.exe",
+  "checkver": {
+    "github": "https://github.com/llp/paradown"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/llp/paradown/releases/download/v$version/paradown-v$version-x86_64-pc-windows-msvc.zip"
+      }
+    }
+  }
+}

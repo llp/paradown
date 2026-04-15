@@ -64,6 +64,7 @@ PACKAGE_NAME="paradown-v${VERSION}-${TARGET}"
 STAGE_DIR="${OUT_DIR}/${PACKAGE_NAME}"
 ARCHIVE_PATH="${OUT_DIR}/${PACKAGE_NAME}.tar.gz"
 CHECKSUM_PATH="${OUT_DIR}/${PACKAGE_NAME}.sha256"
+SBOM_PATH="${OUT_DIR}/${PACKAGE_NAME}.sbom.json"
 
 if command -v shasum >/dev/null 2>&1; then
   SHA256_CMD=(shasum -a 256)
@@ -104,6 +105,17 @@ tar -C "$OUT_DIR" -czf "$ARCHIVE_PATH" "$PACKAGE_NAME"
 echo "==> Writing checksum"
 (cd "$OUT_DIR" && "${SHA256_CMD[@]}" "$(basename "$ARCHIVE_PATH")" > "$(basename "$CHECKSUM_PATH")")
 
+echo "==> Generating SBOM"
+"$ROOT_DIR/scripts/generate-sbom.sh" --out-dir "$OUT_DIR" --package-name "$PACKAGE_NAME"
+
+if [[ -n "${PARADOWN_MINISIGN_KEY:-}" || -n "${PARADOWN_GPG_KEY_ID:-}" ]]; then
+  echo "==> Signing release artifacts"
+  "$ROOT_DIR/scripts/sign-release.sh" --artifact "$ARCHIVE_PATH"
+fi
+
 echo "Release artifacts created:"
 echo "  archive:  $ARCHIVE_PATH"
 echo "  checksum: $CHECKSUM_PATH"
+if [[ -f "$SBOM_PATH" ]]; then
+  echo "  sbom:     $SBOM_PATH"
+fi

@@ -7,6 +7,7 @@
 What is implemented today:
 
 - Production path for `HTTP/HTTPS`
+- Official `paradown` CLI binary with a live multi-task dashboard
 - Multi-worker downloads when the origin supports HTTP range requests
 - SQLite and in-memory persistence
 - Restart recovery with worker layout validation
@@ -53,7 +54,7 @@ Run with interactive commands enabled:
 cargo run --all-features -- \
   --interactive \
   --rate-limit-kbps 512 \
-  --urls https://example.com/file.iso
+  --urls https://example.com/file.iso https://example.com/file-2.iso
 ```
 
 ## CLI flags
@@ -76,16 +77,24 @@ CLI overrides are applied on top of config file values when both are present.
 
 Interactive mode is only enabled when `--interactive` is passed.
 
+When stdout is a terminal and `--verbose` is not enabled, the CLI renders a live dashboard that shows:
+
+- all tasks at once
+- per-task status, progress bar, downloaded bytes, speed, and piece progress
+- global task counts, aggregate speed, and current rate limit
+- recent task/command messages
+
 Supported commands:
 
 - `help`
-- `status`
-- `pause`
-- `resume`
-- `cancel`
+- `status [all|id ...]`
+- `pause [all|id ...]`
+- `resume [all|id ...]`
+- `cancel [all|id ...]`
 - `limit <kbps|off>`
 
-These commands operate on the current download session globally, not per task.
+If no task ids are provided, `status / pause / resume / cancel` default to `all`.
+If `--verbose` is enabled, the CLI falls back to log-oriented output instead of the live dashboard.
 
 ## Configuration
 
@@ -123,6 +132,7 @@ Important notes:
 The current internal structure is roughly:
 
 - `download`: curated public API for `Manager`, `Task`, `Worker`, `TaskRequest`, `Event`, and `Status`
+- `src/main.rs` + `src/cli_app/`: official CLI binary, dashboard renderer, and command handling
 - `coordinator/`: queueing, event fan-in, and task registration
 - `job/`: per-download lifecycle, preparation, persistence helpers, finalization
 - `worker/`: worker facade, runtime loop, transfer logic, retry logic

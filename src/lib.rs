@@ -1,5 +1,4 @@
 mod checksum;
-pub mod cli;
 mod config;
 mod coordinator;
 mod discovery;
@@ -34,5 +33,5 @@ pub use download::{
     Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
 };
 pub use error::Error;
-pub use runtime::init_logger;
+pub use runtime::{init_logger, init_logger_with_level};
 pub use storage::{Backend, Store};

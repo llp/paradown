@@ -9,7 +9,10 @@ pub fn init_logger(debug: bool) {
     } else {
         LevelFilter::Info
     };
+    init_logger_with_level(log_level);
+}
 
+pub fn init_logger_with_level(log_level: LevelFilter) {
     let mut builder = env_logger::Builder::from_default_env();
     builder
         .filter_level(log_level)

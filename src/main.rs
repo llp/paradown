@@ -1,7 +1,7 @@
 use clap::Parser;
 use log::{error, info, warn};
 use paradown::cli::{Command, InteractiveMode, print_help};
-use paradown::download::{Event, Manager, TaskRequest};
+use paradown::download::{DownloadSpec, Event, Manager};
 use paradown::{Config, Error, init_logger};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -76,8 +76,9 @@ async fn main() -> Result<(), Error> {
     };
 
     for url in &cli.urls {
-        let request = TaskRequest::builder(url).build();
-        let task_id = manager.add_task(request).await?;
+        let task_id = manager
+            .add_download(DownloadSpec::parse(url.clone())?)
+            .await?;
         manager.start_task(task_id).await?;
     }
 

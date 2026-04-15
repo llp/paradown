@@ -9,6 +9,7 @@ use self::state::StartDirective;
 use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
+use crate::domain::DownloadSpec;
 use crate::error::Error;
 use crate::events::Event;
 use crate::stats::Stats;
@@ -26,7 +27,7 @@ use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
 
 pub struct Task {
     pub id: u32,
-    pub url: String,
+    pub spec: DownloadSpec,
     pub status: Mutex<Status>,
     pub file_name: OnceCell<String>,
     pub file_path: Arc<OnceCell<PathBuf>>,
@@ -66,7 +67,7 @@ pub struct TaskSnapshot {
 impl Task {
     pub fn new(
         id: u32,
-        url: String,
+        spec: DownloadSpec,
         file_name: Option<String>,
         file_path: Option<String>,
         status: Option<Status>,
@@ -97,7 +98,7 @@ impl Task {
 
         Ok(Arc::new(Self {
             id,
-            url,
+            spec,
             file_name: file_name_cell,
             file_path: file_path_cell,
             checksums: Mutex::new(checksums),
@@ -129,7 +130,7 @@ impl Task {
         let updated_at_guard = self.updated_at.lock().await;
         TaskSnapshot {
             id: self.id,
-            url: self.url.clone(),
+            url: self.spec.locator().to_string(),
             file_name: self.file_name.get().cloned(),
             file_path: self.file_path.get().cloned(),
             status: status_str,
@@ -142,7 +143,7 @@ impl Task {
     }
 
     pub async fn init(self: &Arc<Self>) -> Result<(), Error> {
-        debug!("[Task {}] Initializing task: {}", self.id, self.url);
+        debug!("[Task {}] Initializing task: {}", self.id, self.spec);
 
         self.persist_task().await?;
         self.persist_task_checksums().await?;
@@ -205,15 +206,10 @@ impl Task {
             return name.clone();
         }
 
-        let file_name = if let Ok(url) = url::Url::parse(&self.url) {
-            url.path_segments()
-                .and_then(|segments| segments.last())
-                .filter(|segment| !segment.is_empty())
-                .map(|segment| segment.to_string())
-                .unwrap_or_else(|| format!("download_{}.tmp", self.id))
-        } else {
-            format!("download_{}.tmp", self.id)
-        };
+        let file_name = self
+            .spec
+            .file_name_hint()
+            .unwrap_or_else(|| format!("download_{}.tmp", self.id));
 
         let _ = self.file_name.set(file_name.clone());
         file_name
@@ -249,7 +245,7 @@ impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Task")
             .field("id", &self.id)
-            .field("url", &self.url)
+            .field("spec", &self.spec)
             .field("status", &self.status)
             .field("file_name", &self.file_name)
             .field("file_path", &self.file_path)

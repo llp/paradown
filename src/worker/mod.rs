@@ -3,6 +3,7 @@ pub(crate) mod runtime;
 pub(crate) mod transfer;
 
 use crate::config::Config;
+use crate::domain::DownloadSpec;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
@@ -25,7 +26,7 @@ pub struct Worker {
     pub config: Arc<Config>,
     pub client: Arc<Client>,
     pub id: u32,
-    pub url: String,
+    pub spec: DownloadSpec,
     pub start: u64,
     pub end: u64,
     pub downloaded_size: AtomicU64,
@@ -46,7 +47,7 @@ impl Worker {
         config: Arc<Config>,
         task: Weak<Task>,
         client: Arc<Client>,
-        url: String,
+        spec: DownloadSpec,
         start: u64,
         end: u64,
         downloaded_size: Option<u64>,
@@ -56,8 +57,11 @@ impl Worker {
         updated_at: Option<DateTime<Utc>>,
     ) -> Self {
         debug!(
-            "[Worker {}] Created for URL: {}, range: {}-{}",
-            id, url, start, end
+            "[Worker {}] Created for locator: {}, range: {}-{}",
+            id,
+            spec.locator(),
+            start,
+            end
         );
 
         let (paused, canceled, deleted) = match status {
@@ -73,7 +77,7 @@ impl Worker {
             task,
             client,
             id,
-            url,
+            spec,
             start,
             end,
             file_path,
@@ -209,7 +213,7 @@ impl fmt::Debug for Worker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Worker")
             .field("id", &self.id)
-            .field("url", &self.url)
+            .field("spec", &self.spec)
             .field("start", &self.start)
             .field("end", &self.end)
             .field("downloaded_size", &self.downloaded_size)
@@ -225,6 +229,7 @@ impl fmt::Debug for Worker {
 mod tests {
     use super::Worker;
     use crate::config::Config;
+    use crate::domain::DownloadSpec;
     use crate::stats::Stats;
     use crate::status::Status;
     use std::path::PathBuf;
@@ -238,7 +243,7 @@ mod tests {
             Arc::new(Config::default()),
             Weak::new(),
             Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
-            "https://example.com/file".into(),
+            DownloadSpec::parse("https://example.com/file").unwrap(),
             0,
             0,
             Some(1),

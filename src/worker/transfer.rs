@@ -1,12 +1,7 @@
 use crate::error::Error;
 use crate::events::Event;
-use crate::protocol_probe::parse_content_range;
 use crate::worker::Worker;
-use futures_util::StreamExt;
-use log::debug;
-use reqwest::{StatusCode, header};
 use std::sync::atomic::Ordering;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 
 pub(crate) struct ProgressReporter {
@@ -57,84 +52,6 @@ impl Worker {
             .unwrap_or(false)
     }
 
-    pub(crate) fn build_request(
-        &self,
-        range_start: u64,
-        use_range_requests: bool,
-    ) -> reqwest::RequestBuilder {
-        let mut request = self.client.get(&self.url);
-        if use_range_requests && range_start <= self.end {
-            request = request.header("Range", format!("bytes={}-{}", range_start, self.end));
-        }
-        request
-    }
-
-    pub(crate) fn resolve_content_length(
-        &self,
-        response: &reqwest::Response,
-        use_range_requests: bool,
-        range_start: u64,
-    ) -> u64 {
-        response.content_length().unwrap_or_else(|| {
-            if use_range_requests {
-                self.end.saturating_sub(range_start).saturating_add(1)
-            } else {
-                self.expected_length()
-            }
-        })
-    }
-
-    pub(crate) async fn stream_response_to_file(
-        &self,
-        response: reqwest::Response,
-        downloaded_size: &mut u64,
-        reporter: &mut ProgressReporter,
-        use_range_requests: bool,
-        range_start: u64,
-    ) -> Result<(), Error> {
-        let file_path = &*self.file_path;
-        debug!("[Worker {}] Writing to file: {:?}", self.id, file_path);
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(file_path)
-            .await?;
-
-        let file_offset = if use_range_requests {
-            range_start
-        } else {
-            self.start
-        };
-        file.seek(tokio::io::SeekFrom::Start(file_offset)).await?;
-
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            if self.should_stop_gracefully() {
-                return Ok(());
-            }
-
-            if !self.wait_until_resumed().await {
-                return Ok(());
-            }
-
-            let chunk = chunk.map_err(|err| Error::NetworkError(self.id, err.to_string()))?;
-            let chunk_len = chunk.len() as u64;
-            self.acquire_rate_limit(chunk_len).await;
-            file.write_all(&chunk).await?;
-            *downloaded_size += chunk_len;
-
-            self.stats.update_worker(self.id, chunk_len).await;
-            self.downloaded_size
-                .store(*downloaded_size, Ordering::Relaxed);
-
-            reporter.maybe_emit(self, *downloaded_size).await;
-        }
-
-        Ok(())
-    }
-
     pub(crate) async fn acquire_rate_limit(&self, bytes: u64) {
         let Some(task) = self.task.upgrade() else {
             return;
@@ -163,48 +80,6 @@ impl Worker {
             return Err(Error::Other(format!(
                 "Worker {} downloaded length mismatch: expected {}, got {}",
                 self.id, expected_length, actual_length
-            )));
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn validate_response(
-        &self,
-        response: &reqwest::Response,
-        use_range_requests: bool,
-        expected_start: u64,
-    ) -> Result<(), Error> {
-        if use_range_requests {
-            if response.status() != StatusCode::PARTIAL_CONTENT {
-                return Err(Error::Other(format!(
-                    "Expected 206 Partial Content, got {}",
-                    response.status()
-                )));
-            }
-
-            let content_range = response
-                .headers()
-                .get(header::CONTENT_RANGE)
-                .ok_or_else(|| Error::Other("Missing Content-Range".into()))?
-                .to_str()?;
-            let content_range = parse_content_range(content_range)
-                .ok_or_else(|| Error::Other("Invalid Content-Range".into()))?;
-
-            if content_range.start != expected_start || content_range.end != self.end {
-                return Err(Error::Other(format!(
-                    "Unexpected Content-Range {}-{} for expected {}-{}",
-                    content_range.start, content_range.end, expected_start, self.end
-                )));
-            }
-
-            return Ok(());
-        }
-
-        if response.status() != StatusCode::OK {
-            return Err(Error::Other(format!(
-                "Expected 200 OK, got {}",
-                response.status()
             )));
         }
 

@@ -35,19 +35,20 @@ pub(crate) async fn add_task_with_workers(
     task_request: TaskRequest,
     workers: Option<Vec<SegmentRequest>>,
 ) -> Result<u32, Error> {
+    let locator = task_request.locator().to_string();
     if let Some(existing) = manager
         .tasks
         .iter()
-        .find(|entry| entry.value().url == task_request.url)
+        .find(|entry| entry.value().spec.locator() == locator)
     {
         warn!(
-            "[Manager] Task with URL '{}' already exists, returning existing task_id {}",
-            task_request.url,
+            "[Manager] Task with locator '{}' already exists, returning existing task_id {}",
+            locator,
             *existing.key()
         );
         return Err(Error::Other(format!(
-            "URL '{}' already exists!",
-            task_request.url
+            "Locator '{}' already exists!",
+            locator
         )));
     }
 
@@ -69,7 +70,7 @@ pub(crate) async fn add_task_with_workers(
 
     let task = Task::new(
         task_id,
-        task_request.url.clone(),
+        task_request.spec.clone(),
         file_name,
         file_path,
         task_request.status,
@@ -85,8 +86,7 @@ pub(crate) async fn add_task_with_workers(
     )?;
 
     if let Some(worker_requests) = workers {
-        let restored_workers =
-            build_restored_workers(manager, &task, &task_request.url, worker_requests);
+        let restored_workers = build_restored_workers(manager, &task, worker_requests);
         *task.workers.write().await = restored_workers;
     }
 
@@ -109,7 +109,6 @@ fn next_task_id(manager: &Manager, requested_id: Option<u32>) -> u32 {
 fn build_restored_workers(
     manager: &Arc<Manager>,
     task: &Arc<Task>,
-    url: &str,
     worker_requests: Vec<SegmentRequest>,
 ) -> Vec<Arc<Worker>> {
     let file_path = task.file_path.get().cloned().unwrap_or_else(PathBuf::new);
@@ -122,7 +121,7 @@ fn build_restored_workers(
                 manager.config.clone(),
                 Arc::downgrade(task),
                 task.client.clone(),
-                url.to_string(),
+                task.spec.clone(),
                 worker_request.start,
                 worker_request.end,
                 worker_request.downloaded,

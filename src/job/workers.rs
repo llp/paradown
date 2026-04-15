@@ -92,7 +92,7 @@ impl Task {
                 Arc::clone(&self.config),
                 Arc::downgrade(self),
                 Arc::clone(&self.client),
-                self.url.clone(),
+                self.spec.clone(),
                 chunk.start,
                 chunk.end,
                 Some(0),

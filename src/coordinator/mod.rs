@@ -6,6 +6,7 @@ use self::events::spawn_task_event_loop;
 use self::queue::{acquire_task_permit_or_queue, clear_pending_queue, spawn_next_task};
 use self::registry::{add_task_with_workers, restore_tasks};
 use crate::config::Config;
+use crate::domain::DownloadSpec;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
@@ -91,6 +92,10 @@ impl Manager {
 
     pub async fn add_task(self: &Arc<Self>, task_request: TaskRequest) -> Result<u32, Error> {
         add_task_with_workers(self, task_request, None).await
+    }
+
+    pub async fn add_download(self: &Arc<Self>, spec: DownloadSpec) -> Result<u32, Error> {
+        self.add_task(TaskRequest::builder(spec).build()).await
     }
 
     pub async fn start_task(self: &Arc<Self>, task_id: u32) -> Result<u32, Error> {
@@ -309,10 +314,10 @@ impl Manager {
         self.tasks.get(&id).map(|v| Arc::clone(&v))
     }
 
-    pub fn get_task_by_url(&self, url: &str) -> Option<Arc<Task>> {
+    pub fn get_task_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
         self.tasks
             .iter()
-            .find(|entry| entry.value().url == url)
+            .find(|entry| entry.value().spec.locator() == locator)
             .map(|entry| Arc::clone(entry.value()))
     }
 

@@ -28,6 +28,9 @@ pub enum Error {
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
 
+    #[error("Unsupported protocol: {0}")]
+    UnsupportedProtocol(String),
+
     #[error("URL parse error: {0}")]
     UrlParseError(String),
 

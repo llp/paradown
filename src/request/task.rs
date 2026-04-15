@@ -1,4 +1,6 @@
 use crate::checksum::Checksum;
+use crate::domain::DownloadSpec;
+use crate::error::Error;
 use crate::status::Status;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -6,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRequest {
     pub id: Option<u32>,
-    pub url: String,
+    pub spec: DownloadSpec,
     pub file_name: Option<String>,
     pub file_path: Option<String>,
     pub checksums: Option<Vec<Checksum>>,
@@ -18,10 +20,10 @@ pub struct TaskRequest {
 }
 
 impl TaskRequest {
-    pub fn builder(url: impl Into<String>) -> TaskRequestBuilder {
+    pub fn builder(spec: DownloadSpec) -> TaskRequestBuilder {
         TaskRequestBuilder {
             id: None,
-            url: url.into(),
+            spec,
             file_name: None,
             file_path: None,
             checksums: Some(Vec::new()),
@@ -32,11 +34,19 @@ impl TaskRequest {
             updated_at: None,
         }
     }
+
+    pub fn from_locator(locator: impl Into<String>) -> Result<TaskRequestBuilder, Error> {
+        Ok(Self::builder(DownloadSpec::parse(locator.into())?))
+    }
+
+    pub fn locator(&self) -> &str {
+        self.spec.locator()
+    }
 }
 
 pub struct TaskRequestBuilder {
     id: Option<u32>,
-    url: String,
+    spec: DownloadSpec,
     file_name: Option<String>,
     file_path: Option<String>,
     checksums: Option<Vec<Checksum>>,
@@ -96,7 +106,7 @@ impl TaskRequestBuilder {
     pub fn build(self) -> TaskRequest {
         TaskRequest {
             id: self.id,
-            url: self.url,
+            spec: self.spec,
             file_name: self.file_name,
             file_path: self.file_path,
             checksums: self.checksums,

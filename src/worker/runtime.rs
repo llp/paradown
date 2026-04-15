@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::events::Event;
 use crate::status::Status;
+use crate::transfer::driver::driver_for_spec;
 use crate::worker::Worker;
 use crate::worker::retry::next_retry_delay;
 use crate::worker::transfer::ProgressReporter;
@@ -44,6 +45,7 @@ impl Worker {
 
         let mut retry_count = 0;
         let mut progress = ProgressReporter::new(self, downloaded_size);
+        let driver = driver_for_spec(&self.spec);
 
         loop {
             if self.should_stop_gracefully() {
@@ -57,14 +59,18 @@ impl Worker {
             let use_range_requests = self.supports_range_requests();
             let range_start = self.start.saturating_add(downloaded_size);
 
-            let response = match self
-                .build_request(range_start, use_range_requests)
-                .send()
-                .await
-            {
+            let request = match driver.build_request(self, range_start, use_range_requests) {
+                Ok(request) => request,
+                Err(err) => {
+                    self.retry_or_fail(&mut retry_count, err).await?;
+                    continue;
+                }
+            };
+
+            let response = match request.send().await {
                 Ok(response) => {
                     if let Err(protocol_err) =
-                        self.validate_response(&response, use_range_requests, range_start)
+                        driver.validate_response(self, &response, use_range_requests, range_start)
                     {
                         let err = Error::HttpError(
                             self.id,
@@ -85,7 +91,7 @@ impl Worker {
             };
 
             let response_length =
-                self.resolve_content_length(&response, use_range_requests, range_start);
+                driver.resolve_content_length(self, &response, use_range_requests, range_start);
             let total_size = if use_range_requests {
                 downloaded_size.saturating_add(response_length)
             } else {
@@ -98,14 +104,16 @@ impl Worker {
                 self.id, response_length
             );
 
-            self.stream_response_to_file(
-                response,
-                &mut downloaded_size,
-                &mut progress,
-                use_range_requests,
-                range_start,
-            )
-            .await?;
+            driver
+                .stream_response_to_file(
+                    self,
+                    response,
+                    &mut downloaded_size,
+                    &mut progress,
+                    use_range_requests,
+                    range_start,
+                )
+                .await?;
 
             if self.should_stop_gracefully() {
                 return Ok(());

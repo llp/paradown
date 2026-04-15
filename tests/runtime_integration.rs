@@ -1,5 +1,5 @@
 use paradown::FileConflictStrategy;
-use paradown::download::{Event, Manager, Status, TaskRequest};
+use paradown::download::{DownloadSpec, Event, Manager, Status};
 use paradown::repository::models::{DBDownloadTask, DBDownloadWorker};
 use paradown::{Backend, Config, ConfigBuilder, Store};
 use std::num::NonZeroU64;
@@ -118,7 +118,7 @@ async fn downloads_file_end_to_end_via_manager() {
 
     let mut rx = manager.subscribe_events();
     let task_id = manager
-        .add_task(TaskRequest::builder(server.url("/file.bin")).build())
+        .add_download(DownloadSpec::parse(server.url("/file.bin")).unwrap())
         .await
         .unwrap();
     manager.start_task(task_id).await.unwrap();
@@ -156,7 +156,7 @@ async fn respects_global_rate_limit_during_download() {
 
     let mut rx = manager.subscribe_events();
     let task_id = manager
-        .add_task(TaskRequest::builder(server.url("/limited.bin")).build())
+        .add_download(DownloadSpec::parse(server.url("/limited.bin")).unwrap())
         .await
         .unwrap();
 

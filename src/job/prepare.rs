@@ -1,8 +1,8 @@
 use crate::config::FileConflictStrategy;
+use crate::discovery::origin::{OriginMetadata, discover_origin};
 use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
-use crate::protocol_probe::{DownloadProtocolProbe, probe_download_target};
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     let file_path = job.get_or_init_file_path(download_dir)?;
     debug!("[Task {}] Download file path: {:?}", job.id, file_path);
 
-    let protocol_probe = probe_download_target(job.client.as_ref(), &job.url).await?;
+    let protocol_probe = discover_origin(job.client.as_ref(), &job.spec).await?;
     job.update_protocol_probe(
         protocol_probe.total_size,
         protocol_probe.supports_range_requests,
@@ -72,7 +72,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
 async fn handle_existing_file(
     job: &Arc<Task>,
     file_path: &Arc<PathBuf>,
-    probe: DownloadProtocolProbe,
+    probe: OriginMetadata,
 ) -> Result<bool, Error> {
     if !file_path.as_ref().exists() {
         reset_missing_file_state(job).await?;

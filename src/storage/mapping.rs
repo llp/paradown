@@ -1,4 +1,5 @@
 use crate::checksum::{Checksum, ChecksumAlgorithm};
+use crate::domain::DownloadSpec;
 use crate::job::Task;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
 use crate::request::{SegmentRequest, TaskRequest};
@@ -19,7 +20,7 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
 
     DBDownloadTask {
         id: task.id,
-        url: task.url.clone(),
+        url: task.spec.locator().to_string(),
         file_name,
         file_path,
         status: task.status.lock().await.to_string(),
@@ -85,7 +86,9 @@ pub(crate) fn db_task_to_request(
 ) -> TaskRequest {
     TaskRequest {
         id: Some(task.id),
-        url: task.url.clone(),
+        spec: DownloadSpec::parse(task.url.clone()).unwrap_or(DownloadSpec::Https {
+            url: task.url.clone(),
+        }),
         file_name: normalized_text_field(&task.file_name),
         file_path: normalized_text_field(&task.file_path),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),

@@ -1,25 +1,25 @@
-use crate::persistence::StoredDownloadBundle;
-use crate::request::{DownloadTaskRequest, DownloadWorkerRequest};
-use crate::status::DownloadStatus;
-use crate::storage_mapping::{db_task_to_request, db_workers_to_requests};
+use crate::request::{SegmentRequest, TaskRequest};
+use crate::status::Status;
+use crate::storage::StoredBundle;
+use crate::storage::mapping::{db_task_to_request, db_workers_to_requests};
 use log::warn;
 use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug)]
 pub(crate) struct RestorePlan {
-    task_request: DownloadTaskRequest,
-    workers: Option<Vec<DownloadWorkerRequest>>,
+    task_request: TaskRequest,
+    workers: Option<Vec<SegmentRequest>>,
 }
 
 impl RestorePlan {
-    pub(crate) fn into_parts(self) -> (DownloadTaskRequest, Option<Vec<DownloadWorkerRequest>>) {
+    pub(crate) fn into_parts(self) -> (TaskRequest, Option<Vec<SegmentRequest>>) {
         (self.task_request, self.workers)
     }
 }
 
-pub(crate) fn build_restore_plan(bundle: StoredDownloadBundle) -> RestorePlan {
-    let StoredDownloadBundle {
+pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
+    let StoredBundle {
         task,
         workers,
         checksums,
@@ -27,37 +27,32 @@ pub(crate) fn build_restore_plan(bundle: StoredDownloadBundle) -> RestorePlan {
     let mut task_request = db_task_to_request(&task, &checksums);
     let worker_requests = db_workers_to_requests(&workers);
 
-    let mut restored_status = normalize_restored_status(
-        task_request
-            .status
-            .clone()
-            .unwrap_or(DownloadStatus::Pending),
-    );
+    let mut restored_status =
+        normalize_restored_status(task_request.status.clone().unwrap_or(Status::Pending));
     let file_state = inspect_restore_file_state(task_request.file_path.as_deref());
 
-    if matches!(restored_status, DownloadStatus::Completed)
+    if matches!(restored_status, Status::Completed)
         && !file_state.is_usable_for_completed(task_request.total_size)
     {
         warn!(
             "[Restore Task {}] Completed record has no usable local file, downgrading to Pending",
             task.id
         );
-        restored_status = DownloadStatus::Pending;
+        restored_status = Status::Pending;
     }
 
-    let sanitized_workers =
-        if matches!(restored_status, DownloadStatus::Paused) && file_state.exists {
-            sanitize_worker_requests(task.id, task_request.total_size, worker_requests)
-        } else {
-            Vec::new()
-        };
+    let sanitized_workers = if matches!(restored_status, Status::Paused) && file_state.exists {
+        sanitize_worker_requests(task.id, task_request.total_size, worker_requests)
+    } else {
+        Vec::new()
+    };
 
-    if matches!(restored_status, DownloadStatus::Paused) && sanitized_workers.is_empty() {
+    if matches!(restored_status, Status::Paused) && sanitized_workers.is_empty() {
         warn!(
             "[Restore Task {}] No trustworthy worker state found, downgrading to Pending",
             task.id
         );
-        restored_status = DownloadStatus::Pending;
+        restored_status = Status::Pending;
     }
 
     task_request.status = Some(restored_status);
@@ -75,8 +70,7 @@ pub(crate) fn build_restore_plan(bundle: StoredDownloadBundle) -> RestorePlan {
                 .map(|worker| worker.end.saturating_add(1))
                 .max();
         }
-    } else if !file_state.exists || !matches!(task_request.status, Some(DownloadStatus::Completed))
-    {
+    } else if !file_state.exists || !matches!(task_request.status, Some(Status::Completed)) {
         task_request.downloaded_size = Some(0);
     }
 
@@ -90,9 +84,9 @@ pub(crate) fn build_restore_plan(bundle: StoredDownloadBundle) -> RestorePlan {
     }
 }
 
-fn normalize_restored_status(status: DownloadStatus) -> DownloadStatus {
+fn normalize_restored_status(status: Status) -> Status {
     match status {
-        DownloadStatus::Running | DownloadStatus::Preparing => DownloadStatus::Paused,
+        Status::Running | Status::Preparing => Status::Paused,
         other => other,
     }
 }
@@ -100,8 +94,8 @@ fn normalize_restored_status(status: DownloadStatus) -> DownloadStatus {
 fn sanitize_worker_requests(
     task_id: u32,
     total_size: Option<u64>,
-    mut workers: Vec<DownloadWorkerRequest>,
-) -> Vec<DownloadWorkerRequest> {
+    mut workers: Vec<SegmentRequest>,
+) -> Vec<SegmentRequest> {
     workers.sort_by_key(|worker| worker.index);
 
     let mut sanitized = Vec::with_capacity(workers.len());
@@ -231,16 +225,16 @@ fn inspect_restore_file_state(file_path: Option<&str>) -> RestoreFileState {
 #[cfg(test)]
 mod tests {
     use super::build_restore_plan;
-    use crate::persistence::StoredDownloadBundle;
     use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
-    use crate::status::DownloadStatus;
+    use crate::status::Status;
+    use crate::storage::StoredBundle;
     use chrono::{TimeZone, Utc};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
     fn downgrades_paused_restore_without_local_file() {
-        let plan = build_restore_plan(StoredDownloadBundle {
+        let plan = build_restore_plan(StoredBundle {
             task: DBDownloadTask {
                 id: 1,
                 url: "https://example.com/file.bin".into(),
@@ -267,7 +261,7 @@ mod tests {
 
         let (task_request, workers) = plan.into_parts();
         assert!(workers.is_none());
-        assert!(matches!(task_request.status, Some(DownloadStatus::Pending)));
+        assert!(matches!(task_request.status, Some(Status::Pending)));
         assert_eq!(task_request.downloaded_size, Some(0));
     }
 
@@ -276,7 +270,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let file_path = file.path().to_string_lossy().to_string();
 
-        let plan = build_restore_plan(StoredDownloadBundle {
+        let plan = build_restore_plan(StoredBundle {
             task: DBDownloadTask {
                 id: 2,
                 url: "https://example.com/archive.iso".into(),
@@ -321,7 +315,7 @@ mod tests {
         });
 
         let (task_request, workers) = plan.into_parts();
-        assert!(matches!(task_request.status, Some(DownloadStatus::Paused)));
+        assert!(matches!(task_request.status, Some(Status::Paused)));
         assert_eq!(task_request.downloaded_size, Some(60));
         assert_eq!(workers.as_ref().map(Vec::len), Some(2));
         assert_eq!(
@@ -335,7 +329,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let file_path = file.path().to_string_lossy().to_string();
 
-        let plan = build_restore_plan(StoredDownloadBundle {
+        let plan = build_restore_plan(StoredBundle {
             task: DBDownloadTask {
                 id: 3,
                 url: "https://example.com/video.mp4".into(),
@@ -374,7 +368,7 @@ mod tests {
 
         let (task_request, workers) = plan.into_parts();
         assert!(workers.is_none());
-        assert!(matches!(task_request.status, Some(DownloadStatus::Pending)));
+        assert!(matches!(task_request.status, Some(Status::Pending)));
         assert_eq!(task_request.downloaded_size, Some(0));
     }
 
@@ -383,7 +377,7 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(b"too-short").unwrap();
 
-        let plan = build_restore_plan(StoredDownloadBundle {
+        let plan = build_restore_plan(StoredBundle {
             task: DBDownloadTask {
                 id: 4,
                 url: "https://example.com/release.tar".into(),
@@ -401,7 +395,7 @@ mod tests {
 
         let (task_request, workers) = plan.into_parts();
         assert!(workers.is_none());
-        assert!(matches!(task_request.status, Some(DownloadStatus::Pending)));
+        assert!(matches!(task_request.status, Some(Status::Pending)));
         assert_eq!(task_request.downloaded_size, Some(0));
     }
 }

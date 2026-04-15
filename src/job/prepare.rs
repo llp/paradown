@@ -1,8 +1,8 @@
 use crate::config::FileConflictStrategy;
-use crate::error::DownloadError;
-use crate::job_finalize::{finish_job, verify_checksums};
+use crate::error::Error;
+use crate::job::Task;
+use crate::job::finalize::{finish_job, verify_checksums};
 use crate::protocol_probe::{DownloadProtocolProbe, probe_download_target};
-use crate::task::DownloadTask;
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,14 +18,12 @@ pub(crate) enum PreparationOutcome {
     Finished,
 }
 
-pub(crate) async fn prepare_download(
-    job: &Arc<DownloadTask>,
-) -> Result<PreparationOutcome, DownloadError> {
+pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutcome, Error> {
     let download_dir = &job.config.download_dir;
     if !download_dir.exists() {
-        fs::create_dir_all(download_dir).await.map_err(|e| {
-            DownloadError::Io(format!("Failed to create download directory: {}", e))
-        })?;
+        fs::create_dir_all(download_dir)
+            .await
+            .map_err(|e| Error::Io(format!("Failed to create download directory: {}", e)))?;
         debug!(
             "[Task {}] Created download directory: {}",
             job.id,
@@ -61,7 +59,7 @@ pub(crate) async fn prepare_download(
 
         let outcome = match verify_checksums(job, file_path.as_ref()).await {
             Ok(true) => Ok(()),
-            Ok(false) => Err(DownloadError::Other("Checksum failed".into())),
+            Ok(false) => Err(Error::Other("Checksum failed".into())),
             Err(err) => Err(err),
         };
         finish_job(job, outcome).await?;
@@ -72,10 +70,10 @@ pub(crate) async fn prepare_download(
 }
 
 async fn handle_existing_file(
-    job: &Arc<DownloadTask>,
+    job: &Arc<Task>,
     file_path: &Arc<PathBuf>,
     probe: DownloadProtocolProbe,
-) -> Result<bool, DownloadError> {
+) -> Result<bool, Error> {
     if !file_path.as_ref().exists() {
         reset_missing_file_state(job).await?;
         return Ok(false);
@@ -83,14 +81,14 @@ async fn handle_existing_file(
 
     let metadata = fs::metadata(file_path.as_ref())
         .await
-        .map_err(|e| DownloadError::Io(format!("Failed to read file metadata: {}", e)))?;
+        .map_err(|e| Error::Io(format!("Failed to read file metadata: {}", e)))?;
     let current_size = metadata.len();
 
     match job.config.file_conflict_strategy {
         FileConflictStrategy::Overwrite => {
             fs::remove_file(file_path.as_ref())
                 .await
-                .map_err(|e| DownloadError::Io(format!("Failed to remove existing file: {}", e)))?;
+                .map_err(|e| Error::Io(format!("Failed to remove existing file: {}", e)))?;
             reset_resume_state(job).await?;
             debug!("[Task {}] Overwriting existing file", job.id);
             Ok(false)
@@ -141,10 +139,7 @@ async fn handle_existing_file(
     }
 }
 
-async fn verify_existing_file(
-    job: &Arc<DownloadTask>,
-    file_path: &Arc<PathBuf>,
-) -> Result<bool, DownloadError> {
+async fn verify_existing_file(job: &Arc<Task>, file_path: &Arc<PathBuf>) -> Result<bool, Error> {
     let mut checksums = job.checksums.lock().await;
 
     for checksum in checksums.iter_mut() {
@@ -165,10 +160,7 @@ async fn verify_existing_file(
     Ok(true)
 }
 
-async fn can_resume_partial_download(
-    job: &Arc<DownloadTask>,
-    supports_range_requests: bool,
-) -> bool {
+async fn can_resume_partial_download(job: &Arc<Task>, supports_range_requests: bool) -> bool {
     if !supports_range_requests {
         return false;
     }
@@ -177,7 +169,7 @@ async fn can_resume_partial_download(
     !workers.is_empty()
 }
 
-async fn reset_missing_file_state(job: &Arc<DownloadTask>) -> Result<(), DownloadError> {
+async fn reset_missing_file_state(job: &Arc<Task>) -> Result<(), Error> {
     let has_partial_progress = job.downloaded_size.load(Ordering::Relaxed) > 0;
     let has_workers = !job.workers.read().await.is_empty();
 
@@ -192,7 +184,7 @@ async fn reset_missing_file_state(job: &Arc<DownloadTask>) -> Result<(), Downloa
     reset_resume_state(job).await
 }
 
-async fn reset_resume_state(job: &Arc<DownloadTask>) -> Result<(), DownloadError> {
+async fn reset_resume_state(job: &Arc<Task>) -> Result<(), Error> {
     job.downloaded_size.store(0, Ordering::Relaxed);
     job.clear_task_workers().await?;
     job.purge_task_workers().await?;

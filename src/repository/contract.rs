@@ -1,0 +1,24 @@
+use crate::error::Error;
+use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait Repository: Send + Sync {
+    //
+    async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, Error>;
+    async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, Error>;
+    async fn save_task(&self, task: &DBDownloadTask) -> Result<(), Error>;
+    async fn delete_task(&self, task_id: u32) -> Result<(), Error>;
+
+    //
+    async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, Error>;
+    async fn load_worker(&self, worker_id: u32) -> Result<Option<DBDownloadWorker>, Error>;
+    async fn save_worker(&self, worker: &DBDownloadWorker) -> Result<(), Error>;
+    async fn delete_workers(&self, task_id: u32) -> Result<(), Error>;
+
+    //
+    async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error>;
+    async fn load_checksum(&self, checksum_id: u32) -> Result<Option<DBDownloadChecksum>, Error>;
+    async fn save_checksum(&self, checksum: &DBDownloadChecksum) -> Result<(), Error>;
+    async fn delete_checksums(&self, task_id: u32) -> Result<(), Error>;
+}

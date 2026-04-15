@@ -1,10 +1,10 @@
 use crate::chunk::plan_download_chunks;
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::job_finalize::finalize_download;
-use crate::status::DownloadStatus;
-use crate::task::DownloadTask;
-use crate::worker::DownloadWorker;
+use crate::error::Error;
+use crate::events::Event;
+use crate::job::Task;
+use crate::job::finalize::finalize_download;
+use crate::status::Status;
+use crate::worker::Worker;
 use chrono::Utc;
 use futures::future::join_all;
 use log::{debug, warn};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
 
-impl DownloadTask {
+impl Task {
     pub(crate) fn spawn_worker_event_listener(self: &Arc<Self>) {
         let task = Arc::clone(self);
         let mut rx = self.worker_event_tx.subscribe();
@@ -37,7 +37,7 @@ impl DownloadTask {
     pub(crate) async fn ensure_workers(
         self: &Arc<Self>,
         file_path: &Arc<PathBuf>,
-    ) -> Result<Vec<Arc<DownloadWorker>>, DownloadError> {
+    ) -> Result<Vec<Arc<Worker>>, Error> {
         {
             let workers = self.workers.read().await;
             if !workers.is_empty() {
@@ -58,7 +58,7 @@ impl DownloadTask {
         Ok(workers.clone())
     }
 
-    pub(crate) fn spawn_workers(self: &Arc<Self>, workers: Vec<Arc<DownloadWorker>>) {
+    pub(crate) fn spawn_workers(self: &Arc<Self>, workers: Vec<Arc<Worker>>) {
         let task = Arc::clone(self);
         tokio::spawn(async move {
             let mut worker_tasks = Vec::with_capacity(workers.len());
@@ -75,10 +75,10 @@ impl DownloadTask {
     async fn create_workers(
         self: &Arc<Self>,
         file_path: &Arc<PathBuf>,
-    ) -> Result<Vec<Arc<DownloadWorker>>, DownloadError> {
+    ) -> Result<Vec<Arc<Worker>>, Error> {
         let created_at = Utc::now();
         let requested_workers = if self.supports_range_requests() {
-            self.config.worker_threads
+            self.config.segments_per_task
         } else {
             1
         };
@@ -87,7 +87,7 @@ impl DownloadTask {
 
         let mut workers = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            let worker = Arc::new(DownloadWorker::new(
+            let worker = Arc::new(Worker::new(
                 chunk.index,
                 Arc::clone(&self.config),
                 Arc::downgrade(self),
@@ -97,7 +97,7 @@ impl DownloadTask {
                 chunk.end,
                 Some(0),
                 Arc::clone(file_path),
-                Some(DownloadStatus::Pending),
+                Some(Status::Pending),
                 Arc::clone(&self.stats),
                 Some(created_at),
             ));
@@ -118,7 +118,7 @@ impl DownloadTask {
         Ok(workers)
     }
 
-    async fn can_reuse_existing_workers(&self, workers: &[Arc<DownloadWorker>]) -> bool {
+    async fn can_reuse_existing_workers(&self, workers: &[Arc<Worker>]) -> bool {
         if self.supports_range_requests() {
             return true;
         }
@@ -146,13 +146,13 @@ impl DownloadTask {
         can_reuse
     }
 
-    async fn handle_worker_event(self: &Arc<Self>, event: DownloadEvent) {
+    async fn handle_worker_event(self: &Arc<Self>, event: Event) {
         match event {
-            DownloadEvent::Progress { id, .. } => self.handle_worker_progress(id).await,
-            DownloadEvent::Complete(worker_id) => self.handle_worker_complete(worker_id).await,
-            DownloadEvent::Error(worker_id, err) => self.handle_worker_error(worker_id, err).await,
-            DownloadEvent::Pause(worker_id) => self.handle_worker_pause(worker_id).await,
-            DownloadEvent::Cancel(worker_id) => self.handle_worker_cancel(worker_id).await,
+            Event::Progress { id, .. } => self.handle_worker_progress(id).await,
+            Event::Complete(worker_id) => self.handle_worker_complete(worker_id).await,
+            Event::Error(worker_id, err) => self.handle_worker_error(worker_id, err).await,
+            Event::Pause(worker_id) => self.handle_worker_pause(worker_id).await,
+            Event::Cancel(worker_id) => self.handle_worker_cancel(worker_id).await,
             _ => {}
         }
     }
@@ -171,7 +171,7 @@ impl DownloadTask {
         self.downloaded_size
             .store(total_downloaded, Ordering::Relaxed);
 
-        self.emit_manager_event(DownloadEvent::Progress {
+        self.emit_manager_event(Event::Progress {
             id: self.id,
             downloaded: total_downloaded,
             total: self.total_size.load(Ordering::Relaxed),
@@ -198,11 +198,11 @@ impl DownloadTask {
         self.stats.snapshot().await;
         if let Err(err) = finalize_download(self).await {
             debug!("[Task {}] Finalization failed: {:?}", self.id, err);
-            self.emit_manager_event(DownloadEvent::Error(self.id, err));
+            self.emit_manager_event(Event::Error(self.id, err));
         }
     }
 
-    async fn handle_worker_error(self: &Arc<Self>, worker_id: u32, err: DownloadError) {
+    async fn handle_worker_error(self: &Arc<Self>, worker_id: u32, err: Error) {
         debug!("[Task {}] Worker error: {:?}", self.id, err);
         self.persist_task_worker_later(worker_id);
         self.stats.snapshot().await;
@@ -228,13 +228,13 @@ impl DownloadTask {
             return;
         }
 
-        self.set_status(DownloadStatus::Canceled).await;
-        self.emit_manager_event(DownloadEvent::Cancel(self.id));
+        self.set_status(Status::Canceled).await;
+        self.emit_manager_event(Event::Cancel(self.id));
     }
 
     async fn handle_worker_join_results(
         self: &Arc<Self>,
-        results: Vec<Result<Result<(), DownloadError>, tokio::task::JoinError>>,
+        results: Vec<Result<Result<(), Error>, tokio::task::JoinError>>,
     ) {
         for result in results {
             match result {
@@ -244,7 +244,7 @@ impl DownloadTask {
                     self.fail_with_error(err).await;
                 }
                 Err(err) => {
-                    let join_error = DownloadError::Other(format!("{:?}", err));
+                    let join_error = Error::Other(format!("{:?}", err));
                     debug!("[Task {}] Worker panicked: {:?}", self.id, err);
                     self.fail_with_error(join_error).await;
                 }
@@ -256,7 +256,7 @@ impl DownloadTask {
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let status = worker.status.lock().await;
-            if !matches!(*status, DownloadStatus::Completed) {
+            if !matches!(*status, Status::Completed) {
                 debug!(
                     "[Task {}] Worker not completed -> id: {}, status: {:?}",
                     self.id, worker.id, *status
@@ -271,10 +271,7 @@ impl DownloadTask {
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let status = worker.status.lock().await;
-            if !matches!(
-                *status,
-                DownloadStatus::Canceled | DownloadStatus::Completed
-            ) {
+            if !matches!(*status, Status::Canceled | Status::Completed) {
                 return false;
             }
         }

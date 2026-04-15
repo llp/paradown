@@ -1,8 +1,8 @@
 use clap::Parser;
 use log::{error, info, warn};
 use paradown::cli::{Command, InteractiveMode, print_help};
-use paradown::download::{DownloadCoordinator, DownloadEvent, DownloadJobRequest};
-use paradown::{DownloadConfig, DownloadError, init_logger};
+use paradown::download::{Event, Manager, TaskRequest};
+use paradown::{Config, Error, init_logger};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), DownloadError> {
+async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     let config = build_config(&cli)?;
 
@@ -48,7 +48,7 @@ async fn main() -> Result<(), DownloadError> {
 
     info!(
         "Starting download process with {} workers (max_concurrent = {})",
-        config.worker_threads, config.max_concurrent_downloads
+        config.segments_per_task, config.concurrent_tasks
     );
     info!("Download directory: {}", config.download_dir.display());
     info!(
@@ -60,7 +60,7 @@ async fn main() -> Result<(), DownloadError> {
     );
     info!("Interactive mode: {}", cli.interactive);
 
-    let manager = DownloadCoordinator::new(config)?;
+    let manager = Manager::new(config)?;
     manager.init().await?;
 
     let event_task = spawn_event_reporter(Arc::clone(&manager));
@@ -76,7 +76,7 @@ async fn main() -> Result<(), DownloadError> {
     };
 
     for url in &cli.urls {
-        let request = DownloadJobRequest::builder(url).build();
+        let request = TaskRequest::builder(url).build();
         let task_id = manager.add_task(request).await?;
         manager.start_task(task_id).await?;
     }
@@ -95,23 +95,23 @@ async fn main() -> Result<(), DownloadError> {
     Ok(())
 }
 
-fn build_config(cli: &Cli) -> Result<DownloadConfig, DownloadError> {
+fn build_config(cli: &Cli) -> Result<Config, Error> {
     let mut config = match &cli.config {
-        Some(path) => DownloadConfig::from_file(path)?,
-        None => DownloadConfig::default(),
+        Some(path) => Config::from_file(path)?,
+        None => Config::default(),
     };
 
     if let Some(download_dir) = &cli.download_dir {
         config.download_dir = download_dir.clone();
     }
     if let Some(workers) = cli.workers {
-        config.worker_threads = workers;
+        config.segments_per_task = workers;
         if cli.max_concurrent.is_none() {
-            config.max_concurrent_downloads = workers;
+            config.concurrent_tasks = workers;
         }
     }
     if let Some(max_concurrent) = cli.max_concurrent {
-        config.max_concurrent_downloads = max_concurrent;
+        config.concurrent_tasks = max_concurrent;
     }
     if cli.shuffle {
         config.shuffle = true;
@@ -120,25 +120,23 @@ fn build_config(cli: &Cli) -> Result<DownloadConfig, DownloadError> {
         config.rate_limit_kbps = NonZeroU64::new(rate_limit_kbps);
     }
 
-    config.validate().map_err(DownloadError::from)?;
+    config.validate().map_err(Error::from)?;
     Ok(config)
 }
 
-fn spawn_event_reporter(manager: Arc<DownloadCoordinator>) -> tokio::task::JoinHandle<()> {
+fn spawn_event_reporter(manager: Arc<Manager>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut rx = manager.subscribe_events();
 
         loop {
             match rx.recv().await {
-                Ok(DownloadEvent::Start(id)) => info!("任务 {id} 开始"),
-                Ok(DownloadEvent::Pause(id)) => info!("任务 {id} 已暂停"),
-                Ok(DownloadEvent::Complete(id)) => info!("任务 {id} 已完成"),
-                Ok(DownloadEvent::Cancel(id)) => warn!("任务 {id} 已取消"),
-                Ok(DownloadEvent::Delete(id)) => warn!("任务 {id} 已删除"),
-                Ok(DownloadEvent::Error(id, err)) => error!("任务 {id} 出错: {err}"),
-                Ok(DownloadEvent::Preparing(_))
-                | Ok(DownloadEvent::Pending(_))
-                | Ok(DownloadEvent::Progress { .. }) => {}
+                Ok(Event::Start(id)) => info!("任务 {id} 开始"),
+                Ok(Event::Pause(id)) => info!("任务 {id} 已暂停"),
+                Ok(Event::Complete(id)) => info!("任务 {id} 已完成"),
+                Ok(Event::Cancel(id)) => warn!("任务 {id} 已取消"),
+                Ok(Event::Delete(id)) => warn!("任务 {id} 已删除"),
+                Ok(Event::Error(id, err)) => error!("任务 {id} 出错: {err}"),
+                Ok(Event::Preparing(_)) | Ok(Event::Pending(_)) | Ok(Event::Progress { .. }) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!("下载事件消费落后，跳过了 {skipped} 条事件");
                 }
@@ -149,7 +147,7 @@ fn spawn_event_reporter(manager: Arc<DownloadCoordinator>) -> tokio::task::JoinH
 }
 
 fn spawn_command_handler(
-    manager: Arc<DownloadCoordinator>,
+    manager: Arc<Manager>,
     mut command_rx: tokio::sync::mpsc::Receiver<Command>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -161,10 +159,7 @@ fn spawn_command_handler(
     })
 }
 
-async fn handle_command(
-    manager: &Arc<DownloadCoordinator>,
-    command: Command,
-) -> Result<(), DownloadError> {
+async fn handle_command(manager: &Arc<Manager>, command: Command) -> Result<(), Error> {
     match command {
         Command::Help => {
             print_help();
@@ -189,7 +184,7 @@ async fn handle_command(
     }
 }
 
-async fn print_task_summary(manager: &Arc<DownloadCoordinator>) {
+async fn print_task_summary(manager: &Arc<Manager>) {
     let mut tasks = manager.get_all_tasks();
     tasks.sort_by_key(|task| task.id);
 

@@ -1,6 +1,6 @@
-use crate::DownloadError;
+use crate::Error;
+use crate::repository::contract::Repository;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
-use crate::repository::repository::DownloadRepository;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{Row, SqlitePool};
@@ -13,7 +13,7 @@ pub struct SqliteRepository {
 }
 
 impl SqliteRepository {
-    pub async fn new(db_path: &PathBuf) -> Result<Self, DownloadError> {
+    pub async fn new(db_path: &PathBuf) -> Result<Self, Error> {
         let cwd = std::env::current_dir()?;
         let db_abs = if db_path.is_absolute() {
             db_path.to_path_buf()
@@ -24,21 +24,21 @@ impl SqliteRepository {
         if let Some(parent) = db_abs.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    DownloadError::Other(format!("Failed to create directory {:?}: {}", parent, e))
+                    Error::Other(format!("Failed to create directory {:?}: {}", parent, e))
                 })?;
             }
         }
 
         if !db_abs.exists() {
             fs::File::create(&db_abs).map_err(|e| {
-                DownloadError::Other(format!("Failed to create DB file {:?}: {}", db_abs, e))
+                Error::Other(format!("Failed to create DB file {:?}: {}", db_abs, e))
             })?;
         }
 
         let conn_str = format!("sqlite://{}", db_abs.display());
         let pool = SqlitePool::connect(&conn_str)
             .await
-            .map_err(|e| DownloadError::Other(e.to_string()))?;
+            .map_err(|e| Error::Other(e.to_string()))?;
 
         // 创建表
         sqlx::query(
@@ -100,9 +100,9 @@ impl SqliteRepository {
 }
 
 #[async_trait]
-impl DownloadRepository for SqliteRepository {
+impl Repository for SqliteRepository {
     // ---------------- Task ----------------
-    async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, DownloadError> {
+    async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, Error> {
         let rows = sqlx::query("SELECT * FROM download_tasks ORDER BY id")
             .fetch_all(&*self.pool)
             .await?;
@@ -131,7 +131,7 @@ impl DownloadRepository for SqliteRepository {
         Ok(tasks)
     }
 
-    async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, DownloadError> {
+    async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, Error> {
         let row = sqlx::query("SELECT * FROM download_tasks WHERE id = ?1")
             .bind(task_id)
             .fetch_optional(&*self.pool)
@@ -160,7 +160,7 @@ impl DownloadRepository for SqliteRepository {
         }
     }
 
-    async fn save_task(&self, task: &DBDownloadTask) -> Result<(), DownloadError> {
+    async fn save_task(&self, task: &DBDownloadTask) -> Result<(), Error> {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
@@ -192,7 +192,7 @@ impl DownloadRepository for SqliteRepository {
         Ok(())
     }
 
-    async fn delete_task(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_task(&self, task_id: u32) -> Result<(), Error> {
         sqlx::query("DELETE FROM download_tasks WHERE id = ?1")
             .bind(task_id)
             .execute(&*self.pool)
@@ -201,7 +201,7 @@ impl DownloadRepository for SqliteRepository {
     }
 
     // ---------------- Worker ----------------
-    async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, DownloadError> {
+    async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, Error> {
         let rows =
             sqlx::query("SELECT * FROM download_workers WHERE task_id = ?1 ORDER BY \"index\"")
                 .bind(task_id)
@@ -226,7 +226,7 @@ impl DownloadRepository for SqliteRepository {
             .collect())
     }
 
-    async fn load_worker(&self, worker_id: u32) -> Result<Option<DBDownloadWorker>, DownloadError> {
+    async fn load_worker(&self, worker_id: u32) -> Result<Option<DBDownloadWorker>, Error> {
         let row = sqlx::query("SELECT * FROM download_workers WHERE id = ?1")
             .bind(worker_id)
             .fetch_optional(&*self.pool)
@@ -251,7 +251,7 @@ impl DownloadRepository for SqliteRepository {
         }
     }
 
-    async fn save_worker(&self, worker: &DBDownloadWorker) -> Result<(), DownloadError> {
+    async fn save_worker(&self, worker: &DBDownloadWorker) -> Result<(), Error> {
         // 假设表中已经对 (task_id, index) 建立 UNIQUE 约束
         sqlx::query(
             r#"
@@ -279,7 +279,7 @@ impl DownloadRepository for SqliteRepository {
         Ok(())
     }
 
-    async fn delete_workers(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_workers(&self, task_id: u32) -> Result<(), Error> {
         sqlx::query("DELETE FROM download_workers WHERE task_id = ?1")
             .bind(task_id)
             .execute(&*self.pool)
@@ -288,7 +288,7 @@ impl DownloadRepository for SqliteRepository {
     }
 
     // ---------------- Checksum ----------------
-    async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, DownloadError> {
+    async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error> {
         let rows = sqlx::query("SELECT * FROM download_checksums WHERE task_id = ?1")
             .bind(task_id)
             .fetch_all(&*self.pool)
@@ -310,10 +310,7 @@ impl DownloadRepository for SqliteRepository {
             .collect())
     }
 
-    async fn load_checksum(
-        &self,
-        checksum_id: u32,
-    ) -> Result<Option<DBDownloadChecksum>, DownloadError> {
+    async fn load_checksum(&self, checksum_id: u32) -> Result<Option<DBDownloadChecksum>, Error> {
         let row = sqlx::query("SELECT * FROM download_checksums WHERE id = ?1")
             .bind(checksum_id)
             .fetch_optional(&*self.pool)
@@ -336,7 +333,7 @@ impl DownloadRepository for SqliteRepository {
         }
     }
 
-    async fn save_checksum(&self, checksum: &DBDownloadChecksum) -> Result<(), DownloadError> {
+    async fn save_checksum(&self, checksum: &DBDownloadChecksum) -> Result<(), Error> {
         sqlx::query(
             r#"
                 INSERT INTO download_checksums (task_id, algorithm, value, verified, verified_at)
@@ -357,7 +354,7 @@ impl DownloadRepository for SqliteRepository {
         Ok(())
     }
 
-    async fn delete_checksums(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_checksums(&self, task_id: u32) -> Result<(), Error> {
         sqlx::query("DELETE FROM download_checksums WHERE task_id = ?1")
             .bind(task_id)
             .execute(&*self.pool)
@@ -380,8 +377,8 @@ fn parse_db_datetime(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::SqliteRepository;
+    use crate::repository::contract::Repository;
     use crate::repository::models::DBDownloadTask;
-    use crate::repository::repository::DownloadRepository;
     use chrono::{TimeZone, Utc};
     use tempfile::tempdir;
 

@@ -1,7 +1,7 @@
-use crate::DownloadError;
+use crate::Error;
 
 #[derive(Debug, Clone)]
-pub enum DownloadEvent {
+pub enum Event {
     Pending(u32),
     Preparing(u32),
     Start(u32),
@@ -12,7 +12,7 @@ pub enum DownloadEvent {
         total: u64,
     },
     Complete(u32),
-    Error(u32, DownloadError),
+    Error(u32, Error),
     Cancel(u32),
     Delete(u32),
 }

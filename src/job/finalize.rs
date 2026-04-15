@@ -1,21 +1,21 @@
-use crate::DownloadStatus;
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::task::DownloadTask;
+use crate::Status;
+use crate::error::Error;
+use crate::events::Event;
+use crate::job::Task;
 use chrono::Utc;
 use log::debug;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(crate) async fn finalize_download(job: &Arc<DownloadTask>) -> Result<(), DownloadError> {
+pub(crate) async fn finalize_download(job: &Arc<Task>) -> Result<(), Error> {
     let outcome = if let Some(path) = job.file_path.get() {
         match verify_checksums(job, path.as_ref()).await {
             Ok(true) => Ok(()),
-            Ok(false) => Err(DownloadError::Other("Checksum failed".into())),
+            Ok(false) => Err(Error::Other("Checksum failed".into())),
             Err(err) => Err(err),
         }
     } else {
-        Err(DownloadError::Other(
+        Err(Error::Other(
             "No file path set for task, cannot verify checksum".into(),
         ))
     };
@@ -23,15 +23,12 @@ pub(crate) async fn finalize_download(job: &Arc<DownloadTask>) -> Result<(), Dow
     finish_job(job, outcome).await
 }
 
-pub(crate) async fn finish_job(
-    job: &Arc<DownloadTask>,
-    outcome: Result<(), DownloadError>,
-) -> Result<(), DownloadError> {
+pub(crate) async fn finish_job(job: &Arc<Task>, outcome: Result<(), Error>) -> Result<(), Error> {
     match outcome {
         Ok(()) => {
             {
                 let mut status = job.status.lock().await;
-                *status = DownloadStatus::Completed;
+                *status = Status::Completed;
             }
 
             debug!("[Task {}] Download job completed", job.id);
@@ -39,13 +36,13 @@ pub(crate) async fn finish_job(
             job.persist_task().await?;
 
             if let Some(manager) = job.manager.upgrade() {
-                let _ = manager.task_event_tx.send(DownloadEvent::Complete(job.id));
+                let _ = manager.task_event_tx.send(Event::Complete(job.id));
             }
         }
         Err(err) => {
             {
                 let mut status = job.status.lock().await;
-                *status = DownloadStatus::Failed(err.clone());
+                *status = Status::Failed(err.clone());
             }
 
             debug!("[Task {}] Download job failed: {:?}", job.id, err);
@@ -55,7 +52,7 @@ pub(crate) async fn finish_job(
             if let Some(manager) = job.manager.upgrade() {
                 let _ = manager
                     .task_event_tx
-                    .send(DownloadEvent::Error(job.id, err.clone()));
+                    .send(Event::Error(job.id, err.clone()));
             }
         }
     }
@@ -63,10 +60,7 @@ pub(crate) async fn finish_job(
     Ok(())
 }
 
-pub(crate) async fn verify_checksums(
-    job: &Arc<DownloadTask>,
-    file_path: &Path,
-) -> Result<bool, DownloadError> {
+pub(crate) async fn verify_checksums(job: &Arc<Task>, file_path: &Path) -> Result<bool, Error> {
     let mut checksums = job.checksums.lock().await;
 
     for checksum in checksums.iter_mut() {

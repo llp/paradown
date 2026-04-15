@@ -1,4 +1,4 @@
-use crate::config::DownloadConfigError;
+use crate::config::ConfigError;
 use reqwest::header::ToStrError;
 use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
@@ -9,7 +9,7 @@ use tokio::sync::AcquireError;
 use tokio::task::JoinError;
 
 #[derive(Debug, Error, Clone, Serialize, Deserialize)]
-pub enum DownloadError {
+pub enum Error {
     #[error("IO error: {0}")]
     Io(String),
 
@@ -56,75 +56,75 @@ pub enum DownloadError {
     Header(String),
 }
 
-// 手动实现转换，从 url::ParseError -> DownloadError::UrlParseError
-impl From<url::ParseError> for DownloadError {
+// 手动实现转换，从 url::ParseError -> Error::UrlParseError
+impl From<url::ParseError> for Error {
     fn from(err: url::ParseError) -> Self {
-        DownloadError::UrlParseError(err.to_string())
+        Error::UrlParseError(err.to_string())
     }
 }
 
-impl From<sqlx::Error> for DownloadError {
+impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Self {
-        DownloadError::Other(err.to_string())
+        Error::Other(err.to_string())
     }
 }
 
-impl From<io::Error> for DownloadError {
+impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        DownloadError::Io(err.to_string())
+        Error::Io(err.to_string())
     }
 }
 
-impl From<reqwest::Error> for DownloadError {
+impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
-        DownloadError::Reqwest(err.to_string())
+        Error::Reqwest(err.to_string())
     }
 }
 
-impl From<JoinError> for DownloadError {
+impl From<JoinError> for Error {
     fn from(err: JoinError) -> Self {
-        DownloadError::JoinError(err.to_string())
+        Error::JoinError(err.to_string())
     }
 }
 
-impl From<AcquireError> for DownloadError {
+impl From<AcquireError> for Error {
     fn from(err: AcquireError) -> Self {
-        DownloadError::AcquireError(err.to_string())
+        Error::AcquireError(err.to_string())
     }
 }
 
-impl From<DownloadConfigError> for DownloadError {
-    fn from(err: DownloadConfigError) -> Self {
-        DownloadError::ConfigError(err.to_string())
+impl From<ConfigError> for Error {
+    fn from(err: ConfigError) -> Self {
+        Error::ConfigError(err.to_string())
     }
 }
 
-impl From<Box<dyn StdError>> for DownloadError {
+impl From<Box<dyn StdError>> for Error {
     fn from(err: Box<dyn StdError>) -> Self {
-        DownloadError::Other(err.to_string())
+        Error::Other(err.to_string())
     }
 }
 
-impl From<String> for DownloadError {
+impl From<String> for Error {
     fn from(s: String) -> Self {
-        DownloadError::Other(s)
+        Error::Other(s)
     }
 }
 
-impl From<&str> for DownloadError {
+impl From<&str> for Error {
     fn from(s: &str) -> Self {
-        DownloadError::Other(s.to_string())
+        Error::Other(s.to_string())
     }
 }
 
-impl From<ParseIntError> for DownloadError {
+impl From<ParseIntError> for Error {
     fn from(err: ParseIntError) -> Self {
-        DownloadError::Parse(err.to_string())
+        Error::Parse(err.to_string())
     }
 }
 
-impl From<ToStrError> for DownloadError {
+impl From<ToStrError> for Error {
     fn from(err: ToStrError) -> Self {
-        DownloadError::Header(err.to_string())
+        Error::Header(err.to_string())
     }
 }

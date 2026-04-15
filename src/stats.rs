@@ -7,14 +7,13 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct WorkerStats {
-    pub id: u32,
     pub downloaded_bytes: u64,
     pub last_update: Instant,
     pub current_speed_bps: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DownloadStatsSnapshot {
+pub struct StatsSnapshot {
     pub total_bytes: u64,
     pub total_speed_bps: u64,
     pub average_speed_bps: u64,
@@ -22,7 +21,7 @@ pub struct DownloadStatsSnapshot {
     pub worker_count: usize,
 }
 
-pub struct DownloadStats {
+pub struct Stats {
     pub created_at: SystemTime,
     pub started_at: RwLock<Option<Instant>>,
     total_bytes: AtomicU64,
@@ -32,7 +31,7 @@ pub struct DownloadStats {
     retry_count: AtomicU64,
 }
 
-impl DownloadStats {
+impl Stats {
     pub fn new() -> Self {
         Self {
             created_at: SystemTime::now(), // 任务创建时间
@@ -89,14 +88,13 @@ impl DownloadStats {
                 w.last_update = now;
             })
             .or_insert(WorkerStats {
-                id: worker_id,
                 downloaded_bytes: bytes,
                 last_update: now,
                 current_speed_bps: 0,
             });
     }
 
-    pub async fn snapshot(&self) -> DownloadStatsSnapshot {
+    pub async fn snapshot(&self) -> StatsSnapshot {
         let workers = self.workers.read().await;
         let total_speed = workers.values().map(|w| w.current_speed_bps).sum::<u64>();
         let total_bytes = self.total_bytes.load(Ordering::Relaxed);
@@ -120,7 +118,7 @@ impl DownloadStats {
         let formatted_avg_speed = format_bytes(average_speed);
         let formatted_elapsed = format_duration(elapsed);
 
-        debug!("================= [DownloadStats Snapshot] =================");
+        debug!("================= [Stats Snapshot] =================");
         debug!(
             "Task Summary: total={}  avg_speed={}/s  elapsed={}  workers={}",
             formatted_total_bytes,
@@ -142,7 +140,7 @@ impl DownloadStats {
         }
         debug!("============================================================");
 
-        DownloadStatsSnapshot {
+        StatsSnapshot {
             total_bytes,
             total_speed_bps: total_speed,
             average_speed_bps: average_speed,

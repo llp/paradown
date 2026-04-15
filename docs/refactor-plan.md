@@ -32,16 +32,16 @@
   - 调用库层公开 API
 
 - `download::*`
-  - `DownloadCoordinator`：协调器
-  - `DownloadJob`：单个下载作业
-  - `SegmentWorker`：单作业内的分段下载执行单元
+  - `Manager`：协调器
+  - `Task`：单个下载作业
+  - `Worker`：单作业内的分段下载执行单元
 
-- `coordinator_*`
+- `coordinator/`
   - 事件收敛
   - 队列与 permit 管理
   - 作业注册与恢复
 
-- `job_*`
+- `job/`
   - 下载前准备
   - 下载完成收敛
 
@@ -49,6 +49,10 @@
   - 持久化入口
   - repository 抽象
   - sqlite / memory 实现
+
+- `request/`
+  - `TaskRequest`
+  - `SegmentRequest`
 
 - `chunk.rs`
   - 分块规划
@@ -68,12 +72,12 @@
 已完成内容：
 
 - 新增 `download` 命名空间：[download.rs](/Users/liulipeng/workspace/rust/paradown/src/download.rs:1)
-- 新增 `storage` 命名空间：[storage.rs](/Users/liulipeng/workspace/rust/paradown/src/storage.rs:1)
+- 新增 `storage` 命名空间：[storage.rs](/Users/liulipeng/workspace/rust/paradown/src/storage/mod.rs:1)
 - 为核心类型补充领域命名别名：
-  - `DownloadCoordinator`
-  - `DownloadJob`
-  - `SegmentWorker`
-  - `DownloadStore`
+  - `Manager`
+  - `Task`
+  - `Worker`
+  - `Store`
 - 新增运行时模块：[runtime.rs](/Users/liulipeng/workspace/rust/paradown/src/runtime.rs:1)
   - 统一 logger 初始化
   - 统一 HTTP client 构建
@@ -90,7 +94,7 @@
 - 入口层耦合过深
 - 分块规划和作业编排混杂
 
-### 3.2 第二轮：拆分 DownloadJob 的准备与完成流程
+### 3.2 第二轮：拆分 Task 的准备与完成流程
 
 提交：
 
@@ -98,13 +102,13 @@
 
 已完成内容：
 
-- 新增下载前准备模块：[job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1)
+- 新增下载前准备模块：[job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1)
   - 下载目录准备
   - 文件名/文件路径准备
   - `HEAD + Content-Length` 探测
   - 已存在文件策略处理
   - 零字节文件处理
-- 新增下载完成收敛模块：[job_finalize.rs](/Users/liulipeng/workspace/rust/paradown/src/job_finalize.rs:1)
+- 新增下载完成收敛模块：[job_finalize.rs](/Users/liulipeng/workspace/rust/paradown/src/job/finalize.rs:1)
   - checksum 校验
   - 完成/失败状态收敛
   - 完成/失败事件发送
@@ -117,7 +121,7 @@
 - checksum 收敛逻辑与下载执行逻辑混杂
 - 文件准备逻辑难以单独替换或测试
 
-### 3.3 第三轮：拆分 DownloadCoordinator 的事件、队列和注册逻辑
+### 3.3 第三轮：拆分 Manager 的事件、队列和注册逻辑
 
 提交：
 
@@ -125,14 +129,14 @@
 
 已完成内容：
 
-- 新增协调器事件模块：[coordinator_events.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_events.rs:1)
+- 新增协调器事件模块：[coordinator_events.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/events.rs:1)
   - manager 事件循环迁出
   - terminal 事件统一收敛
-- 新增协调器队列模块：[coordinator_queue.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_queue.rs:1)
+- 新增协调器队列模块：[coordinator_queue.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/queue.rs:1)
   - permit 获取/释放
   - 排队
   - 触发下一个任务
-- 新增协调器注册模块：[coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
+- 新增协调器注册模块：[coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/registry.rs:1)
   - 从持久化恢复任务
   - 注册新任务
   - worker 恢复装配
@@ -144,7 +148,7 @@
 - `manager.rs` 同时承担事件消费、排队调度、恢复组装、注册逻辑
 - 协调器壳层太厚，不利于后续继续演进
 
-### 3.4 第四轮：拆分 DownloadJob 的 worker、state 与 storage 逻辑
+### 3.4 第四轮：拆分 Task 的 worker、state 与 storage 逻辑
 
 提交：
 
@@ -152,19 +156,19 @@
 
 已完成内容：
 
-- 新增 worker 协调模块：[job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- 新增 worker 协调模块：[job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job/workers.rs:1)
   - worker 事件监听
   - worker 创建与装配
   - worker 启动与 join 收敛
   - worker 级进度/完成/错误/取消事件处理
-- 新增作业状态模块：[job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
+- 新增作业状态模块：[job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job/state.rs:1)
   - `start` 前状态判断
   - pause/resume/cancel/delete 状态流转
   - reset/delete file/clear workers 等状态辅助逻辑
-- 新增作业存储模块：[job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
+- 新增作业存储模块：[job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job/storage.rs:1)
   - task/checksum/worker 持久化
   - task/workers/checksums 清理
-- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 收敛为作业门面
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/job/mod.rs:1) 收敛为作业门面
   - 保留结构定义、`new`、`snapshot`、`init`、`start`
   - 保留文件名/文件路径辅助方法
 - [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1) 接入新的内部模块
@@ -173,7 +177,7 @@
 这一轮解决的主要问题：
 
 - `task.rs` 同时承担 worker 生命周期、状态机、持久化辅助和文件清理
-- `DownloadJob` 作为门面类型仍然过重，不利于继续演进
+- `Task` 作为门面类型仍然过重，不利于继续演进
 - 后续如果继续修 worker 协调或状态流转，需要频繁修改超大文件
 
 ### 3.5 第五轮：引入协议探测层并收紧 Range 下载正确性
@@ -190,20 +194,20 @@
   - `Content-Range` 解析
   - Range 支持能力判断
   - 探测单元测试
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 接入协议探测结果
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1) 接入协议探测结果
   - 不再只依赖 `HEAD + Content-Length`
   - 显式记录目标资源是否支持 range
   - 对不支持 range 的部分文件恢复改为安全回退到整文件重下
   - 文件缺失但持久化仍有进度时，清理过期 worker/progress 状态
-- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 增加协议探测状态
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/job/mod.rs:1) 增加协议探测状态
   - `range_requests_supported`
   - `protocol_probe_completed`
-- [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1) 调整恢复语义
+- [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job/state.rs:1) 调整恢复语义
   - 恢复到当前进程后，如果还没有重新探测协议能力，暂停任务会重新走准备流程
-- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1) 根据协议能力决定 worker 规划
+- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job/workers.rs:1) 根据协议能力决定 worker 规划
   - 不支持 range 时只允许单 worker
   - 不兼容的历史 worker 布局会被重建
-- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 收紧响应校验
+- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker/mod.rs:1) 收紧响应校验
   - 支持 range 时显式要求 `206 Partial Content`
   - 显式校验 `Content-Range`
   - 不支持 range 时显式要求 `200 OK`
@@ -224,14 +228,14 @@
 
 已完成内容：
 
-- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1) 修正了 task 持久化主键语义
+- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite.rs:1) 修正了 task 持久化主键语义
   - `download_tasks` 改为按 `id` upsert，而不是按 `url` upsert
   - 保存 task 时显式写入 `id`
   - 避免 task id 与 URL upsert 语义漂移
-- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1) 修正了时间字段 round-trip
+- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite.rs:1) 修正了时间字段 round-trip
   - 新写入的时间戳统一为 RFC3339 风格文本
   - 读取时兼容 RFC3339 和 SQLite `CURRENT_TIMESTAMP` 旧格式
-- [memory_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory_repository.rs:1) 修正了 worker/checksum 的 key 冲突
+- [memory_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory.rs:1) 修正了 worker/checksum 的 key 冲突
   - worker 改为按 `(task_id, index)` 存储
   - checksum 改为按 `(task_id, algorithm)` 存储
   - 避免多任务下相同 worker index 或 checksum id 相互覆盖
@@ -254,14 +258,14 @@
 
 已完成内容：
 
-- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 新增了更明确的 storage API
-  - 新增 `StoredDownloadBundle`
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/storage/mod.rs:1) 新增了更明确的 storage API
+  - 新增 `StoredBundle`
   - 新增 `load_task_bundles()`
-  - 新增 DB 模型到 `DownloadTaskRequest` / `DownloadWorkerRequest` 的转换方法
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 不再直接拼装底层 DB 模型
+  - 新增 DB 模型到 `TaskRequest` / `SegmentRequest` 的转换方法
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/registry.rs:1) 不再直接拼装底层 DB 模型
   - 恢复逻辑改为消费 `persistence.rs` 提供的 bundle 和转换结果
   - 恢复状态判断与存储读取职责开始分离
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 收紧了恢复信任边界
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/registry.rs:1) 收紧了恢复信任边界
   - `Running/Preparing` 统一恢复为 `Paused`
   - 本地文件缺失时，不再信任已持久化的 worker/progress
   - worker 布局必须满足 task_id 正确、index 唯一、range 有效、下载偏移合法、分块连续覆盖
@@ -277,7 +281,7 @@
 - 恢复路径对持久化 worker 数据过于信任
 - 文件缺失、分块重叠、分块不完整等场景缺少明确的降级规则
 
-### 3.8 第八轮：拆分 DownloadWorker 的运行时、传输与重试逻辑
+### 3.8 第八轮：拆分 Worker 的运行时、传输与重试逻辑
 
 提交：
 
@@ -285,19 +289,19 @@
 
 已完成内容：
 
-- 新增 worker 运行时模块：`src/worker_runtime.rs`
+- 新增 worker 运行时模块：`src/worker/runtime.rs`
   - 把 `start()` 主流程从 `worker.rs` 迁出
   - 收敛 worker 启动、成功、失败、重试主循环
   - 把 `is_running` 的收尾从多处分散设置改为统一出口
-- 新增 worker 传输模块：`src/worker_transfer.rs`
+- 新增 worker 传输模块：`src/worker/transfer.rs`
   - 抽离请求构建
   - 抽离响应协议校验
   - 抽离文件打开、seek、写入和进度节流
   - 把 worker 进度上报封装成独立 helper
-- 新增 worker 重试模块：`src/worker_retry.rs`
+- 新增 worker 重试模块：`src/worker/retry.rs`
   - 让 `initial_delay / max_delay / backoff_factor` 真正参与运行时
   - 为 retry delay 增加独立单测
-- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 收敛为 worker 门面
+- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker/mod.rs:1) 收敛为 worker 门面
   - 保留结构体、构造器、暂停/恢复/取消/删除控制逻辑
   - 新增通用的状态设置、事件发送、停止判断 helper
 - 修正了 `resume()` 的锁顺序和状态流转
@@ -325,14 +329,14 @@
   - 把恢复计划、状态降级、worker 布局校验从 `coordinator_registry.rs` 迁出
   - 让恢复层直接消费统一的 storage bundle，而不是耦合协调器实现
   - 为 completed 文件尺寸不匹配场景补了针对性测试
-- 新增存储映射模块：[storage_mapping.rs](/Users/liulipeng/workspace/rust/paradown/src/storage_mapping.rs:1)
+- 新增存储映射模块：[storage_mapping.rs](/Users/liulipeng/workspace/rust/paradown/src/storage/mapping.rs:1)
   - 把 runtime -> DB 的 task/worker/checksum 转换迁出 `persistence.rs`
   - 把 DB -> restore request 的转换迁出 `persistence.rs`
   - 为文本字段归一化和 worker 请求映射补了单测
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 收敛为注册层
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/registry.rs:1) 收敛为注册层
   - `restore_tasks()` 现在只负责读取 bundle、调用 recovery、注册任务
   - worker 恢复装配单独收成 helper，不再混着恢复规则
-- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 收敛为存储门面
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/storage/mod.rs:1) 收敛为存储门面
   - 保留 repository 调用、bundle 加载、task/worker/checksum 保存入口
   - 不再直接承载一整套模型转换细节
 - [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1) 接入新的内部模块
@@ -371,8 +375,8 @@
 已完成内容：
 
 - 新增全局限速模块：[rate_limiter.rs](/Users/liulipeng/workspace/rust/paradown/src/rate_limiter.rs:1)
-- [manager.rs](/Users/liulipeng/workspace/rust/paradown/src/manager.rs:1) 接入共享 rate limiter，并提供运行时更新接口
-- [worker_transfer.rs](/Users/liulipeng/workspace/rust/paradown/src/worker_transfer.rs:1) 在实际写入路径上接入限速控制
+- [manager.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator/mod.rs:1) 接入共享 rate limiter，并提供运行时更新接口
+- [worker/transfer.rs](/Users/liulipeng/workspace/rust/paradown/src/worker/transfer.rs:1) 在实际写入路径上接入限速控制
 - 流式响应的 chunk 错误改为更明确的 `NetworkError`
 - 集成测试补上真实限速下载验证
 
@@ -397,9 +401,9 @@
 - [cli.rs](/Users/liulipeng/workspace/rust/paradown/src/cli.rs:1) 收成更明确的命令层
   - 支持 `help/status/pause/resume/cancel/limit <kbps|off>`
   - 为命令解析补了单测
-- [request.rs](/Users/liulipeng/workspace/rust/paradown/src/request.rs:1) 及其子模块拆分为：
-  - [job_request.rs](/Users/liulipeng/workspace/rust/paradown/src/request/job_request.rs:1)
-  - [segment_request.rs](/Users/liulipeng/workspace/rust/paradown/src/request/segment_request.rs:1)
+- [request.rs](/Users/liulipeng/workspace/rust/paradown/src/request/mod.rs:1) 及其子模块拆分为：
+  - [task.rs](/Users/liulipeng/workspace/rust/paradown/src/request/task.rs:1)
+  - [segment.rs](/Users/liulipeng/workspace/rust/paradown/src/request/segment.rs:1)
 - [README.md](/Users/liulipeng/workspace/rust/paradown/README.md:1) 已与实际实现重新对齐
 
 这一轮解决的主要问题：
@@ -409,31 +413,80 @@
 - `request.rs` 之前仍然把 job/segment 请求混在同一个文件
 - README 和 `--help` 与实际实现不一致
 
+### 3.13 第十三轮：重组包结构并清理公开 API
+
+提交：
+
+- 待提交
+
+已完成内容：
+
+- `src` 根目录按子域收口为目录模块：
+  - `coordinator/`
+  - `job/`
+  - `worker/`
+  - `storage/`
+  - `request/`
+  - `repository/`
+- 公开 API 重新收成两层正式出口：
+  - `download::{Manager, Task, Worker, TaskRequest, SegmentRequest, Event, Status}`
+  - `storage::{Store, Backend}`
+- 根级导出统一为更短、更领域化的名字：
+  - `Config`
+  - `ConfigBuilder`
+  - `Error`
+  - `Checksum`
+- 去掉历史兼容别名，不再继续暴露：
+  - `DownloadCoordinator`
+  - `DownloadTask`
+  - `DownloadWorker`
+  - `DownloadPersistenceManager`
+  - `PersistenceType`
+- 配置字段和 builder API 进一步语义化：
+  - `max_concurrent_downloads` -> `concurrent_tasks`
+  - `worker_threads` -> `segments_per_task`
+  - `persistence_type` -> `storage_backend`
+- `repository/` 目录继续收口：
+  - `repository.rs` -> `contract.rs`
+  - `memory_repository.rs` -> `memory.rs`
+  - `sqlite_repository.rs` -> `sqlite.rs`
+  - trait 名称统一为 `Repository`
+- 移除了未接入主流程的旧 `progress.rs` 模块，并同步删掉无效依赖
+
+这一轮解决的主要问题：
+
+- `src` 根目录文件过多，模块结构已经不能表达真实子域
+- 对外 API 仍然保留大量历史兼容别名，学习成本偏高
+- 配置命名带有实现痕迹，不够贴近使用语义
+- `repository/` 内部文件命名和 trait 命名不统一
+- 旧进度模块长期未接线，但仍然参与编译和告警
+
 ## 4. 当前状态
 
-截至当前，主干架构重构已经基本收尾。
+截至当前，主干架构重构已经完成。
 
 已经完成的核心收口：
 
 - `manager`、`task`、`worker`、`persistence/storage` 的职责边界已经明显清晰
+- 包结构已经按 `coordinator / job / worker / storage / request / repository` 收口
 - 恢复规则和存储映射已经从协调器与存储门面中拆出
 - worker 运行时已经拆成 facade / runtime / transfer / retry 四层
-- `request` 模型已经拆成 job request 与 segment request
+- `request` 模型已经拆成 task request 与 segment request
 - CLI、interactive mode、README、`--help` 已经和当前实现基本对齐
+- 对外 API 已经切换到新的正式出口，不再保留旧兼容别名
 - 自动化验证已经覆盖单元测试、恢复测试、真实下载集成测试、限速集成测试
 
 ## 5. 仍可继续优化的点
 
 这些已经不再是主干架构重构的阻塞项，更偏后续增强：
 
-- `PersistenceType::JsonFile(...)` 仍未实现
-- `persistence.rs` 的内部命名仍带有历史痕迹，如果要进一步统一，可以继续向 `storage` 命名收口
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 仍然兼有目录准备、文件策略和协议结果消费，后续还可以再细拆
+- `Backend::JsonFile(...)` 仍未实现
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1) 仍然兼有目录准备、文件策略和协议结果消费，后续还可以再细拆
 - interactive mode 目前是全局命令，不是按 task 粒度控制
 
 ## 6. 当前判断
 
-截至 2026-04-15，重构工作已经完成了十二轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了十三轮，当前可以认为：
 
 - 主干架构重构已经完成
 - 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态

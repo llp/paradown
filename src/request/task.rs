@@ -1,27 +1,25 @@
-use crate::checksum::DownloadChecksum;
-use crate::status::DownloadStatus;
+use crate::checksum::Checksum;
+use crate::status::Status;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadTaskRequest {
+pub struct TaskRequest {
     pub id: Option<u32>,
     pub url: String,
     pub file_name: Option<String>,
     pub file_path: Option<String>,
-    pub checksums: Option<Vec<DownloadChecksum>>,
-    pub status: Option<DownloadStatus>,
+    pub checksums: Option<Vec<Checksum>>,
+    pub status: Option<Status>,
     pub downloaded_size: Option<u64>,
     pub total_size: Option<u64>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-pub type DownloadJobRequest = DownloadTaskRequest;
-
-impl DownloadTaskRequest {
-    pub fn builder(url: impl Into<String>) -> DownloadJobRequestBuilder {
-        DownloadJobRequestBuilder {
+impl TaskRequest {
+    pub fn builder(url: impl Into<String>) -> TaskRequestBuilder {
+        TaskRequestBuilder {
             id: None,
             url: url.into(),
             file_name: None,
@@ -36,22 +34,20 @@ impl DownloadTaskRequest {
     }
 }
 
-pub struct DownloadJobRequestBuilder {
+pub struct TaskRequestBuilder {
     id: Option<u32>,
     url: String,
     file_name: Option<String>,
     file_path: Option<String>,
-    checksums: Option<Vec<DownloadChecksum>>,
-    status: Option<DownloadStatus>,
+    checksums: Option<Vec<Checksum>>,
+    status: Option<Status>,
     downloaded_size: Option<u64>,
     total_size: Option<u64>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
 }
 
-pub type DownloadRequestBuilder = DownloadJobRequestBuilder;
-
-impl DownloadJobRequestBuilder {
+impl TaskRequestBuilder {
     pub fn id(mut self, id: u32) -> Self {
         self.id = Some(id);
         self
@@ -67,12 +63,12 @@ impl DownloadJobRequestBuilder {
         self
     }
 
-    pub fn checksums(mut self, checksums: Vec<DownloadChecksum>) -> Self {
+    pub fn checksums(mut self, checksums: Vec<Checksum>) -> Self {
         self.checksums = Some(checksums);
         self
     }
 
-    pub fn status(mut self, status: DownloadStatus) -> Self {
+    pub fn status(mut self, status: Status) -> Self {
         self.status = Some(status);
         self
     }
@@ -97,8 +93,8 @@ impl DownloadJobRequestBuilder {
         self
     }
 
-    pub fn build(self) -> DownloadTaskRequest {
-        DownloadTaskRequest {
+    pub fn build(self) -> TaskRequest {
+        TaskRequest {
             id: self.id,
             url: self.url,
             file_name: self.file_name,

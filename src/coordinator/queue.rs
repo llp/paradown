@@ -1,14 +1,14 @@
-use crate::error::DownloadError;
-use crate::manager::{DownloadManager, PendingAction};
+use crate::coordinator::{Manager, PendingAction};
+use crate::error::Error;
 use log::{debug, error, warn};
 use std::sync::Arc;
 use tokio::sync::OwnedSemaphorePermit;
 
 pub(crate) async fn acquire_task_permit_or_queue(
-    manager: &Arc<DownloadManager>,
+    manager: &Arc<Manager>,
     task_id: u32,
     action: PendingAction,
-) -> Result<Option<OwnedSemaphorePermit>, DownloadError> {
+) -> Result<Option<OwnedSemaphorePermit>, Error> {
     match manager.semaphore.clone().try_acquire_owned() {
         Ok(permit) => {
             debug!(
@@ -26,7 +26,7 @@ pub(crate) async fn acquire_task_permit_or_queue(
     }
 }
 
-pub(crate) async fn release_task_permit(manager: &DownloadManager, task_id: u32) {
+pub(crate) async fn release_task_permit(manager: &Manager, task_id: u32) {
     if let Some(task) = manager.get_task(task_id) {
         let mut guard = task.permit.lock().await;
         if guard.is_some() {
@@ -44,10 +44,7 @@ pub(crate) async fn release_task_permit(manager: &DownloadManager, task_id: u32)
     );
 }
 
-pub(crate) async fn remove_from_queue(
-    manager: &DownloadManager,
-    task_id: u32,
-) -> Result<(), DownloadError> {
+pub(crate) async fn remove_from_queue(manager: &Manager, task_id: u32) -> Result<(), Error> {
     let mut queue = manager.pending_queue.lock().await;
     if let Some(pos) = queue.iter().position(|(id, _action)| *id == task_id) {
         queue.remove(pos);
@@ -60,13 +57,13 @@ pub(crate) async fn remove_from_queue(
     Ok(())
 }
 
-pub(crate) async fn clear_pending_queue(manager: &DownloadManager) -> Result<(), DownloadError> {
+pub(crate) async fn clear_pending_queue(manager: &Manager) -> Result<(), Error> {
     let mut queue = manager.pending_queue.lock().await;
     queue.clear();
     Ok(())
 }
 
-pub(crate) async fn spawn_next_task(manager: &Arc<DownloadManager>) -> Result<(), DownloadError> {
+pub(crate) async fn spawn_next_task(manager: &Arc<Manager>) -> Result<(), Error> {
     debug!("[Manager] spawn_next_task invoked");
 
     let next_opt = {
@@ -112,10 +109,10 @@ pub(crate) async fn spawn_next_task(manager: &Arc<DownloadManager>) -> Result<()
 }
 
 async fn enqueue_task_action(
-    manager: &Arc<DownloadManager>,
+    manager: &Arc<Manager>,
     task_id: u32,
     action: PendingAction,
-) -> Result<(), DownloadError> {
+) -> Result<(), Error> {
     let mut queue = manager.pending_queue.lock().await;
     if !queue.iter().any(|(id, queued_action)| {
         *id == task_id && std::mem::discriminant(queued_action) == std::mem::discriminant(&action)

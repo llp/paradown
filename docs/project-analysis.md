@@ -78,10 +78,10 @@
 
 - `src/main.rs`：CLI 入口、参数解析、初始化 manager
 - `src/lib.rs`：库入口，对外 re-export
-- `src/manager.rs`：任务管理、并发控制、队列调度、事件订阅
-- `src/task.rs`：单个下载任务的生命周期、文件策略、worker 创建与汇总
-- `src/worker.rs`：单个 worker 的 HTTP 请求、文件写入、重试和进度上报
-- `src/persistence.rs`：持久化层总入口
+- `src/coordinator/mod.rs`：任务管理、并发控制、队列调度、事件订阅
+- `src/job/mod.rs`：单个下载任务的生命周期、文件策略、worker 创建与汇总
+- `src/worker/mod.rs`：单个 worker 的 HTTP 请求、文件写入、重试和进度上报
+- `src/storage/mod.rs`：持久化层总入口
 - `src/repository/*`：SQLite / 内存仓库及模型定义
 - `src/config.rs`：配置定义与默认值
 - `src/cli.rs`：交互式命令输入
@@ -95,8 +95,8 @@
 
 - 有清晰的“控制层”和“执行层”概念
 - 持久化通过 trait 抽象，有一定可替换性
-- `DownloadManager` 负责任务层调度，`DownloadTask` 负责单任务状态，`DownloadWorker` 负责分块执行，这一层次是成立的
-- `DownloadTaskRequest` 和 `DownloadWorkerRequest` 的存在，为“恢复任务”和“未来扩展接口”留出了余地
+- `Manager` 负责任务层调度，`Task` 负责单任务状态，`Worker` 负责分块执行，这一层次是成立的
+- `TaskRequest` 和 `SegmentRequest` 的存在，为“恢复任务”和“未来扩展接口”留出了余地
 
 ### 3.3 架构问题
 
@@ -104,8 +104,8 @@
 
 主要问题：
 
-- `src/task.rs` 已经超过 1000 行，既处理状态机，又处理文件冲突策略，又处理 worker 创建，又处理持久化，又处理事件桥接，职责过重
-- `src/manager.rs` 接近 800 行，既管理队列，又处理持久化回写，又处理 semaphore permit 生命周期，还兼任事件消费协调者，边界也偏重
+- `src/job/mod.rs` 已经超过 1000 行，既处理状态机，又处理文件冲突策略，又处理 worker 创建，又处理持久化，又处理事件桥接，职责过重
+- `src/coordinator/mod.rs` 接近 800 行，既管理队列，又处理持久化回写，又处理 semaphore permit 生命周期，还兼任事件消费协调者，边界也偏重
 - `progress`、`cli`、`rate_limit` 等周边能力虽然有模块，但和主流程连接很弱，形成了“结构存在但系统闭环不完整”的现象
 
 这意味着项目已经具备“看起来像完整系统”的外观，但内部仍更像“若干功能块拼起来的原型”。
@@ -131,7 +131,7 @@
 
 问题：
 
-- 全局 logger 在 `main.rs` 初始化一次后，又在 `DownloadManager::init()` 中重复初始化，导致运行时 panic
+- 全局 logger 在 `main.rs` 初始化一次后，又在 `Manager::init()` 中重复初始化，导致运行时 panic
 - `InteractiveMode::new()` 返回的 `status_tx` 和 `command_rx` 没有真正接入业务逻辑
 - 事件监听里大量逻辑被注释掉，说明终端输出和进度系统尚未完成
 - CLI 把 `--download-dir` 做成必填，但默认配置又提供了默认目录，这与 README 的使用说明冲突
@@ -151,7 +151,7 @@
 问题：
 
 - manager 既管理任务，又订阅事件，又执行持久化回写，又负责释放 permit 和触发下一个任务，职责过多
-- `DownloadEvent::Progress` 事件每次都触发 `persist_task`，会形成高频持久化压力
+- `Event::Progress` 事件每次都触发 `persist_task`，会形成高频持久化压力
 - 事件消费循环使用 `broadcast::Receiver`，如果消费者 lagged，`recv()` 会返回错误并退出循环，后续不会再处理事件
 - 队列动作 `Retry` 已定义但未真正形成闭环
 - `add_task_with_workers()` 中使用 `expect("PersistenceManager not initialized")`，这属于会把初始化顺序问题直接升级为 panic 的设计
@@ -231,7 +231,7 @@
 
 问题：
 
-- `cli.rs` 只有命令解析与通道发送，没有和 `DownloadManager` 行为闭环
+- `cli.rs` 只有命令解析与通道发送，没有和 `Manager` 行为闭环
 - `progress.rs` 当前没有真正接入主流程
 - 编译 warning 已经说明这些模块大部分未使用
 

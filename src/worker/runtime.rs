@@ -1,14 +1,14 @@
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::status::DownloadStatus;
-use crate::worker::DownloadWorker;
-use crate::worker_retry::next_retry_delay;
-use crate::worker_transfer::ProgressReporter;
+use crate::error::Error;
+use crate::events::Event;
+use crate::status::Status;
+use crate::worker::Worker;
+use crate::worker::retry::next_retry_delay;
+use crate::worker::transfer::ProgressReporter;
 use log::{debug, info};
 use std::sync::atomic::Ordering;
 
-impl DownloadWorker {
-    pub async fn start(&self) -> Result<(), DownloadError> {
+impl Worker {
+    pub async fn start(&self) -> Result<(), Error> {
         if self.is_running.swap(true, Ordering::Relaxed) {
             debug!("[Worker {}] start() called, but already running", self.id);
             return Ok(());
@@ -29,7 +29,7 @@ impl DownloadWorker {
         final_result
     }
 
-    async fn run_download_loop(&self) -> Result<(), DownloadError> {
+    async fn run_download_loop(&self) -> Result<(), Error> {
         if !self.prepare_run_state().await? {
             return Ok(());
         }
@@ -66,7 +66,7 @@ impl DownloadWorker {
                     if let Err(protocol_err) =
                         self.validate_response(&response, use_range_requests, range_start)
                     {
-                        let err = DownloadError::HttpError(
+                        let err = Error::HttpError(
                             self.id,
                             response.status().as_u16(),
                             protocol_err.to_string(),
@@ -78,7 +78,7 @@ impl DownloadWorker {
                     response
                 }
                 Err(err) => {
-                    let err = DownloadError::NetworkError(self.id, err.to_string());
+                    let err = Error::NetworkError(self.id, err.to_string());
                     self.retry_or_fail(&mut retry_count, err).await?;
                     continue;
                 }
@@ -122,24 +122,24 @@ impl DownloadWorker {
         Ok(())
     }
 
-    async fn prepare_run_state(&self) -> Result<bool, DownloadError> {
+    async fn prepare_run_state(&self) -> Result<bool, Error> {
         let current_status = self.status.lock().await.clone();
         match current_status {
-            DownloadStatus::Paused => {
+            Status::Paused => {
                 debug!("[Worker {}] Resuming paused task", self.id);
                 self.paused.store(true, Ordering::Relaxed);
             }
-            DownloadStatus::Canceled | DownloadStatus::Deleted => {
+            Status::Canceled | Status::Deleted => {
                 debug!(
                     "[Worker {}] Task cannot start, status: {:?}",
                     self.id, current_status
                 );
-                return Err(DownloadError::Other(format!(
+                return Err(Error::Other(format!(
                     "Task cannot start, status: {:?}",
                     current_status
                 )));
             }
-            DownloadStatus::Completed => {
+            Status::Completed => {
                 debug!(
                     "[Worker {}] Task already completed, skipping start",
                     self.id
@@ -149,29 +149,25 @@ impl DownloadWorker {
             _ => {}
         }
 
-        self.set_status(DownloadStatus::Running).await;
-        self.emit_worker_event(DownloadEvent::Start(self.id));
+        self.set_status(Status::Running).await;
+        self.emit_worker_event(Event::Start(self.id));
         Ok(true)
     }
 
     async fn finish_success(&self) {
         self.stats.record_success();
-        self.set_status(DownloadStatus::Completed).await;
+        self.set_status(Status::Completed).await;
         info!("[Worker {}] Download completed successfully", self.id);
-        self.emit_worker_event(DownloadEvent::Complete(self.id));
+        self.emit_worker_event(Event::Complete(self.id));
     }
 
-    async fn mark_failed(&self, err: DownloadError) {
+    async fn mark_failed(&self, err: Error) {
         debug!("[Worker {}] Marked as failed: {:?}", self.id, err);
-        self.set_status(DownloadStatus::Failed(err.clone())).await;
-        self.emit_worker_event(DownloadEvent::Error(self.id, err));
+        self.set_status(Status::Failed(err.clone())).await;
+        self.emit_worker_event(Event::Error(self.id, err));
     }
 
-    async fn retry_or_fail(
-        &self,
-        retry_count: &mut u32,
-        err: DownloadError,
-    ) -> Result<(), DownloadError> {
+    async fn retry_or_fail(&self, retry_count: &mut u32, err: Error) -> Result<(), Error> {
         debug!(
             "[Worker {}] Attempt failed: {:?}, retry_count: {}",
             self.id, err, retry_count

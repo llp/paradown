@@ -1,8 +1,6 @@
-pub use crate::events::DownloadEvent;
-pub use crate::manager::{DownloadCoordinator, DownloadManager, PendingAction};
-pub use crate::request::{
-    DownloadJobRequest, DownloadTaskRequest, DownloadWorkerRequest, SegmentRequest,
-};
-pub use crate::status::DownloadStatus;
-pub use crate::task::{DownloadJob, DownloadJobSnapshot, DownloadTask, DownloadTaskSnapshot};
-pub use crate::worker::{DownloadWorker, SegmentWorker};
+pub use crate::coordinator::Manager;
+pub use crate::events::Event;
+pub use crate::job::{Task, TaskSnapshot};
+pub use crate::request::{SegmentRequest, SegmentRequestBuilder, TaskRequest, TaskRequestBuilder};
+pub use crate::status::Status;
+pub use crate::worker::Worker;

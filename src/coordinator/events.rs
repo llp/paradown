@@ -1,12 +1,12 @@
-use crate::coordinator_queue::{release_task_permit, remove_from_queue, spawn_next_task};
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::manager::DownloadManager;
+use crate::coordinator::Manager;
+use crate::coordinator::queue::{release_task_permit, remove_from_queue, spawn_next_task};
+use crate::error::Error;
+use crate::events::Event;
 use log::{error, warn};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-pub(crate) fn spawn_task_event_loop(manager: Arc<DownloadManager>) {
+pub(crate) fn spawn_task_event_loop(manager: Arc<Manager>) {
     let mut rx = manager.task_event_tx.subscribe();
 
     tokio::spawn(async move {
@@ -29,20 +29,17 @@ pub(crate) fn spawn_task_event_loop(manager: Arc<DownloadManager>) {
     });
 }
 
-async fn handle_task_event(
-    manager: &Arc<DownloadManager>,
-    event: DownloadEvent,
-) -> Result<(), DownloadError> {
+async fn handle_task_event(manager: &Arc<Manager>, event: Event) -> Result<(), Error> {
     match event {
-        DownloadEvent::Complete(task_id) => handle_terminal_task_event(manager, task_id).await,
-        DownloadEvent::Cancel(task_id) => handle_terminal_task_event(manager, task_id).await,
-        DownloadEvent::Error(task_id, _err) => handle_terminal_task_event(manager, task_id).await,
-        DownloadEvent::Pause(task_id) => handle_terminal_task_event(manager, task_id).await,
-        DownloadEvent::Preparing(task_id) => {
+        Event::Complete(task_id) => handle_terminal_task_event(manager, task_id).await,
+        Event::Cancel(task_id) => handle_terminal_task_event(manager, task_id).await,
+        Event::Error(task_id, _err) => handle_terminal_task_event(manager, task_id).await,
+        Event::Pause(task_id) => handle_terminal_task_event(manager, task_id).await,
+        Event::Preparing(task_id) => {
             manager.persist_task(task_id).await?;
             Ok(())
         }
-        DownloadEvent::Progress { id, .. } => {
+        Event::Progress { id, .. } => {
             manager.persist_task(id).await?;
             Ok(())
         }
@@ -50,10 +47,7 @@ async fn handle_task_event(
     }
 }
 
-async fn handle_terminal_task_event(
-    manager: &Arc<DownloadManager>,
-    task_id: u32,
-) -> Result<(), DownloadError> {
+async fn handle_terminal_task_event(manager: &Arc<Manager>, task_id: u32) -> Result<(), Error> {
     manager.persist_task(task_id).await?;
     remove_from_queue(manager, task_id).await?;
     release_task_permit(manager, task_id).await;

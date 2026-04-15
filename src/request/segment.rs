@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone)]
-pub struct DownloadWorkerRequest {
+pub struct SegmentRequest {
     pub id: Option<u32>,
     pub task_id: u32,
     pub index: u32,
@@ -12,9 +12,7 @@ pub struct DownloadWorkerRequest {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-pub type SegmentRequest = DownloadWorkerRequest;
-
-pub struct DownloadWorkerBuilder {
+pub struct SegmentRequestBuilder {
     id: Option<u32>,
     task_id: u32,
     index: u32,
@@ -25,9 +23,7 @@ pub struct DownloadWorkerBuilder {
     updated_at: Option<DateTime<Utc>>,
 }
 
-pub type SegmentRequestBuilder = DownloadWorkerBuilder;
-
-impl DownloadWorkerBuilder {
+impl SegmentRequestBuilder {
     pub fn new(task_id: u32, index: u32, start: u64, end: u64) -> Self {
         Self {
             id: None,
@@ -61,8 +57,8 @@ impl DownloadWorkerBuilder {
         self
     }
 
-    pub fn build(self) -> DownloadWorkerRequest {
-        DownloadWorkerRequest {
+    pub fn build(self) -> SegmentRequest {
+        SegmentRequest {
             id: self.id,
             task_id: self.task_id,
             index: self.index,

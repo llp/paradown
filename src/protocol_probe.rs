@@ -1,4 +1,4 @@
-use crate::error::DownloadError;
+use crate::error::Error;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::{Client, Response, StatusCode};
 
@@ -24,7 +24,7 @@ struct HeadProbe {
 pub(crate) async fn probe_download_target(
     client: &Client,
     url: &str,
-) -> Result<DownloadProtocolProbe, DownloadError> {
+) -> Result<DownloadProtocolProbe, Error> {
     let head_probe = probe_with_head(client, url).await?;
 
     if let Some(head) = head_probe {
@@ -61,7 +61,7 @@ pub(crate) fn parse_content_range(value: &str) -> Option<ContentRange> {
     })
 }
 
-async fn probe_with_head(client: &Client, url: &str) -> Result<Option<HeadProbe>, DownloadError> {
+async fn probe_with_head(client: &Client, url: &str) -> Result<Option<HeadProbe>, Error> {
     let response = match client.head(url).send().await {
         Ok(response) => response,
         Err(_) => return Ok(None),
@@ -80,19 +80,19 @@ async fn probe_with_head(client: &Client, url: &str) -> Result<Option<HeadProbe>
 fn probe_with_range_response(
     response: Response,
     head_probe: Option<HeadProbe>,
-) -> Result<DownloadProtocolProbe, DownloadError> {
+) -> Result<DownloadProtocolProbe, Error> {
     match response.status() {
         StatusCode::PARTIAL_CONTENT => {
             let content_range = response
                 .headers()
                 .get(CONTENT_RANGE)
-                .ok_or_else(|| DownloadError::Other("Missing Content-Range".into()))?
+                .ok_or_else(|| Error::Other("Missing Content-Range".into()))?
                 .to_str()?;
             let content_range = parse_content_range(content_range)
-                .ok_or_else(|| DownloadError::Other("Invalid Content-Range".into()))?;
+                .ok_or_else(|| Error::Other("Invalid Content-Range".into()))?;
             let total_size = content_range
                 .total_size
-                .ok_or_else(|| DownloadError::Other("Content-Range missing total size".into()))?;
+                .ok_or_else(|| Error::Other("Content-Range missing total size".into()))?;
 
             Ok(DownloadProtocolProbe {
                 total_size,
@@ -102,7 +102,7 @@ fn probe_with_range_response(
         StatusCode::OK => {
             let total_size = parse_content_length(response.headers().get(CONTENT_LENGTH))?
                 .or_else(|| head_probe.and_then(|probe| probe.total_size))
-                .ok_or_else(|| DownloadError::Other("No Content-Length".into()))?;
+                .ok_or_else(|| Error::Other("No Content-Length".into()))?;
 
             Ok(DownloadProtocolProbe {
                 total_size,
@@ -123,7 +123,7 @@ fn probe_with_range_response(
                 supports_range_requests: total_size > 0,
             })
         }
-        status => Err(DownloadError::Other(format!(
+        status => Err(Error::Other(format!(
             "Failed to probe download target: {}",
             status
         ))),
@@ -145,9 +145,9 @@ fn header_accepts_ranges(value: Option<&reqwest::header::HeaderValue>) -> bool {
 
 fn parse_content_length(
     value: Option<&reqwest::header::HeaderValue>,
-) -> Result<Option<u64>, DownloadError> {
+) -> Result<Option<u64>, Error> {
     value
-        .map(|value| value.to_str()?.parse::<u64>().map_err(DownloadError::from))
+        .map(|value| value.to_str()?.parse::<u64>().map_err(Error::from))
         .transpose()
 }
 

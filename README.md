@@ -85,17 +85,17 @@ These commands operate on the current download session globally, not per task.
 
 ## Configuration
 
-`DownloadConfig` is deserialized directly from TOML. A minimal example that matches the current code shape:
+`Config` is deserialized directly from TOML. A minimal example that matches the current code shape:
 
 ```toml
 download_dir = "./downloads"
 shuffle = false
-max_concurrent_downloads = 4
-worker_threads = 4
+concurrent_tasks = 4
+segments_per_task = 4
 rate_limit_kbps = 256
 debug = true
 file_conflict_strategy = "Resume"
-persistence_type = { Sqlite = "./downloads.db" }
+storage_backend = { Sqlite = "./downloads.db" }
 
 [retry]
 max_retries = 3
@@ -110,7 +110,7 @@ threshold_bytes = 1048576
 
 Important notes:
 
-- `PersistenceType::JsonFile(...)` is defined but not implemented
+- `Backend::JsonFile(...)` is defined but not implemented
 - if `rate_limit_kbps` is omitted or set to `0` through CLI interactive commands, rate limiting is disabled
 - `connection_timeout` is available in code but not shown above because its raw TOML representation is less ergonomic than the CLI path
 
@@ -118,12 +118,14 @@ Important notes:
 
 The current internal structure is roughly:
 
-- `manager`: coordinator API and task lifecycle entry points
-- `coordinator_*`: queueing, event fan-in, task registration
-- `task` + `job_*`: per-download lifecycle, preparation, persistence helpers, finalization
-- `worker` + `worker_*`: worker facade, runtime loop, transfer logic, retry logic
+- `download`: curated public API for `Manager`, `Task`, `Worker`, `TaskRequest`, `Event`, and `Status`
+- `coordinator/`: queueing, event fan-in, and task registration
+- `job/`: per-download lifecycle, preparation, persistence helpers, finalization
+- `worker/`: worker facade, runtime loop, transfer logic, retry logic
+- `storage/`: storage facade plus runtime/DB mapping
+- `request/`: task and segment request models
+- `repository/`: persistence trait plus sqlite / memory backends
 - `recovery`: restore planning and trust rules for persisted state
-- `persistence` + `storage_mapping` + `repository/*`: storage facade, model mapping, backend implementations
 - `protocol_probe`: range support and target probing
 
 ## Testing

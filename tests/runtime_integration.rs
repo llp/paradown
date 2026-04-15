@@ -1,9 +1,7 @@
 use paradown::FileConflictStrategy;
-use paradown::config::DownloadConfigBuilder;
-use paradown::download::{DownloadCoordinator, DownloadEvent, DownloadJobRequest};
-use paradown::persistence::{DownloadPersistenceManager, PersistenceType};
+use paradown::download::{Event, Manager, Status, TaskRequest};
 use paradown::repository::models::{DBDownloadTask, DBDownloadWorker};
-use paradown::status::DownloadStatus;
+use paradown::{Backend, Config, ConfigBuilder, Store};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
@@ -33,9 +31,7 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
         None,
         FileConflictStrategy::Resume,
     );
-    let persistence = DownloadPersistenceManager::new(Arc::new(config.clone()))
-        .await
-        .unwrap();
+    let persistence = Store::new(Arc::new(config.clone())).await.unwrap();
     let repository = persistence.repository();
 
     repository
@@ -79,20 +75,20 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
         .await
         .unwrap();
 
-    let manager = DownloadCoordinator::new(config).unwrap();
+    let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
     let task = manager
         .get_task_by_id(7)
         .expect("restored task should exist");
-    assert!(matches!(*task.status.lock().await, DownloadStatus::Paused));
+    assert!(matches!(*task.status.lock().await, Status::Paused));
     assert_eq!(task.downloaded_size.load(Ordering::Relaxed), 60);
 
     let workers = task.workers.read().await;
     assert_eq!(workers.len(), 2);
     assert!(matches!(
         workers[1].status.lock().await.clone(),
-        DownloadStatus::Paused
+        Status::Paused
     ));
 }
 
@@ -117,12 +113,12 @@ async fn downloads_file_end_to_end_via_manager() {
         None,
         FileConflictStrategy::Overwrite,
     );
-    let manager = DownloadCoordinator::new(config).unwrap();
+    let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
     let mut rx = manager.subscribe_events();
     let task_id = manager
-        .add_task(DownloadJobRequest::builder(server.url("/file.bin")).build())
+        .add_task(TaskRequest::builder(server.url("/file.bin")).build())
         .await
         .unwrap();
     manager.start_task(task_id).await.unwrap();
@@ -135,10 +131,7 @@ async fn downloads_file_end_to_end_via_manager() {
     assert_eq!(downloaded, *body);
 
     let task = manager.get_task_by_id(task_id).unwrap();
-    assert!(matches!(
-        *task.status.lock().await,
-        DownloadStatus::Completed
-    ));
+    assert!(matches!(*task.status.lock().await, Status::Completed));
 }
 
 #[tokio::test]
@@ -158,12 +151,12 @@ async fn respects_global_rate_limit_during_download() {
         NonZeroU64::new(32),
         FileConflictStrategy::Overwrite,
     );
-    let manager = DownloadCoordinator::new(config).unwrap();
+    let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
     let mut rx = manager.subscribe_events();
     let task_id = manager
-        .add_task(DownloadJobRequest::builder(server.url("/limited.bin")).build())
+        .add_task(TaskRequest::builder(server.url("/limited.bin")).build())
         .await
         .unwrap();
 
@@ -183,13 +176,13 @@ fn build_config(
     workers: usize,
     rate_limit_kbps: Option<NonZeroU64>,
     file_conflict_strategy: FileConflictStrategy,
-) -> paradown::DownloadConfig {
-    DownloadConfigBuilder::new()
+) -> Config {
+    ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
-        .worker_threads(workers)
-        .max_concurrent_downloads(1)
+        .segments_per_task(workers)
+        .concurrent_tasks(1)
         .rate_limit_kbps(rate_limit_kbps)
-        .persistence_type(PersistenceType::Sqlite(db_path.to_path_buf()))
+        .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(file_conflict_strategy)
         .build()
         .unwrap()
@@ -197,13 +190,13 @@ fn build_config(
 
 async fn wait_for_task_completion(
     task_id: u32,
-    rx: &mut broadcast::Receiver<DownloadEvent>,
+    rx: &mut broadcast::Receiver<Event>,
 ) -> Result<(), String> {
     timeout(Duration::from_secs(10), async {
         loop {
             match rx.recv().await {
-                Ok(DownloadEvent::Complete(id)) if id == task_id => return Ok(()),
-                Ok(DownloadEvent::Error(id, err)) if id == task_id => {
+                Ok(Event::Complete(id)) if id == task_id => return Ok(()),
+                Ok(Event::Error(id, err)) if id == task_id => {
                     return Err(format!("task failed: {err}"));
                 }
                 Ok(_) => {}

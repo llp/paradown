@@ -1,52 +1,31 @@
+mod checksum;
 mod chunk;
-mod coordinator_events;
-mod coordinator_queue;
-mod coordinator_registry;
-mod job_finalize;
-mod job_prepare;
-mod job_state;
-mod job_storage;
-mod job_workers;
+pub mod cli;
+mod config;
+mod coordinator;
+pub mod download;
+mod error;
+mod events;
+mod job;
 mod protocol_probe;
 mod rate_limiter;
 mod recovery;
-mod runtime;
-mod storage_mapping;
-mod worker_retry;
-mod worker_runtime;
-mod worker_transfer;
-
-pub mod checksum;
-pub mod cli;
-pub mod config;
-pub mod download;
-pub mod error;
-pub mod events;
-pub mod manager;
-pub mod persistence;
-pub mod progress;
 pub mod repository;
-pub mod request;
-pub mod stats;
-pub mod status;
+mod request;
+mod runtime;
+mod stats;
+mod status;
 pub mod storage;
-pub mod task;
-pub mod worker;
+mod worker;
 
-pub use config::DownloadConfig;
-pub use error::DownloadError;
-pub use stats::DownloadStats;
-pub use status::DownloadStatus;
-
-pub use events::DownloadEvent;
-pub use manager::{DownloadCoordinator, DownloadManager};
-pub use persistence::{DownloadStore, StorageBackend};
-pub use request::{DownloadJobRequest, DownloadTaskRequest, SegmentRequest};
-pub use runtime::init_logger;
-pub use task::{DownloadJob, DownloadJobSnapshot, DownloadTaskSnapshot};
-pub use worker::SegmentWorker;
-
+pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
-    DownloadConfigBuilder, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
+    Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
-pub use persistence::PersistenceType;
+pub use download::{
+    Event, Manager, SegmentRequest, SegmentRequestBuilder, Status, Task, TaskRequest,
+    TaskRequestBuilder, TaskSnapshot, Worker,
+};
+pub use error::Error;
+pub use runtime::init_logger;
+pub use storage::{Backend, Store};

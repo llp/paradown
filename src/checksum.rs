@@ -1,4 +1,4 @@
-use crate::error::DownloadError;
+use crate::error::Error;
 use chrono::{DateTime, Utc};
 use digest::Digest;
 use log::debug;
@@ -35,15 +35,15 @@ impl FromStr for ChecksumAlgorithm {
 
 //--------------------------------------------------------------------------------------------------
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DownloadChecksum {
+pub struct Checksum {
     pub algorithm: ChecksumAlgorithm,
     pub value: Option<String>,
     pub verified: Option<bool>,
     pub verified_at: Option<DateTime<Utc>>,
 }
 
-impl DownloadChecksum {
-    pub fn verify(&self, file_path: &Path) -> Result<bool, DownloadError> {
+impl Checksum {
+    pub fn verify(&self, file_path: &Path) -> Result<bool, Error> {
         let expected = match &self.value {
             Some(v) => v,
             None => {
@@ -83,9 +83,9 @@ impl DownloadChecksum {
     }
 }
 
-fn calculate_md5(file_path: &Path) -> Result<String, DownloadError> {
+fn calculate_md5(file_path: &Path) -> Result<String, Error> {
     debug!("[Checksum] Calculating MD5 for file: {:?}", file_path);
-    let file = File::open(file_path).map_err(|e| DownloadError::Other(e.to_string()))?;
+    let file = File::open(file_path).map_err(|e| Error::Other(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Md5::new();
     let mut buffer = [0u8; 8192];
@@ -93,7 +93,7 @@ fn calculate_md5(file_path: &Path) -> Result<String, DownloadError> {
     loop {
         let n = reader
             .read(&mut buffer)
-            .map_err(|e| DownloadError::Other(e.to_string()))?;
+            .map_err(|e| Error::Other(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -105,9 +105,9 @@ fn calculate_md5(file_path: &Path) -> Result<String, DownloadError> {
     Ok(hash)
 }
 
-fn calculate_sha1(file_path: &Path) -> Result<String, DownloadError> {
+fn calculate_sha1(file_path: &Path) -> Result<String, Error> {
     debug!("[Checksum] Calculating SHA1 for file: {:?}", file_path);
-    let file = File::open(file_path).map_err(|e| DownloadError::Other(e.to_string()))?;
+    let file = File::open(file_path).map_err(|e| Error::Other(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha1::new();
     let mut buffer = [0u8; 8192];
@@ -115,7 +115,7 @@ fn calculate_sha1(file_path: &Path) -> Result<String, DownloadError> {
     loop {
         let n = reader
             .read(&mut buffer)
-            .map_err(|e| DownloadError::Other(e.to_string()))?;
+            .map_err(|e| Error::Other(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -127,9 +127,9 @@ fn calculate_sha1(file_path: &Path) -> Result<String, DownloadError> {
     Ok(hash)
 }
 
-fn calculate_sha256(file_path: &Path) -> Result<String, DownloadError> {
+fn calculate_sha256(file_path: &Path) -> Result<String, Error> {
     debug!("[Checksum] Calculating SHA256 for file: {:?}", file_path);
-    let file = File::open(file_path).map_err(|e| DownloadError::Other(e.to_string()))?;
+    let file = File::open(file_path).map_err(|e| Error::Other(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
@@ -137,7 +137,7 @@ fn calculate_sha256(file_path: &Path) -> Result<String, DownloadError> {
     loop {
         let n = reader
             .read(&mut buffer)
-            .map_err(|e| DownloadError::Other(e.to_string()))?;
+            .map_err(|e| Error::Other(e.to_string()))?;
         if n == 0 {
             break;
         }

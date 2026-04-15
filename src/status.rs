@@ -1,63 +1,58 @@
-use crate::DownloadError;
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum DownloadStatus {
+pub enum Status {
     Pending,
     Preparing,
     Running,
     Paused,
     Completed,
     Canceled,
-    Failed(DownloadError),
+    Failed(Error),
     Deleted,
 }
 
-impl fmt::Display for DownloadStatus {
+impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            DownloadStatus::Pending => "Pending",
-            DownloadStatus::Preparing => "Preparing",
-            DownloadStatus::Running => "Running",
-            DownloadStatus::Paused => "Paused",
-            DownloadStatus::Completed => "Completed",
-            DownloadStatus::Failed(_) => "Failed",
-            DownloadStatus::Canceled => "Canceled",
-            DownloadStatus::Deleted => "Deleted",
+            Status::Pending => "Pending",
+            Status::Preparing => "Preparing",
+            Status::Running => "Running",
+            Status::Paused => "Paused",
+            Status::Completed => "Completed",
+            Status::Failed(_) => "Failed",
+            Status::Canceled => "Canceled",
+            Status::Deleted => "Deleted",
         };
         write!(f, "{}", s)
     }
 }
 
-impl DownloadStatus {
+impl Status {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            DownloadStatus::Completed
-                | DownloadStatus::Canceled
-                | DownloadStatus::Failed(_)
-                | DownloadStatus::Deleted
+            Status::Completed | Status::Canceled | Status::Failed(_) | Status::Deleted
         )
     }
 }
 
-impl FromStr for DownloadStatus {
+impl FromStr for Status {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Pending" => Ok(DownloadStatus::Pending),
-            "Running" => Ok(DownloadStatus::Running),
-            "Preparing" => Ok(DownloadStatus::Preparing),
-            "Paused" => Ok(DownloadStatus::Paused),
-            "Completed" => Ok(DownloadStatus::Completed),
-            "Failed" => Ok(DownloadStatus::Failed(crate::error::DownloadError::Other(
-                String::from(""),
-            ))),
-            "Canceled" => Ok(DownloadStatus::Canceled),
-            "Deleted" => Ok(DownloadStatus::Deleted),
+            "Pending" => Ok(Status::Pending),
+            "Running" => Ok(Status::Running),
+            "Preparing" => Ok(Status::Preparing),
+            "Paused" => Ok(Status::Paused),
+            "Completed" => Ok(Status::Completed),
+            "Failed" => Ok(Status::Failed(crate::error::Error::Other(String::from("")))),
+            "Canceled" => Ok(Status::Canceled),
+            "Deleted" => Ok(Status::Deleted),
             _ => Err(()),
         }
     }

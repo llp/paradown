@@ -1,7 +1,7 @@
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::status::DownloadStatus;
-use crate::task::DownloadTask;
+use crate::error::Error;
+use crate::events::Event;
+use crate::job::Task;
+use crate::status::Status;
 use log::{debug, warn};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -11,30 +11,28 @@ pub(crate) enum StartDirective {
     Resume,
 }
 
-impl DownloadTask {
-    pub(crate) async fn prepare_for_start(
-        self: &Arc<Self>,
-    ) -> Result<StartDirective, DownloadError> {
+impl Task {
+    pub(crate) async fn prepare_for_start(self: &Arc<Self>) -> Result<StartDirective, Error> {
         let status = self.status.lock().await;
         match &*status {
-            DownloadStatus::Pending => {
+            Status::Pending => {
                 debug!(
                     "[Task {}] Task is in Pending state, will attempt to start/restart the task",
                     self.id
                 );
                 Ok(StartDirective::Continue)
             }
-            DownloadStatus::Preparing | DownloadStatus::Running => {
+            Status::Preparing | Status::Running => {
                 debug!(
                     "[Task {}] Task already active: {:?}, skipping start",
                     self.id, *status
                 );
-                Err(DownloadError::Other(format!(
+                Err(Error::Other(format!(
                     "Task is {:?}, cannot start again",
                     *status
                 )))
             }
-            DownloadStatus::Paused => {
+            Status::Paused => {
                 if self.protocol_probe_completed() {
                     debug!("[Task {}] Resuming paused task", self.id);
                     Ok(StartDirective::Resume)
@@ -46,11 +44,11 @@ impl DownloadTask {
                     Ok(StartDirective::Continue)
                 }
             }
-            DownloadStatus::Completed => {
+            Status::Completed => {
                 debug!("[Task {}] Task already completed, skipping start", self.id);
-                Err(DownloadError::Other("Task already completed".into()))
+                Err(Error::Other("Task already completed".into()))
             }
-            DownloadStatus::Canceled => {
+            Status::Canceled => {
                 warn!(
                     "[Task {}] Task was previously canceled — restarting as new download",
                     self.id
@@ -59,7 +57,7 @@ impl DownloadTask {
                 self.reset_task().await?;
                 Ok(StartDirective::Continue)
             }
-            DownloadStatus::Failed(_) => {
+            Status::Failed(_) => {
                 warn!(
                     "[Task {}] Task failed previously — resetting and restarting download",
                     self.id
@@ -68,41 +66,41 @@ impl DownloadTask {
                 self.reset_task().await?;
                 Ok(StartDirective::Continue)
             }
-            DownloadStatus::Deleted => {
+            Status::Deleted => {
                 debug!("[Task {}] Task has been deleted, cannot start", self.id);
-                Err(DownloadError::Other("Task deleted".into()))
+                Err(Error::Other("Task deleted".into()))
             }
         }
     }
 
-    pub(crate) async fn set_status(&self, next_status: DownloadStatus) {
+    pub(crate) async fn set_status(&self, next_status: Status) {
         let mut status = self.status.lock().await;
         *status = next_status;
     }
 
-    pub(crate) async fn fail_with_error(&self, err: DownloadError) {
-        self.set_status(DownloadStatus::Failed(err.clone())).await;
+    pub(crate) async fn fail_with_error(&self, err: Error) {
+        self.set_status(Status::Failed(err.clone())).await;
         debug!("[Task {}] Marked as failed: {:?}", self.id, err);
-        self.emit_manager_event(DownloadEvent::Error(self.id, err));
+        self.emit_manager_event(Event::Error(self.id, err));
     }
 
-    pub async fn pause(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub async fn pause(self: &Arc<Self>) -> Result<(), Error> {
         let mut status = self.status.lock().await;
         match *status {
-            DownloadStatus::Running | DownloadStatus::Preparing => {
-                *status = DownloadStatus::Paused;
+            Status::Running | Status::Preparing => {
+                *status = Status::Paused;
                 debug!("[Task {}] Paused", self.id);
             }
-            DownloadStatus::Paused => {
+            Status::Paused => {
                 debug!("[Task {}] Task is already paused", self.id);
                 return Ok(());
             }
-            DownloadStatus::Pending
-            | DownloadStatus::Completed
-            | DownloadStatus::Canceled
-            | DownloadStatus::Deleted
-            | DownloadStatus::Failed(_) => {
-                return Err(DownloadError::Other(format!(
+            Status::Pending
+            | Status::Completed
+            | Status::Canceled
+            | Status::Deleted
+            | Status::Failed(_) => {
+                return Err(Error::Other(format!(
                     "Cannot pause task in state: {:?}",
                     *status
                 )));
@@ -116,25 +114,25 @@ impl DownloadTask {
         }
 
         self.persist_task().await?;
-        self.emit_manager_event(DownloadEvent::Pause(self.id));
+        self.emit_manager_event(Event::Pause(self.id));
         Ok(())
     }
 
-    pub async fn resume(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub async fn resume(self: &Arc<Self>) -> Result<(), Error> {
         let should_resume_workers = {
             let mut status = self.status.lock().await;
             match *status {
-                DownloadStatus::Pending | DownloadStatus::Running => {
+                Status::Pending | Status::Running => {
                     drop(status);
                     return Box::pin(self.start()).await;
                 }
-                DownloadStatus::Paused => {
+                Status::Paused => {
                     if !self.protocol_probe_completed() {
                         debug!(
                             "[Task {}] Paused task has no protocol probe state, restarting through start()",
                             self.id
                         );
-                        *status = DownloadStatus::Pending;
+                        *status = Status::Pending;
                         drop(status);
                         return Box::pin(self.start()).await;
                     }
@@ -144,20 +142,20 @@ impl DownloadTask {
                             "[Task {}] Resuming paused task in Preparing/Pending phase",
                             self.id
                         );
-                        *status = DownloadStatus::Preparing;
+                        *status = Status::Preparing;
                         false
                     } else {
                         debug!("[Task {}] Resuming paused task", self.id);
-                        *status = DownloadStatus::Running;
+                        *status = Status::Running;
                         true
                     }
                 }
-                DownloadStatus::Completed
-                | DownloadStatus::Preparing
-                | DownloadStatus::Canceled
-                | DownloadStatus::Deleted
-                | DownloadStatus::Failed(_) => {
-                    return Err(DownloadError::Other(format!(
+                Status::Completed
+                | Status::Preparing
+                | Status::Canceled
+                | Status::Deleted
+                | Status::Failed(_) => {
+                    return Err(Error::Other(format!(
                         "Cannot resume task in state: {:?}",
                         *status
                     )));
@@ -172,27 +170,21 @@ impl DownloadTask {
             for worker in workers {
                 let _ = worker.resume().await;
             }
-            self.emit_manager_event(DownloadEvent::Start(self.id));
+            self.emit_manager_event(Event::Start(self.id));
         }
 
         Ok(())
     }
 
-    pub async fn cancel(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub async fn cancel(self: &Arc<Self>) -> Result<(), Error> {
         let mut status = self.status.lock().await;
         match *status {
-            DownloadStatus::Pending
-            | DownloadStatus::Preparing
-            | DownloadStatus::Running
-            | DownloadStatus::Paused => {
-                *status = DownloadStatus::Canceled;
+            Status::Pending | Status::Preparing | Status::Running | Status::Paused => {
+                *status = Status::Canceled;
                 debug!("[Task {}] Canceled", self.id);
             }
-            DownloadStatus::Completed
-            | DownloadStatus::Canceled
-            | DownloadStatus::Deleted
-            | DownloadStatus::Failed(_) => {
-                return Err(DownloadError::Other(format!(
+            Status::Completed | Status::Canceled | Status::Deleted | Status::Failed(_) => {
+                return Err(Error::Other(format!(
                     "Cannot cancel task in state: {:?}",
                     *status
                 )));
@@ -207,11 +199,11 @@ impl DownloadTask {
             let _ = worker.cancel().await;
         }
 
-        self.emit_manager_event(DownloadEvent::Cancel(self.id));
+        self.emit_manager_event(Event::Cancel(self.id));
         Ok(())
     }
 
-    pub async fn delete(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub async fn delete(self: &Arc<Self>) -> Result<(), Error> {
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let _ = worker.delete().await;
@@ -223,11 +215,11 @@ impl DownloadTask {
         self.purge_task_checksums().await?;
         self.purge_task().await?;
 
-        self.emit_manager_event(DownloadEvent::Delete(self.id));
+        self.emit_manager_event(Event::Delete(self.id));
         Ok(())
     }
 
-    pub(crate) async fn reset_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub(crate) async fn reset_task(self: &Arc<Self>) -> Result<(), Error> {
         self.clear_task_workers().await?;
         self.purge_task_workers().await?;
 
@@ -242,7 +234,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub(crate) async fn delete_task_file(&self) -> Result<(), DownloadError> {
+    pub(crate) async fn delete_task_file(&self) -> Result<(), Error> {
         if let Some(file_path) = self.file_path.get() {
             if file_path.exists() {
                 match tokio::fs::remove_file(file_path).await {
@@ -259,7 +251,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub(crate) async fn clear_task_workers(&self) -> Result<(), DownloadError> {
+    pub(crate) async fn clear_task_workers(&self) -> Result<(), Error> {
         let mut workers = self.workers.write().await;
         workers.clear();
         Ok(())

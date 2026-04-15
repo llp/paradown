@@ -1,7 +1,7 @@
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
+use crate::error::Error;
+use crate::events::Event;
 use crate::protocol_probe::parse_content_range;
-use crate::worker::DownloadWorker;
+use crate::worker::Worker;
 use futures_util::StreamExt;
 use log::debug;
 use reqwest::{StatusCode, header};
@@ -17,7 +17,7 @@ pub(crate) struct ProgressReporter {
 }
 
 impl ProgressReporter {
-    pub(crate) fn new(worker: &DownloadWorker, downloaded_size: u64) -> Self {
+    pub(crate) fn new(worker: &Worker, downloaded_size: u64) -> Self {
         let throttle = &worker.config.progress_throttle;
         Self {
             emit_interval: Duration::from_millis(throttle.interval_ms),
@@ -27,7 +27,7 @@ impl ProgressReporter {
         }
     }
 
-    pub(crate) async fn maybe_emit(&mut self, worker: &DownloadWorker, downloaded_size: u64) {
+    pub(crate) async fn maybe_emit(&mut self, worker: &Worker, downloaded_size: u64) {
         let delta = downloaded_size.saturating_sub(self.last_reported);
         if delta < self.threshold && self.last_emit.elapsed() < self.emit_interval {
             return;
@@ -38,14 +38,14 @@ impl ProgressReporter {
         self.last_emit = Instant::now();
     }
 
-    pub(crate) async fn flush(&mut self, worker: &DownloadWorker, downloaded_size: u64) {
+    pub(crate) async fn flush(&mut self, worker: &Worker, downloaded_size: u64) {
         worker.emit_progress(downloaded_size);
         self.last_reported = downloaded_size;
         self.last_emit = Instant::now();
     }
 }
 
-impl DownloadWorker {
+impl Worker {
     pub(crate) fn expected_length(&self) -> u64 {
         self.end.saturating_sub(self.start).saturating_add(1)
     }
@@ -91,7 +91,7 @@ impl DownloadWorker {
         reporter: &mut ProgressReporter,
         use_range_requests: bool,
         range_start: u64,
-    ) -> Result<(), DownloadError> {
+    ) -> Result<(), Error> {
         let file_path = &*self.file_path;
         debug!("[Worker {}] Writing to file: {:?}", self.id, file_path);
 
@@ -119,8 +119,7 @@ impl DownloadWorker {
                 return Ok(());
             }
 
-            let chunk =
-                chunk.map_err(|err| DownloadError::NetworkError(self.id, err.to_string()))?;
+            let chunk = chunk.map_err(|err| Error::NetworkError(self.id, err.to_string()))?;
             let chunk_len = chunk.len() as u64;
             self.acquire_rate_limit(chunk_len).await;
             file.write_all(&chunk).await?;
@@ -148,7 +147,7 @@ impl DownloadWorker {
     }
 
     pub(crate) fn emit_progress(&self, downloaded_size: u64) {
-        self.emit_worker_event(DownloadEvent::Progress {
+        self.emit_worker_event(Event::Progress {
             id: self.id,
             downloaded: downloaded_size,
             total: self.total_size.load(Ordering::Relaxed),
@@ -159,9 +158,9 @@ impl DownloadWorker {
         &self,
         actual_length: u64,
         expected_length: u64,
-    ) -> Result<(), DownloadError> {
+    ) -> Result<(), Error> {
         if actual_length != expected_length {
-            return Err(DownloadError::Other(format!(
+            return Err(Error::Other(format!(
                 "Worker {} downloaded length mismatch: expected {}, got {}",
                 self.id, expected_length, actual_length
             )));
@@ -175,10 +174,10 @@ impl DownloadWorker {
         response: &reqwest::Response,
         use_range_requests: bool,
         expected_start: u64,
-    ) -> Result<(), DownloadError> {
+    ) -> Result<(), Error> {
         if use_range_requests {
             if response.status() != StatusCode::PARTIAL_CONTENT {
-                return Err(DownloadError::Other(format!(
+                return Err(Error::Other(format!(
                     "Expected 206 Partial Content, got {}",
                     response.status()
                 )));
@@ -187,13 +186,13 @@ impl DownloadWorker {
             let content_range = response
                 .headers()
                 .get(header::CONTENT_RANGE)
-                .ok_or_else(|| DownloadError::Other("Missing Content-Range".into()))?
+                .ok_or_else(|| Error::Other("Missing Content-Range".into()))?
                 .to_str()?;
             let content_range = parse_content_range(content_range)
-                .ok_or_else(|| DownloadError::Other("Invalid Content-Range".into()))?;
+                .ok_or_else(|| Error::Other("Invalid Content-Range".into()))?;
 
             if content_range.start != expected_start || content_range.end != self.end {
-                return Err(DownloadError::Other(format!(
+                return Err(Error::Other(format!(
                     "Unexpected Content-Range {}-{} for expected {}-{}",
                     content_range.start, content_range.end, expected_start, self.end
                 )));
@@ -203,7 +202,7 @@ impl DownloadWorker {
         }
 
         if response.status() != StatusCode::OK {
-            return Err(DownloadError::Other(format!(
+            return Err(Error::Other(format!(
                 "Expected 200 OK, got {}",
                 response.status()
             )));

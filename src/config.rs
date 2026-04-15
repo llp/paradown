@@ -1,4 +1,4 @@
-use crate::persistence::PersistenceType;
+use crate::storage::Backend;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -57,15 +57,15 @@ impl Default for RetryConfig {
 
 /// 下载配置主结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadConfig {
+pub struct Config {
     pub download_dir: PathBuf,
     pub shuffle: bool,
-    pub max_concurrent_downloads: usize,
-    pub worker_threads: usize,
+    pub concurrent_tasks: usize,
+    pub segments_per_task: usize,
     pub retry: RetryConfig,
     pub rate_limit_kbps: Option<NonZeroU64>,
     pub connection_timeout: Duration,
-    pub persistence_type: PersistenceType,
+    pub storage_backend: Backend,
     pub progress_throttle: ProgressThrottleConfig,
     pub file_conflict_strategy: FileConflictStrategy,
     pub debug: bool,
@@ -73,21 +73,21 @@ pub struct DownloadConfig {
 
 /// Builder 模式的实现
 #[derive(Debug, Clone)]
-pub struct DownloadConfigBuilder {
-    inner: DownloadConfig,
+pub struct ConfigBuilder {
+    inner: Config,
 }
 
-impl Default for DownloadConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             download_dir: PathBuf::from("./downloads"),
             shuffle: false,
-            max_concurrent_downloads: 4,
-            worker_threads: 4,
+            concurrent_tasks: 4,
+            segments_per_task: 4,
             retry: RetryConfig::default(),
             rate_limit_kbps: None,
             connection_timeout: Duration::from_secs(30),
-            persistence_type: PersistenceType::Sqlite("./downloads.db".into()),
+            storage_backend: Backend::Sqlite("./downloads.db".into()),
             progress_throttle: ProgressThrottleConfig::default(),
             file_conflict_strategy: FileConflictStrategy::Resume,
             debug: true,
@@ -95,11 +95,11 @@ impl Default for DownloadConfig {
     }
 }
 
-impl DownloadConfigBuilder {
+impl ConfigBuilder {
     /// 创建新的 Builder
     pub fn new() -> Self {
         Self {
-            inner: DownloadConfig::default(),
+            inner: Config::default(),
         }
     }
 
@@ -113,13 +113,13 @@ impl DownloadConfigBuilder {
         self
     }
 
-    pub fn max_concurrent_downloads(mut self, n: usize) -> Self {
-        self.inner.max_concurrent_downloads = n;
+    pub fn concurrent_tasks(mut self, n: usize) -> Self {
+        self.inner.concurrent_tasks = n;
         self
     }
 
-    pub fn worker_threads(mut self, n: usize) -> Self {
-        self.inner.worker_threads = n;
+    pub fn segments_per_task(mut self, n: usize) -> Self {
+        self.inner.segments_per_task = n;
         self
     }
 
@@ -138,8 +138,8 @@ impl DownloadConfigBuilder {
         self
     }
 
-    pub fn persistence_type(mut self, p: PersistenceType) -> Self {
-        self.inner.persistence_type = p;
+    pub fn storage_backend(mut self, backend: Backend) -> Self {
+        self.inner.storage_backend = backend;
         self
     }
 
@@ -159,29 +159,29 @@ impl DownloadConfigBuilder {
     }
 
     /// 构建配置并验证
-    pub fn build(self) -> Result<DownloadConfig, DownloadConfigError> {
+    pub fn build(self) -> Result<Config, ConfigError> {
         self.inner.validate()?;
         Ok(self.inner)
     }
 }
 
 #[derive(Debug, Error)]
-pub enum DownloadConfigError {
+pub enum ConfigError {
     #[error("Invalid download directory: {0}")]
     InvalidDownloadDir(String),
-    #[error("Invalid number of workers: {0}")]
-    InvalidWorkers(usize),
+    #[error("Invalid segments per task: {0}")]
+    InvalidSegmentsPerTask(usize),
     #[error("No download URLs provided")]
     NoUrls,
     #[error("Invalid URL format: {0}")]
     InvalidUrl(String),
 }
 
-impl DownloadConfig {
-    pub fn validate(&self) -> Result<(), DownloadConfigError> {
+impl Config {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         if !self.download_dir.exists() {
             if let Err(e) = std::fs::create_dir_all(&self.download_dir) {
-                return Err(DownloadConfigError::InvalidDownloadDir(format!(
+                return Err(ConfigError::InvalidDownloadDir(format!(
                     "Cannot create directory '{}': {}",
                     self.download_dir.display(),
                     e
@@ -189,8 +189,8 @@ impl DownloadConfig {
             }
         }
 
-        if self.worker_threads == 0 || self.worker_threads > 100 {
-            return Err(DownloadConfigError::InvalidWorkers(self.worker_threads));
+        if self.segments_per_task == 0 || self.segments_per_task > 100 {
+            return Err(ConfigError::InvalidSegmentsPerTask(self.segments_per_task));
         }
         Ok(())
     }
@@ -203,7 +203,7 @@ impl DownloadConfig {
     }
 }
 
-impl FromStr for DownloadConfig {
+impl FromStr for Config {
     type Err = toml::de::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

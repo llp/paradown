@@ -1,5 +1,5 @@
-use crate::config::DownloadConfig;
-use crate::error::DownloadError;
+use crate::config::Config;
+use crate::error::Error;
 use log::LevelFilter;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ pub fn init_logger(debug: bool) {
     let _ = builder.try_init();
 }
 
-pub(crate) fn build_http_client(config: &DownloadConfig) -> Result<reqwest::Client, DownloadError> {
+pub(crate) fn build_http_client(config: &Config) -> Result<reqwest::Client, Error> {
     reqwest::Client::builder()
         .connect_timeout(config.connection_timeout)
         .timeout(Duration::from_secs(300))
@@ -26,5 +26,5 @@ pub(crate) fn build_http_client(config: &DownloadConfig) -> Result<reqwest::Clie
         .pool_idle_timeout(Duration::from_secs(60))
         .gzip(true)
         .build()
-        .map_err(|e| DownloadError::Other(format!("Failed to build HTTP client: {}", e)))
+        .map_err(|e| Error::Other(format!("Failed to build HTTP client: {}", e)))
 }

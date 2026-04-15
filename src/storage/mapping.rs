@@ -1,14 +1,14 @@
-use crate::checksum::{ChecksumAlgorithm, DownloadChecksum};
+use crate::checksum::{Checksum, ChecksumAlgorithm};
+use crate::job::Task;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
-use crate::request::{DownloadTaskRequest, DownloadWorkerRequest};
-use crate::status::DownloadStatus;
-use crate::task::DownloadTask;
-use crate::worker::DownloadWorker;
+use crate::request::{SegmentRequest, TaskRequest};
+use crate::status::Status;
+use crate::worker::Worker;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-pub(crate) async fn task_to_db(task: &Arc<DownloadTask>) -> DBDownloadTask {
+pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
     let file_path = task
         .file_path
         .get()
@@ -30,7 +30,7 @@ pub(crate) async fn task_to_db(task: &Arc<DownloadTask>) -> DBDownloadTask {
     }
 }
 
-pub(crate) async fn worker_to_db(worker: &Arc<DownloadWorker>) -> DBDownloadWorker {
+pub(crate) async fn worker_to_db(worker: &Arc<Worker>) -> DBDownloadWorker {
     let updated_at = worker.updated_at.lock().await.clone();
 
     DBDownloadWorker {
@@ -49,7 +49,7 @@ pub(crate) async fn worker_to_db(worker: &Arc<DownloadWorker>) -> DBDownloadWork
     }
 }
 
-pub(crate) fn checksum_to_db(checksum: &DownloadChecksum, task_id: u32) -> DBDownloadChecksum {
+pub(crate) fn checksum_to_db(checksum: &Checksum, task_id: u32) -> DBDownloadChecksum {
     DBDownloadChecksum {
         id: 0,
         task_id,
@@ -65,8 +65,8 @@ pub(crate) fn checksum_to_db(checksum: &DownloadChecksum, task_id: u32) -> DBDow
     }
 }
 
-pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> DownloadChecksum {
-    DownloadChecksum {
+pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> Checksum {
+    Checksum {
         algorithm: match model.algorithm.as_str() {
             "MD5" => ChecksumAlgorithm::MD5,
             "SHA1" => ChecksumAlgorithm::SHA1,
@@ -82,14 +82,14 @@ pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> DownloadChecksum {
 pub(crate) fn db_task_to_request(
     task: &DBDownloadTask,
     checksums: &[DBDownloadChecksum],
-) -> DownloadTaskRequest {
-    DownloadTaskRequest {
+) -> TaskRequest {
+    TaskRequest {
         id: Some(task.id),
         url: task.url.clone(),
         file_name: normalized_text_field(&task.file_name),
         file_path: normalized_text_field(&task.file_path),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),
-        status: Some(DownloadStatus::from_str(&task.status).unwrap_or(DownloadStatus::Pending)),
+        status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
         total_size: task.total_size,
         created_at: task.created_at.clone(),
@@ -97,10 +97,10 @@ pub(crate) fn db_task_to_request(
     }
 }
 
-pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<DownloadWorkerRequest> {
+pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<SegmentRequest> {
     workers
         .iter()
-        .map(|worker| DownloadWorkerRequest {
+        .map(|worker| SegmentRequest {
             id: Some(worker.id),
             task_id: worker.task_id,
             index: worker.index,
@@ -126,7 +126,7 @@ fn normalized_text_field(value: &str) -> Option<String> {
 mod tests {
     use super::{db_task_to_request, db_workers_to_requests};
     use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
-    use crate::status::DownloadStatus;
+    use crate::status::Status;
 
     #[test]
     fn normalizes_blank_task_text_fields_when_building_request() {
@@ -154,7 +154,7 @@ mod tests {
 
         assert_eq!(request.file_name, None);
         assert_eq!(request.file_path, None);
-        assert!(matches!(request.status, Some(DownloadStatus::Pending)));
+        assert!(matches!(request.status, Some(Status::Pending)));
         assert_eq!(request.checksums.as_ref().map(Vec::len), Some(1));
     }
 

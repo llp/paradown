@@ -1,5 +1,5 @@
-use super::repository::DownloadRepository;
-use crate::DownloadError;
+use super::contract::Repository;
+use crate::Error;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -24,24 +24,24 @@ impl MemoryRepository {
 }
 
 #[async_trait]
-impl DownloadRepository for MemoryRepository {
+impl Repository for MemoryRepository {
     // ---------------- Task ----------------
-    async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, DownloadError> {
+    async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, Error> {
         let mut tasks: Vec<_> = self.tasks.read().await.values().cloned().collect();
         tasks.sort_by_key(|task| task.id);
         Ok(tasks)
     }
 
-    async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, DownloadError> {
+    async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, Error> {
         Ok(self.tasks.read().await.get(&task_id).cloned())
     }
 
-    async fn save_task(&self, task: &DBDownloadTask) -> Result<(), DownloadError> {
+    async fn save_task(&self, task: &DBDownloadTask) -> Result<(), Error> {
         self.tasks.write().await.insert(task.id, task.clone());
         Ok(())
     }
 
-    async fn delete_task(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_task(&self, task_id: u32) -> Result<(), Error> {
         self.tasks.write().await.remove(&task_id);
 
         // 删除关联 workers
@@ -56,7 +56,7 @@ impl DownloadRepository for MemoryRepository {
     }
 
     // ---------------- Worker ----------------
-    async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, DownloadError> {
+    async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, Error> {
         let mut workers: Vec<_> = self
             .workers
             .read()
@@ -69,7 +69,7 @@ impl DownloadRepository for MemoryRepository {
         Ok(workers)
     }
 
-    async fn load_worker(&self, worker_id: u32) -> Result<Option<DBDownloadWorker>, DownloadError> {
+    async fn load_worker(&self, worker_id: u32) -> Result<Option<DBDownloadWorker>, Error> {
         Ok(self
             .workers
             .read()
@@ -79,7 +79,7 @@ impl DownloadRepository for MemoryRepository {
             .cloned())
     }
 
-    async fn save_worker(&self, worker: &DBDownloadWorker) -> Result<(), DownloadError> {
+    async fn save_worker(&self, worker: &DBDownloadWorker) -> Result<(), Error> {
         let mut stored = worker.clone();
         stored.id = worker_storage_id(worker.task_id, worker.index);
         self.workers
@@ -89,14 +89,14 @@ impl DownloadRepository for MemoryRepository {
         Ok(())
     }
 
-    async fn delete_workers(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_workers(&self, task_id: u32) -> Result<(), Error> {
         let mut workers = self.workers.write().await;
         workers.retain(|_, w| w.task_id != task_id);
         Ok(())
     }
 
     // ---------------- Checksum ----------------
-    async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, DownloadError> {
+    async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error> {
         let mut checksums: Vec<_> = self
             .checksums
             .read()
@@ -109,10 +109,7 @@ impl DownloadRepository for MemoryRepository {
         Ok(checksums)
     }
 
-    async fn load_checksum(
-        &self,
-        checksum_id: u32,
-    ) -> Result<Option<DBDownloadChecksum>, DownloadError> {
+    async fn load_checksum(&self, checksum_id: u32) -> Result<Option<DBDownloadChecksum>, Error> {
         Ok(self
             .checksums
             .read()
@@ -122,7 +119,7 @@ impl DownloadRepository for MemoryRepository {
             .cloned())
     }
 
-    async fn save_checksum(&self, checksum: &DBDownloadChecksum) -> Result<(), DownloadError> {
+    async fn save_checksum(&self, checksum: &DBDownloadChecksum) -> Result<(), Error> {
         let mut stored = checksum.clone();
         stored.id = checksum_storage_id(checksum.task_id, &checksum.algorithm);
         self.checksums
@@ -132,7 +129,7 @@ impl DownloadRepository for MemoryRepository {
         Ok(())
     }
 
-    async fn delete_checksums(&self, task_id: u32) -> Result<(), DownloadError> {
+    async fn delete_checksums(&self, task_id: u32) -> Result<(), Error> {
         let mut checksums = self.checksums.write().await;
         checksums.retain(|_, c| c.task_id != task_id);
         Ok(())
@@ -157,8 +154,8 @@ fn checksum_storage_id(task_id: u32, algorithm: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::MemoryRepository;
+    use crate::repository::contract::Repository;
     use crate::repository::models::{DBDownloadChecksum, DBDownloadWorker};
-    use crate::repository::repository::DownloadRepository;
 
     #[tokio::test]
     async fn keeps_workers_isolated_by_task_and_index() {

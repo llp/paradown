@@ -1,11 +1,11 @@
-use crate::error::DownloadError;
-use crate::task::DownloadTask;
+use crate::error::Error;
+use crate::job::Task;
 use chrono::Utc;
 use log::debug;
 use std::sync::Arc;
 
-impl DownloadTask {
-    pub async fn persist_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+impl Task {
+    pub async fn persist_task(self: &Arc<Self>) -> Result<(), Error> {
         {
             let mut updated_at_guard = self.updated_at.lock().await;
             *updated_at_guard = Some(Utc::now());
@@ -20,7 +20,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub async fn persist_task_checksums(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub async fn persist_task_checksums(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Persisting task checksums", self.id);
             let checksums = self.checksums.lock().await;
@@ -34,10 +34,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub async fn persist_task_worker(
-        self: &Arc<Self>,
-        worker_id: u32,
-    ) -> Result<(), DownloadError> {
+    pub async fn persist_task_worker(self: &Arc<Self>, worker_id: u32) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             let worker_opt = {
                 let workers = self.workers.read().await;
@@ -75,7 +72,7 @@ impl DownloadTask {
         });
     }
 
-    pub(crate) async fn purge_task(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub(crate) async fn purge_task(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task", self.id);
             if let Err(err) = persistence.delete_task(self.id).await {
@@ -88,7 +85,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub(crate) async fn purge_task_workers(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub(crate) async fn purge_task_workers(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task workers", self.id);
             if let Err(err) = persistence.delete_workers(self.id).await {
@@ -98,7 +95,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    pub(crate) async fn purge_task_checksums(self: &Arc<Self>) -> Result<(), DownloadError> {
+    pub(crate) async fn purge_task_checksums(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task checksums", self.id);
             if let Err(err) = persistence.delete_checksums(self.id).await {

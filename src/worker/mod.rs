@@ -1,9 +1,13 @@
-use crate::config::DownloadConfig;
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::stats::DownloadStats;
-use crate::status::DownloadStatus;
-use crate::task::DownloadTask;
+pub(crate) mod retry;
+pub(crate) mod runtime;
+pub(crate) mod transfer;
+
+use crate::config::Config;
+use crate::error::Error;
+use crate::events::Event;
+use crate::job::Task;
+use crate::stats::Stats;
+use crate::status::Status;
 use chrono::{DateTime, Utc};
 use log::debug;
 use reqwest::Client;
@@ -16,9 +20,9 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-pub struct DownloadWorker {
-    pub task: Weak<DownloadTask>,
-    pub config: Arc<DownloadConfig>,
+pub struct Worker {
+    pub task: Weak<Task>,
+    pub config: Arc<Config>,
     pub client: Arc<Client>,
     pub id: u32,
     pub url: String,
@@ -31,26 +35,24 @@ pub struct DownloadWorker {
     pub canceled: Arc<AtomicBool>,
     pub deleted: Arc<AtomicBool>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
-    pub status: Arc<tokio::sync::Mutex<DownloadStatus>>,
-    pub stats: Arc<DownloadStats>,
+    pub status: Arc<tokio::sync::Mutex<Status>>,
+    pub stats: Arc<Stats>,
     pub is_running: AtomicBool,
 }
 
-pub type SegmentWorker = DownloadWorker;
-
-impl DownloadWorker {
+impl Worker {
     pub fn new(
         id: u32,
-        config: Arc<DownloadConfig>,
-        task: Weak<DownloadTask>,
+        config: Arc<Config>,
+        task: Weak<Task>,
         client: Arc<Client>,
         url: String,
         start: u64,
         end: u64,
         downloaded_size: Option<u64>,
         file_path: Arc<PathBuf>,
-        status: Option<DownloadStatus>,
-        stats: Arc<DownloadStats>,
+        status: Option<Status>,
+        stats: Arc<Stats>,
         updated_at: Option<DateTime<Utc>>,
     ) -> Self {
         debug!(
@@ -59,9 +61,9 @@ impl DownloadWorker {
         );
 
         let (paused, canceled, deleted) = match status {
-            Some(DownloadStatus::Paused) => (true, false, false),
-            Some(DownloadStatus::Canceled) => (false, true, false),
-            Some(DownloadStatus::Deleted) => (false, false, true),
+            Some(Status::Paused) => (true, false, false),
+            Some(Status::Canceled) => (false, true, false),
+            Some(Status::Deleted) => (false, false, true),
             _ => (false, false, false),
         };
         let now = Utc::now();
@@ -81,19 +83,17 @@ impl DownloadWorker {
             canceled: Arc::new(AtomicBool::new(canceled)),
             deleted: Arc::new(AtomicBool::new(deleted)),
             updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
-            status: Arc::new(tokio::sync::Mutex::new(
-                status.unwrap_or(DownloadStatus::Pending),
-            )),
+            status: Arc::new(tokio::sync::Mutex::new(status.unwrap_or(Status::Pending))),
             stats,
             is_running: AtomicBool::new(false),
         }
     }
 
-    pub(crate) async fn set_status(&self, status: DownloadStatus) {
+    pub(crate) async fn set_status(&self, status: Status) {
         *self.status.lock().await = status;
     }
 
-    pub(crate) fn emit_worker_event(&self, event: DownloadEvent) {
+    pub(crate) fn emit_worker_event(&self, event: Event) {
         if let Some(task_arc) = self.task.upgrade() {
             let _ = task_arc.worker_event_tx.send(event);
         }
@@ -126,25 +126,22 @@ impl DownloadWorker {
         true
     }
 
-    pub async fn pause(&self) -> Result<(), DownloadError> {
+    pub async fn pause(&self) -> Result<(), Error> {
         self.paused.store(true, Ordering::Relaxed);
 
         let should_emit = {
             let mut status_guard = self.status.lock().await;
             match *status_guard {
-                DownloadStatus::Canceled
-                | DownloadStatus::Failed(_)
-                | DownloadStatus::Completed
-                | DownloadStatus::Deleted => {
+                Status::Canceled | Status::Failed(_) | Status::Completed | Status::Deleted => {
                     debug!(
                         "[Worker {}] Paused ignored — current status = {:?}",
                         self.id, *status_guard
                     );
                     return Ok(());
                 }
-                DownloadStatus::Paused => false,
+                Status::Paused => false,
                 _ => {
-                    *status_guard = DownloadStatus::Paused;
+                    *status_guard = Status::Paused;
                     true
                 }
             }
@@ -152,20 +149,17 @@ impl DownloadWorker {
 
         debug!("[Worker {}] Paused", self.id);
         if should_emit {
-            self.emit_worker_event(DownloadEvent::Pause(self.id));
+            self.emit_worker_event(Event::Pause(self.id));
         }
 
         Ok(())
     }
 
-    pub async fn resume(&self) -> Result<(), DownloadError> {
+    pub async fn resume(&self) -> Result<(), Error> {
         let should_start = {
             let mut status_guard = self.status.lock().await;
             match *status_guard {
-                DownloadStatus::Canceled
-                | DownloadStatus::Failed(_)
-                | DownloadStatus::Completed
-                | DownloadStatus::Deleted => {
+                Status::Canceled | Status::Failed(_) | Status::Completed | Status::Deleted => {
                     debug!(
                         "[Worker {}] Resume ignored — current status = {:?}",
                         self.id, *status_guard
@@ -179,10 +173,10 @@ impl DownloadWorker {
             self.paused.store(false, Ordering::Relaxed);
 
             if self.is_running.load(Ordering::Relaxed) {
-                *status_guard = DownloadStatus::Running;
+                *status_guard = Status::Running;
                 false
             } else {
-                *status_guard = DownloadStatus::Running;
+                *status_guard = Status::Running;
                 true
             }
         };
@@ -194,26 +188,26 @@ impl DownloadWorker {
         }
     }
 
-    pub async fn cancel(&self) -> Result<(), DownloadError> {
+    pub async fn cancel(&self) -> Result<(), Error> {
         self.canceled.store(true, Ordering::Relaxed);
-        self.set_status(DownloadStatus::Canceled).await;
+        self.set_status(Status::Canceled).await;
         debug!("[Worker {}] Canceled", self.id);
-        self.emit_worker_event(DownloadEvent::Cancel(self.id));
+        self.emit_worker_event(Event::Cancel(self.id));
         Ok(())
     }
 
-    pub async fn delete(&self) -> Result<(), DownloadError> {
+    pub async fn delete(&self) -> Result<(), Error> {
         self.deleted.store(true, Ordering::Relaxed);
-        self.set_status(DownloadStatus::Deleted).await;
+        self.set_status(Status::Deleted).await;
         debug!("[Worker {}] Deleted", self.id);
-        self.emit_worker_event(DownloadEvent::Delete(self.id));
+        self.emit_worker_event(Event::Delete(self.id));
         Ok(())
     }
 }
 
-impl fmt::Debug for DownloadWorker {
+impl fmt::Debug for Worker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DownloadWorker")
+        f.debug_struct("Worker")
             .field("id", &self.id)
             .field("url", &self.url)
             .field("start", &self.start)
@@ -229,19 +223,19 @@ impl fmt::Debug for DownloadWorker {
 
 #[cfg(test)]
 mod tests {
-    use super::DownloadWorker;
-    use crate::config::DownloadConfig;
-    use crate::stats::DownloadStats;
-    use crate::status::DownloadStatus;
+    use super::Worker;
+    use crate::config::Config;
+    use crate::stats::Stats;
+    use crate::status::Status;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Weak};
 
     #[tokio::test]
     async fn resume_restarts_a_paused_worker_without_deadlocking() {
-        let worker = DownloadWorker::new(
+        let worker = Worker::new(
             1,
-            Arc::new(DownloadConfig::default()),
+            Arc::new(Config::default()),
             Weak::new(),
             Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
             "https://example.com/file".into(),
@@ -249,8 +243,8 @@ mod tests {
             0,
             Some(1),
             Arc::new(PathBuf::from("/tmp/paradown-unused-worker-test")),
-            Some(DownloadStatus::Paused),
-            Arc::new(DownloadStats::new()),
+            Some(Status::Paused),
+            Arc::new(Stats::new()),
             None,
         );
 
@@ -258,9 +252,6 @@ mod tests {
 
         assert!(!worker.paused.load(Ordering::Relaxed));
         assert!(!worker.is_running.load(Ordering::Relaxed));
-        assert!(matches!(
-            &*worker.status.lock().await,
-            DownloadStatus::Completed
-        ));
+        assert!(matches!(&*worker.status.lock().await, Status::Completed));
     }
 }

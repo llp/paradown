@@ -2,6 +2,13 @@
 
 `paradown` is a Rust download manager with resumable state, segmented downloads, SQLite persistence, and a CLI-focused runtime.
 
+Release-facing references:
+
+- install and usage guide: [docs/install-and-usage.md](/Users/liulipeng/workspace/rust/paradown/docs/install-and-usage.md)
+- config sample: [examples/config.toml](/Users/liulipeng/workspace/rust/paradown/examples/config.toml)
+- version notes: [CHANGELOG.md](/Users/liulipeng/workspace/rust/paradown/CHANGELOG.md)
+- release packaging script: [scripts/build-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-release.sh)
+
 ## Current status
 
 What is implemented today:
@@ -32,6 +39,12 @@ Build:
 cargo build --release
 ```
 
+Install the CLI into Cargo's bin directory:
+
+```bash
+cargo install --path . --features cli
+```
+
 Download one file:
 
 ```bash
@@ -55,6 +68,12 @@ cargo run --all-features -- \
   --interactive \
   --rate-limit-kbps 512 \
   --urls https://example.com/file.iso https://example.com/file-2.iso
+```
+
+Build a distributable archive:
+
+```bash
+./scripts/build-release.sh
 ```
 
 ## CLI flags
@@ -102,17 +121,20 @@ If stdout is not a TTY, the CLI automatically degrades to line-oriented progress
 
 ## Configuration
 
-`Config` is deserialized directly from TOML. A minimal example that matches the current code shape:
+`Config` is deserialized directly from TOML. The maintained example lives at [examples/config.toml](/Users/liulipeng/workspace/rust/paradown/examples/config.toml).
+
+Current example:
 
 ```toml
 download_dir = "./downloads"
 shuffle = false
 concurrent_tasks = 4
 segments_per_task = 4
-rate_limit_kbps = 256
-debug = true
-file_conflict_strategy = "Resume"
+rate_limit_kbps = 512
+connection_timeout = { secs = 30, nanos = 0 }
 storage_backend = { Sqlite = "./downloads.db" }
+file_conflict_strategy = "Resume"
+debug = false
 
 [retry]
 max_retries = 3
@@ -128,8 +150,8 @@ threshold_bytes = 1048576
 Important notes:
 
 - `Backend::JsonFile(...)` is defined but not implemented
-- if `rate_limit_kbps` is omitted or set to `0` through CLI interactive commands, rate limiting is disabled
-- `connection_timeout` is available in code but not shown above because its raw TOML representation is less ergonomic than the CLI path
+- if `rate_limit_kbps` is omitted, rate limiting is disabled
+- `connection_timeout` uses TOML struct form: `connection_timeout = { secs = 30, nanos = 0 }`
 
 ## Architecture
 

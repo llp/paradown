@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use tokio::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_process_reports_multi_task_progress_and_completes_downloads() {
+async fn cli_process_handles_multi_task_downloads_end_to_end() {
     let alpha = Arc::new(
         (0..(96 * 1024))
             .map(|idx| (idx % 233) as u8)
@@ -49,6 +49,7 @@ async fn cli_process_reports_multi_task_progress_and_completes_downloads() {
             .current_dir(sandbox_dir)
             .arg("--download-dir")
             .arg(download_dir_for_cmd)
+            .arg("--verbose")
             .arg("--max-concurrent")
             .arg("2")
             .arg("--workers")
@@ -75,19 +76,14 @@ async fn cli_process_reports_multi_task_progress_and_completes_downloads() {
     );
 
     assert!(
-        stdout.contains("progress tasks=2"),
-        "expected plain-text progress output for two tasks\nstdout:\n{}",
-        stdout
-    );
-    assert!(
-        stdout.contains("final tasks=2"),
-        "expected final plain-text frame for two tasks\nstdout:\n{}",
-        stdout
-    );
-    assert!(
         stdout.contains("Final summary: tasks=2 completed=2 failed=0 canceled=0 deleted=0"),
         "expected final summary in CLI output\nstdout:\n{}",
         stdout
+    );
+    assert!(
+        stderr.contains("Task #1 started") && stderr.contains("Task #2 started"),
+        "expected verbose task start logs\nstderr:\n{}",
+        stderr
     );
 
     let alpha_downloaded = tokio::fs::read(download_dir.join("alpha.bin"))

@@ -1,7 +1,9 @@
 /target
+/dist
 Cargo.lock
 .idea/
 .idea/*
 .DS_Store
 downloads/
 downloads/*
+/downloads.db

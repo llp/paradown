@@ -246,46 +246,76 @@
 - Memory backend 在多任务场景下会出现 worker/checksum 覆盖
 - 持久化模型缺少最基本的回归测试
 
+### 3.7 第七轮：下沉恢复转换并收紧恢复信任边界
+
+提交：
+
+- 见本轮提交记录
+
+已完成内容：
+
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 新增了更明确的 storage API
+  - 新增 `StoredDownloadBundle`
+  - 新增 `load_task_bundles()`
+  - 新增 DB 模型到 `DownloadTaskRequest` / `DownloadWorkerRequest` 的转换方法
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 不再直接拼装底层 DB 模型
+  - 恢复逻辑改为消费 `persistence.rs` 提供的 bundle 和转换结果
+  - 恢复状态判断与存储读取职责开始分离
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 收紧了恢复信任边界
+  - `Running/Preparing` 统一恢复为 `Paused`
+  - 本地文件缺失时，不再信任已持久化的 worker/progress
+  - worker 布局必须满足 task_id 正确、index 唯一、range 有效、下载偏移合法、分块连续覆盖
+  - 不可信的 worker 布局会整组丢弃，并把任务回退到 `Pending`
+- 为恢复路径补了针对性测试
+  - 缺文件时降级为 `Pending`
+  - 合法 paused 恢复时保留 worker，并按 worker 重新计算下载进度
+  - 非法 worker 布局会被整组丢弃
+
+这一轮解决的主要问题：
+
+- `coordinator_registry.rs` 之前既读 DB 模型又做恢复策略，职责混杂
+- 恢复路径对持久化 worker 数据过于信任
+- 文件缺失、分块重叠、分块不完整等场景缺少明确的降级规则
+
 ## 4. 本轮重构具体改了什么
 
-如果只聚焦“这一轮”即第六轮，已经修改的重点如下：
+如果只聚焦“这一轮”即第七轮，已经修改的重点如下：
 
 ### 4.1 已改
 
-- `sqlite_repository.rs` 现在按 task `id` 做 upsert，不再按 `url` 做主冲突键
-- `sqlite_repository.rs` 现在统一写入 RFC3339 风格时间戳，并兼容读取旧格式 SQLite 时间文本
-- `memory_repository.rs` 现在用复合 key 存 worker 和 checksum，避免多任务覆盖
-- repository 层新增了 4 个针对性测试，补齐了最核心的模型回归检查
+- `persistence.rs` 现在提供 task bundle 加载和 DB->恢复请求转换，不再让恢复层直接操作原始 DB 模型
+- `coordinator_registry.rs` 现在会先做恢复计划，再决定是否恢复 worker 状态
+- 恢复层现在会在缺文件或 worker 布局不可信时回退到 `Pending`
+- 恢复层新增了 3 个针对性测试，覆盖缺文件、合法恢复、非法布局三类路径
 
 ### 4.2 还没改完
 
-- `persistence.rs` 仍然只是 manager/repository 之间的转换层，还没有继续收紧 storage API
+- `persistence.rs` 仍然还包含 task/worker/checksum 的运行时模型转换细节
 - `worker.rs` 里仍然混着协议判断、重试、节流和写文件逻辑
-- `coordinator_registry.rs` 的恢复装配还没有显式校验“持久化 worker 布局是否可信”
+- `coordinator_registry.rs` 仍然还在承担恢复计划的业务规则，后续可以继续收成独立 recovery 层
 - `main.rs` 的 interactive mode 仍未完整接线
 
 ### 4.3 本轮实际触达的文件
 
-本轮第六轮重构实际触达的核心文件如下：
+本轮第七轮重构实际触达的核心文件如下：
 
-- [sqlite_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite_repository.rs:1)
-- [memory_repository.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory_repository.rs:1)
+- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1)
+- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
 
-本轮的重构重点不是新增功能，而是让“同一份下载状态”在不同存储后端里表达成同一件事：
+本轮的重构重点不是新增功能，而是让“存储读取”和“恢复决策”成为两层明确的职责：
 
-- sqlite 的 task 记录要以 task id 为准
-- 时间字段要能稳定写回并正确读出
-- memory backend 不能因为 key 设计把多任务状态互相覆盖
+- `persistence.rs` 负责把后端记录变成统一的恢复输入
+- `coordinator_registry.rs` 负责判断这份输入到底值不值得信任
 
-这样做的直接收益是：后续如果继续做恢复路径和存储层重构，就不会建立在已经漂移的状态模型之上。
+这样做的直接收益是：后续如果继续做 recovery 层或 storage API 细化，不需要再让 registry 直接穿透到底层模型。
 
 ### 4.4 本轮明确未触达的范围
 
-这轮有意识地没有去碰下面这些区域，原因是先把后端模型对齐，再进入更高一层的 storage API 和恢复流程：
+这轮有意识地没有去碰下面这些区域，原因是先把恢复层的信任边界拉直，再进入更细的 runtime 与 API 收口：
 
 - [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 仍然承载了不少模型转换细节
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1) 的恢复路径仍然偏“信任持久化数据”
 - [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 里的重试、节流和写文件流程仍然混在一起
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的目录准备、文件策略和协议结果消费仍然混杂
 - [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
 - README、CLI 帮助文案、默认值说明的一致性问题
 
@@ -293,12 +323,12 @@
 
 下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
 
-### 5.1 存储后端的模型已经对齐一部分，但 storage API 和恢复层还未彻底收口
+### 5.1 恢复层已经开始收口，但 recovery API 和 worker runtime 还未彻底收口
 
-这一轮之后，后端模型已经更稳定，但仍未完全收口的职责主要变成：
+这一轮之后，恢复链路已经更稳，但仍未完全收口的职责主要变成：
 
 - `persistence.rs` 里的 DB/运行时模型转换
-- `coordinator_registry.rs` 里的恢复装配和信任边界
+- `coordinator_registry.rs` 里的恢复计划和恢复策略
 - `worker.rs` 里的重试、节流与文件写入细节
 
 建议后续进一步收敛为：
@@ -306,6 +336,7 @@
 - `protocol_probe`
 - `job_prepare`
 - `storage model`
+- `recovery layer`
 - `worker runtime`
 
 ### 5.2 持久化层命名和模型还未真正重构
@@ -414,7 +445,8 @@
 状态：
 
 - 已完成第一阶段
-- 仍需继续收紧 `persistence.rs` 的转换边界，以及 `coordinator_registry.rs` 的恢复校验
+- 已完成第二阶段
+- 仍需继续把 `persistence.rs` 的转换边界和 `coordinator_registry.rs` 的恢复规则继续收成更明确的 recovery API
 
 ### 阶段 D：补测试
 
@@ -446,7 +478,7 @@
 
 建议按照下面顺序继续：
 
-1. 继续收紧恢复路径和 storage API
+1. 继续收紧 `worker.rs` 运行时职责
 2. 补自动化测试
 3. 最后再收 CLI/README/交互体验
 
@@ -469,7 +501,7 @@
 
 ## 10. 当前判断
 
-截至 2026-04-15，重构工作已经完成了六轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了七轮，当前可以认为：
 
 - 对外命名和主干分层已经开始稳定
 - `manager.rs` 的结构性压力已经明显下降
@@ -478,4 +510,4 @@
 - `worker.rs`、`persistence.rs` 和恢复路径成为新的主要复杂度中心
 - 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
 
-因此，下一轮不建议再做表面命名调整，而应该直接进入恢复路径、storage API 和 `worker.rs` 运行时职责的实质性重构。
+因此，下一轮不建议再做表面命名调整，而应该直接进入 `worker.rs` 运行时职责和 recovery/storage API 的继续收口。

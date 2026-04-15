@@ -3,11 +3,14 @@ use crate::config::DownloadConfig;
 use crate::error::DownloadError;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
 use crate::repository::{DownloadRepository, MemoryRepository, SqliteRepository};
+use crate::request::{DownloadTaskRequest, DownloadWorkerRequest};
+use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -26,6 +29,13 @@ pub struct DownloadPersistenceManager {
 }
 
 pub type DownloadStore = DownloadPersistenceManager;
+
+#[derive(Debug, Clone)]
+pub struct StoredDownloadBundle {
+    pub task: DBDownloadTask,
+    pub workers: Vec<DBDownloadWorker>,
+    pub checksums: Vec<DBDownloadChecksum>,
+}
 
 impl DownloadPersistenceManager {
     pub async fn new(config: Arc<DownloadConfig>) -> Result<Self, DownloadError> {
@@ -68,6 +78,24 @@ impl DownloadPersistenceManager {
     /// 加载所有 Task
     pub async fn load_tasks(&self) -> Result<Vec<DBDownloadTask>, DownloadError> {
         self.repository.load_tasks().await
+    }
+
+    pub async fn load_task_bundles(&self) -> Result<Vec<StoredDownloadBundle>, DownloadError> {
+        let tasks = self.load_tasks().await?;
+        let mut bundles = Vec::with_capacity(tasks.len());
+
+        for task in tasks {
+            let task_id = task.id;
+            let workers = self.load_workers(task_id).await?;
+            let checksums = self.load_checksums(task_id).await?;
+            bundles.push(StoredDownloadBundle {
+                task,
+                workers,
+                checksums,
+            });
+        }
+
+        Ok(bundles)
     }
 
     /// 删除 Task
@@ -215,6 +243,49 @@ impl DownloadPersistenceManager {
             verified_at: model.verified_at.clone(),
         }
     }
+
+    pub fn db_task_to_request(
+        &self,
+        task: &DBDownloadTask,
+        checksums: &[DBDownloadChecksum],
+    ) -> DownloadTaskRequest {
+        DownloadTaskRequest {
+            id: Some(task.id),
+            url: task.url.clone(),
+            file_name: normalized_text_field(&task.file_name),
+            file_path: normalized_text_field(&task.file_path),
+            checksums: Some(
+                checksums
+                    .iter()
+                    .map(|checksum| self.db_to_checksum(checksum))
+                    .collect(),
+            ),
+            status: Some(DownloadStatus::from_str(&task.status).unwrap_or(DownloadStatus::Pending)),
+            downloaded_size: Some(task.downloaded_size),
+            total_size: task.total_size,
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+        }
+    }
+
+    pub fn db_workers_to_requests(
+        &self,
+        workers: &[DBDownloadWorker],
+    ) -> Vec<DownloadWorkerRequest> {
+        workers
+            .iter()
+            .map(|worker| DownloadWorkerRequest {
+                id: Some(worker.id),
+                task_id: worker.task_id,
+                index: worker.index,
+                start: worker.start,
+                end: worker.end,
+                downloaded: Some(worker.downloaded),
+                status: Some(worker.status.clone()),
+                updated_at: worker.updated_at,
+            })
+            .collect()
+    }
 }
 
 impl Clone for DownloadPersistenceManager {
@@ -223,5 +294,14 @@ impl Clone for DownloadPersistenceManager {
             repository: Arc::clone(&self.repository),
             config: Arc::clone(&self.config),
         }
+    }
+}
+
+fn normalized_text_field(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }

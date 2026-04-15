@@ -119,8 +119,10 @@ impl DownloadWorker {
                 return Ok(());
             }
 
-            let chunk = chunk?;
+            let chunk =
+                chunk.map_err(|err| DownloadError::NetworkError(self.id, err.to_string()))?;
             let chunk_len = chunk.len() as u64;
+            self.acquire_rate_limit(chunk_len).await;
             file.write_all(&chunk).await?;
             *downloaded_size += chunk_len;
 
@@ -132,6 +134,17 @@ impl DownloadWorker {
         }
 
         Ok(())
+    }
+
+    pub(crate) async fn acquire_rate_limit(&self, bytes: u64) {
+        let Some(task) = self.task.upgrade() else {
+            return;
+        };
+        let Some(manager) = task.manager.upgrade() else {
+            return;
+        };
+
+        manager.rate_limiter.acquire(bytes).await;
     }
 
     pub(crate) fn emit_progress(&self, downloaded_size: u64) {

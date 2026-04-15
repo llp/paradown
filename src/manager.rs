@@ -7,6 +7,7 @@ use crate::coordinator_registry::{add_task_with_workers, restore_tasks};
 use crate::error::DownloadError;
 use crate::events::DownloadEvent;
 use crate::persistence::DownloadPersistenceManager;
+use crate::rate_limiter::DownloadRateLimiter;
 use crate::request::DownloadTaskRequest;
 use crate::runtime::build_http_client;
 use crate::task::DownloadTask;
@@ -15,6 +16,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use log::{debug, error, info};
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -31,6 +33,7 @@ pub struct DownloadManager {
     pub pending_queue: Arc<Mutex<VecDeque<(u32, PendingAction)>>>,
     pub task_event_tx: broadcast::Sender<DownloadEvent>,
     pub http_client: Arc<reqwest::Client>,
+    pub(crate) rate_limiter: Arc<DownloadRateLimiter>,
 
     pub(crate) semaphore: Arc<Semaphore>,
 }
@@ -49,6 +52,7 @@ impl DownloadManager {
         let (task_event_tx, _) = broadcast::channel(100);
         let max_concurrent = config.max_concurrent_downloads;
         let http_client = Arc::new(build_http_client(&config)?);
+        let rate_limiter = Arc::new(DownloadRateLimiter::new(config.rate_limit_kbps));
 
         let manager = Arc::new(Self {
             config: Arc::new(config),
@@ -58,6 +62,7 @@ impl DownloadManager {
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             task_event_tx,
             http_client,
+            rate_limiter,
         });
 
         Ok(manager)
@@ -324,6 +329,14 @@ impl DownloadManager {
     //----------------------------------------------------------------------------------------------
     pub fn subscribe_events(&self) -> broadcast::Receiver<DownloadEvent> {
         self.task_event_tx.subscribe()
+    }
+
+    pub async fn set_rate_limit_kbps(&self, limit_kbps: Option<NonZeroU64>) {
+        self.rate_limiter.set_limit_kbps(limit_kbps).await;
+    }
+
+    pub fn current_rate_limit_kbps(&self) -> Option<u64> {
+        self.rate_limiter.current_limit_kbps()
     }
 
     async fn run_task_transition<'a, F>(

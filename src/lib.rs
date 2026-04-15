@@ -8,6 +8,7 @@ mod job_state;
 mod job_storage;
 mod job_workers;
 mod protocol_probe;
+mod rate_limiter;
 mod recovery;
 mod runtime;
 mod storage_mapping;

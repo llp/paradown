@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, timeout};
 
 #[tokio::test]
 async fn restores_paused_task_from_sqlite_on_manager_init() {
@@ -139,6 +139,42 @@ async fn downloads_file_end_to_end_via_manager() {
         *task.status.lock().await,
         DownloadStatus::Completed
     ));
+}
+
+#[tokio::test]
+async fn respects_global_rate_limit_during_download() {
+    let body = Arc::new(vec![b'x'; 64 * 1024]);
+    let server = TestDownloadServer::spawn(Arc::clone(&body), body.len()).await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config(
+        &download_dir,
+        &db_path,
+        1,
+        NonZeroU64::new(32),
+        FileConflictStrategy::Overwrite,
+    );
+    let manager = DownloadCoordinator::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let task_id = manager
+        .add_task(DownloadJobRequest::builder(server.url("/limited.bin")).build())
+        .await
+        .unwrap();
+
+    let started_at = Instant::now();
+    manager.start_task(task_id).await.unwrap();
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    assert!(
+        started_at.elapsed() >= Duration::from_millis(1500),
+        "rate limit should noticeably slow the download"
+    );
 }
 
 fn build_config(

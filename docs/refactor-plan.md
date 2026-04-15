@@ -176,51 +176,94 @@
 - `DownloadJob` 作为门面类型仍然过重，不利于继续演进
 - 后续如果继续修 worker 协调或状态流转，需要频繁修改超大文件
 
+### 3.5 第五轮：引入协议探测层并收紧 Range 下载正确性
+
+提交：
+
+- 见本轮提交记录
+
+已完成内容：
+
+- 新增协议探测模块：[protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)
+  - `HEAD` 探测
+  - `Range: bytes=0-0` 探测
+  - `Content-Range` 解析
+  - Range 支持能力判断
+  - 探测单元测试
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 接入协议探测结果
+  - 不再只依赖 `HEAD + Content-Length`
+  - 显式记录目标资源是否支持 range
+  - 对不支持 range 的部分文件恢复改为安全回退到整文件重下
+  - 文件缺失但持久化仍有进度时，清理过期 worker/progress 状态
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 增加协议探测状态
+  - `range_requests_supported`
+  - `protocol_probe_completed`
+- [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1) 调整恢复语义
+  - 恢复到当前进程后，如果还没有重新探测协议能力，暂停任务会重新走准备流程
+- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1) 根据协议能力决定 worker 规划
+  - 不支持 range 时只允许单 worker
+  - 不兼容的历史 worker 布局会被重建
+- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 收紧响应校验
+  - 支持 range 时显式要求 `206 Partial Content`
+  - 显式校验 `Content-Range`
+  - 不支持 range 时显式要求 `200 OK`
+  - worker 恢复时使用持久化的已下载偏移，而不是总从 0 开始
+
+这一轮解决的主要问题：
+
+- 下载前探测和 worker 执行之间没有共享“协议事实”
+- 服务端不支持 range 时仍可能按多段下载路径执行
+- worker 恢复时没有使用已持久化的下载偏移
+- `HEAD` 不可用时没有合适的探测回退路径
+
 ## 4. 本轮重构具体改了什么
 
-如果只聚焦“这一轮”即第四轮，已经修改的重点如下：
+如果只聚焦“这一轮”即第五轮，已经修改的重点如下：
 
 ### 4.1 已改
 
-- 把 worker 事件循环从 [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1) 拆到 [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
-- 把 worker 创建、装配、启动和 join 收敛从 `task.rs` 拆到 [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
-- 把 pause/resume/cancel/delete/reset 等状态流转从 `task.rs` 拆到 [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
-- 把 task/checksum/worker 的持久化与清理辅助从 `task.rs` 拆到 [job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
-- 保留 `DownloadTask` 作为下载作业门面，让对外 API 仍然稳定
+- 新增 [protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)，把资源探测从 `job_prepare` 的局部细节升级成单独的协议层
+- `job_prepare.rs` 现在基于协议探测结果决定是否允许 resume、是否允许多 worker，而不是隐式假设服务端支持 range
+- `worker.rs` 现在会按探测结果区分 `206 Partial Content` 和 `200 OK` 两种合法路径
+- `worker.rs` 现在会从自身已持久化的 `downloaded_size` 继续，而不是每次重启都从 0 开始
+- `job_state.rs` 现在会在“恢复到当前进程但尚未重新探测”的场景下重新走准备流程
+- `job_workers.rs` 会在协议能力与历史 worker 布局不兼容时重建 worker 集合
 
 ### 4.2 还没改完
 
-- `job_prepare.rs` 仍然同时包含下载前目录准备、文件策略和协议探测
-- `worker.rs` 里仍然混着 HTTP 协议判断、重试、节流和写文件逻辑
+- `job_prepare.rs` 仍然同时包含下载前目录准备、文件策略和协议探测结果消费
+- `worker.rs` 里仍然混着协议判断、重试、节流和写文件逻辑
 - `persistence.rs` 与 `repository/*` 的模型边界还没真正重构
 - `main.rs` 的 interactive mode 仍未完整接线
 
 ### 4.3 本轮实际触达的文件
 
-本轮第四轮重构实际触达的核心文件如下：
+本轮第五轮重构实际触达的核心文件如下：
 
-- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1)
-- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- [protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1)
 - [job_state.rs](/Users/liulipeng/workspace/rust/paradown/src/job_state.rs:1)
-- [job_storage.rs](/Users/liulipeng/workspace/rust/paradown/src/job_storage.rs:1)
+- [job_workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job_workers.rs:1)
+- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1)
+- [task.rs](/Users/liulipeng/workspace/rust/paradown/src/task.rs:1)
 - [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1)
 
-本轮的重构重点不是新增功能，而是把下载作业内部拆成更清楚的几块：
+本轮的重构重点不是新增功能，而是把“资源协议事实”真正变成可被作业层和 worker 层共享的显式能力：
 
-- `task.rs` 继续保留对外门面和公共 API
-- `job_workers.rs` 负责 worker 协调和 worker 事件收敛
-- `job_state.rs` 负责作业状态流转
-- `job_storage.rs` 负责作业落盘和清理辅助
+- `protocol_probe.rs` 负责探测 total size 和 range 能力
+- `job_prepare.rs` 负责消费探测结果并决定是否允许安全 resume
+- `job_workers.rs` 负责根据探测结果决定 worker 布局
+- `worker.rs` 负责对运行时响应做最终协议校验
 
-这样做的直接收益是：后续如果继续改 worker 协调、任务生命周期或存储策略，不需要再在一个超大 `task.rs` 里来回穿梭。
+这样做的直接收益是：后续如果继续改协议退化策略或下载正确性，不需要再让 `job_prepare` 和 `worker` 各自维护一套隐式假设。
 
 ### 4.4 本轮明确未触达的范围
 
-这轮有意识地没有去碰下面这些区域，原因是先把作业内部边界收紧，再进入协议和存储正确性层：
+这轮有意识地没有去碰下面这些区域，原因是先把协议探测与响应校验拉直，再进入存储模型和剩余运行时细节：
 
-- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 里的协议正确性、重试与速率控制
+- [worker.rs](/Users/liulipeng/workspace/rust/paradown/src/worker.rs:1) 里的重试、节流和写文件流程仍然混在一起
 - [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1) 与 `repository/*` 的持久化模型一致性
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的协议探测与文件策略混杂问题
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的目录准备、文件策略和协议结果消费仍然混杂
 - [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
 - README、CLI 帮助文案、默认值说明的一致性问题
 
@@ -228,12 +271,12 @@
 
 下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
 
-### 5.1 `DownloadJob` 已拆开，但协议与存储边界还未收口
+### 5.1 协议探测已经独立，但 prepare / worker / storage 边界还未彻底收口
 
-这一轮之后，`task.rs` 本身已经明显瘦身，但作业层仍未完全收口的职责主要变成：
+这一轮之后，协议层已经有了独立入口，但仍未完全收口的职责主要变成：
 
-- `job_prepare.rs` 里的协议探测与文件策略
-- `job_workers.rs` 里的 worker 行为正确性仍然依赖当前 `worker.rs`
+- `job_prepare.rs` 里的目录准备、文件策略与 resume 决策
+- `worker.rs` 里的重试、节流与文件写入细节
 - `job_storage.rs` 只是抽离了调用位置，还没有重构底层存储模型
 
 建议后续进一步收敛为：
@@ -329,6 +372,11 @@
 - 明确单线程退化路径
 - 明确分块下载允许条件
 
+状态：
+
+- 已完成第一阶段
+- 仍需继续整理 `worker.rs` 内部的重试、节流和写文件责任边界
+
 ### 阶段 C：重构存储模型
 
 目标：
@@ -372,14 +420,13 @@
 
 建议按照下面顺序继续：
 
-1. 抽协议探测与 range 能力判断
-2. 重构持久化模型
-3. 补自动化测试
-4. 最后再收 CLI/README/交互体验
+1. 重构持久化模型
+2. 补自动化测试
+3. 最后再收 CLI/README/交互体验
 
 原因：
 
-- 当前最大的结构复杂度已经从 `task.rs` 转移到了协议层和存储层
+- 当前最大的结构复杂度已经从 `task.rs` 转移到了 `worker.rs` 和存储层
 - 当前最大的正确性风险仍然在协议层和恢复层
 - 如果先做 UI 或 CLI 体验，只会把错误行为包装得更漂亮
 
@@ -396,12 +443,12 @@
 
 ## 10. 当前判断
 
-截至 2026-04-15，重构工作已经完成了四轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了五轮，当前可以认为：
 
 - 对外命名和主干分层已经开始稳定
 - `manager.rs` 的结构性压力已经明显下降
 - `task.rs` 已经从复杂度中心退回到门面层
-- `job_prepare.rs`、`worker.rs` 和持久化模型成为新的主要复杂度中心
+- `protocol_probe.rs` 已经补齐，但 `job_prepare.rs`、`worker.rs` 和持久化模型成为新的主要复杂度中心
 - 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
 
-因此，下一轮不建议再做表面命名调整，而应该直接进入协议探测层、持久化模型和 worker 正确性的实质性重构。
+因此，下一轮不建议再做表面命名调整，而应该直接进入持久化模型和 `worker.rs` 运行时职责的实质性重构。

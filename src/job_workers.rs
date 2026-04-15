@@ -41,10 +41,14 @@ impl DownloadTask {
         {
             let workers = self.workers.read().await;
             if !workers.is_empty() {
-                return Ok(workers.clone());
+                if self.can_reuse_existing_workers(&workers).await {
+                    return Ok(workers.clone());
+                }
             }
         }
 
+        self.clear_task_workers().await?;
+        self.purge_task_workers().await?;
         let created_workers = self.create_workers(file_path).await?;
         let mut workers = self.workers.write().await;
         if workers.is_empty() {
@@ -73,10 +77,13 @@ impl DownloadTask {
         file_path: &Arc<PathBuf>,
     ) -> Result<Vec<Arc<DownloadWorker>>, DownloadError> {
         let created_at = Utc::now();
-        let chunks = plan_download_chunks(
-            self.total_size.load(Ordering::Relaxed),
-            self.config.worker_threads,
-        );
+        let requested_workers = if self.supports_range_requests() {
+            self.config.worker_threads
+        } else {
+            1
+        };
+        let chunks =
+            plan_download_chunks(self.total_size.load(Ordering::Relaxed), requested_workers);
 
         let mut workers = Vec::with_capacity(chunks.len());
         for chunk in chunks {
@@ -109,6 +116,34 @@ impl DownloadTask {
         }
 
         Ok(workers)
+    }
+
+    async fn can_reuse_existing_workers(&self, workers: &[Arc<DownloadWorker>]) -> bool {
+        if self.supports_range_requests() {
+            return true;
+        }
+
+        if workers.len() != 1 {
+            debug!(
+                "[Task {}] Existing workers require range support, recreating as single worker",
+                self.id
+            );
+            return false;
+        }
+
+        let worker = &workers[0];
+        let expected_end = self.total_size.load(Ordering::Relaxed).saturating_sub(1);
+        let downloaded = worker.downloaded_size.load(Ordering::Relaxed);
+        let can_reuse = worker.start == 0 && worker.end == expected_end && downloaded == 0;
+
+        if !can_reuse {
+            debug!(
+                "[Task {}] Existing single worker has stale range/progress state, recreating",
+                self.id
+            );
+        }
+
+        can_reuse
     }
 
     async fn handle_worker_event(self: &Arc<Self>, event: DownloadEvent) {

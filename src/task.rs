@@ -14,7 +14,7 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
 
@@ -33,6 +33,8 @@ pub struct DownloadTask {
 
     pub total_size: AtomicU64,
     pub downloaded_size: AtomicU64,
+    pub range_requests_supported: AtomicBool,
+    pub protocol_probe_completed: AtomicBool,
 
     pub worker_event_tx: broadcast::Sender<DownloadEvent>,
     pub manager: Weak<DownloadManager>,
@@ -101,6 +103,8 @@ impl DownloadTask {
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
             total_size: AtomicU64::new(total_size.unwrap_or(0)),
+            range_requests_supported: AtomicBool::new(false),
+            protocol_probe_completed: AtomicBool::new(false),
             created_at: Some(created_at.unwrap_or(now)),
             updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
             persistence,
@@ -177,6 +181,21 @@ impl DownloadTask {
         if let Some(manager) = self.manager.upgrade() {
             let _ = manager.task_event_tx.send(event);
         }
+    }
+
+    pub(crate) fn update_protocol_probe(&self, total_size: u64, supports_range_requests: bool) {
+        self.total_size.store(total_size, Ordering::Relaxed);
+        self.range_requests_supported
+            .store(supports_range_requests, Ordering::Relaxed);
+        self.protocol_probe_completed.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn supports_range_requests(&self) -> bool {
+        self.range_requests_supported.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn protocol_probe_completed(&self) -> bool {
+        self.protocol_probe_completed.load(Ordering::Relaxed)
     }
 
     pub(crate) fn resolve_or_init_file_name(&self) -> String {

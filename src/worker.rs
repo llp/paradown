@@ -1,13 +1,14 @@
 use crate::config::DownloadConfig;
 use crate::error::DownloadError;
 use crate::events::DownloadEvent;
+use crate::protocol_probe::parse_content_range;
 use crate::stats::DownloadStats;
 use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use log::{debug, info};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{
@@ -134,7 +135,19 @@ impl DownloadWorker {
 
         let mut retry_count = 0;
         let max_retries = self.config.retry.max_retries;
-        let mut downloaded_size = 0u64;
+        let mut downloaded_size = self.downloaded_size.load(Ordering::Relaxed);
+        let expected_length = self.end.saturating_sub(self.start).saturating_add(1);
+
+        if downloaded_size >= expected_length {
+            self.is_running.store(false, Ordering::Relaxed);
+            *self.status.lock().await = DownloadStatus::Completed;
+            if let Some(task_arc) = self.task.upgrade() {
+                let _ = task_arc
+                    .worker_event_tx
+                    .send(DownloadEvent::Complete(self.id));
+            }
+            return Ok(());
+        }
 
         // 节流相关
         let throttle = &self.config.progress_throttle;
@@ -142,16 +155,18 @@ impl DownloadWorker {
         let threshold: u64 = throttle.threshold_bytes;
 
         let mut last_emit = tokio::time::Instant::now();
-        let mut last_reported: u64 = 0;
+        let mut last_reported: u64 = downloaded_size;
 
         loop {
             if self.deleted.load(Ordering::Relaxed) {
                 debug!("[Worker {}] Download deleted", self.id);
+                self.is_running.store(false, Ordering::Relaxed);
                 return Ok(());
             }
 
             if self.canceled.load(Ordering::Relaxed) {
                 debug!("[Worker {}] Download canceled", self.id);
+                self.is_running.store(false, Ordering::Relaxed);
                 return Ok(());
             }
 
@@ -160,25 +175,31 @@ impl DownloadWorker {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
 
-            let mut request = self.client.get(&self.url);
             let range_start = self.start + downloaded_size;
-            if range_start <= self.end {
+            let use_range_requests = self
+                .task
+                .upgrade()
+                .map(|task| task.supports_range_requests())
+                .unwrap_or(false);
+
+            let mut request = self.client.get(&self.url);
+            if use_range_requests && range_start <= self.end {
                 request = request.header("Range", format!("bytes={}-{}", range_start, self.end));
             }
 
             let response = match request.send().await {
                 Ok(res) => {
-                    if !res.status().is_success() {
+                    if let Err(protocol_err) =
+                        self.validate_response(&res, use_range_requests, range_start)
+                    {
                         let err = DownloadError::HttpError(
                             self.id,
                             res.status().as_u16(),
-                            res.status().to_string(),
+                            protocol_err.to_string(),
                         );
                         debug!(
-                            "[Worker {}] HTTP error: {}, retry_count: {}",
-                            self.id,
-                            res.status(),
-                            retry_count
+                            "[Worker {}] HTTP/protocol error: {:?}, retry_count: {}",
+                            self.id, err, retry_count
                         );
 
                         self.stats.record_failure();
@@ -190,6 +211,7 @@ impl DownloadWorker {
                                     .send(DownloadEvent::Error(self.id, err.clone()));
                             }
                             *self.status.lock().await = DownloadStatus::Failed(err.clone());
+                            self.is_running.store(false, Ordering::Relaxed);
                             return Err(err);
                         }
                         retry_count += 1;
@@ -219,6 +241,7 @@ impl DownloadWorker {
                             ));
                         }
                         *self.status.lock().await = DownloadStatus::Failed(err.clone());
+                        self.is_running.store(false, Ordering::Relaxed);
                         return Err(err);
                     }
                     retry_count += 1;
@@ -230,7 +253,13 @@ impl DownloadWorker {
                 }
             };
 
-            let content_length = response.content_length().unwrap_or(0);
+            let content_length = response.content_length().unwrap_or_else(|| {
+                if use_range_requests {
+                    self.end.saturating_sub(range_start).saturating_add(1)
+                } else {
+                    self.end.saturating_sub(self.start).saturating_add(1)
+                }
+            });
             self.total_size.store(content_length, Ordering::Relaxed);
 
             debug!(
@@ -248,12 +277,18 @@ impl DownloadWorker {
                 .open(file_path)
                 .await?;
 
-            file.seek(tokio::io::SeekFrom::Start(range_start)).await?;
+            let file_offset = if use_range_requests {
+                range_start
+            } else {
+                self.start
+            };
+            file.seek(tokio::io::SeekFrom::Start(file_offset)).await?;
 
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 if self.canceled.load(Ordering::Relaxed) {
                     debug!("[Worker {}] Download canceled during writing", self.id);
+                    self.is_running.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
 
@@ -294,7 +329,6 @@ impl DownloadWorker {
                 });
             }
 
-            let expected_length = self.end - self.start + 1;
             let actual_length = self.downloaded_size.load(Ordering::Relaxed);
             if actual_length != expected_length {
                 debug!(
@@ -304,6 +338,7 @@ impl DownloadWorker {
                 *self.status.lock().await = DownloadStatus::Failed(DownloadError::Other(
                     "Downloaded length mismatch".into(),
                 ));
+                self.is_running.store(false, Ordering::Relaxed);
                 return Err(DownloadError::Other(format!(
                     "Worker {} downloaded length mismatch",
                     self.id
@@ -316,6 +351,7 @@ impl DownloadWorker {
         }
 
         self.stats.record_success();
+        self.is_running.store(false, Ordering::Relaxed);
 
         *self.status.lock().await = DownloadStatus::Completed;
         info!("[Worker {}] Download completed successfully", self.id);
@@ -392,6 +428,48 @@ impl DownloadWorker {
                 .worker_event_tx
                 .send(DownloadEvent::Delete(self.id));
         }
+        Ok(())
+    }
+
+    fn validate_response(
+        &self,
+        response: &reqwest::Response,
+        use_range_requests: bool,
+        expected_start: u64,
+    ) -> Result<(), DownloadError> {
+        if use_range_requests {
+            if response.status() != StatusCode::PARTIAL_CONTENT {
+                return Err(DownloadError::Other(format!(
+                    "Expected 206 Partial Content, got {}",
+                    response.status()
+                )));
+            }
+
+            let content_range = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .ok_or_else(|| DownloadError::Other("Missing Content-Range".into()))?
+                .to_str()?;
+            let content_range = parse_content_range(content_range)
+                .ok_or_else(|| DownloadError::Other("Invalid Content-Range".into()))?;
+
+            if content_range.start != expected_start || content_range.end != self.end {
+                return Err(DownloadError::Other(format!(
+                    "Unexpected Content-Range {}-{} for expected {}-{}",
+                    content_range.start, content_range.end, expected_start, self.end
+                )));
+            }
+
+            return Ok(());
+        }
+
+        if response.status() != StatusCode::OK {
+            return Err(DownloadError::Other(format!(
+                "Expected 200 OK, got {}",
+                response.status()
+            )));
+        }
+
         Ok(())
     }
 }

@@ -35,8 +35,16 @@ impl DownloadTask {
                 )))
             }
             DownloadStatus::Paused => {
-                debug!("[Task {}] Resuming paused task", self.id);
-                Ok(StartDirective::Resume)
+                if self.protocol_probe_completed() {
+                    debug!("[Task {}] Resuming paused task", self.id);
+                    Ok(StartDirective::Resume)
+                } else {
+                    debug!(
+                        "[Task {}] Paused task has not been probed in this process, restarting preparation",
+                        self.id
+                    );
+                    Ok(StartDirective::Continue)
+                }
             }
             DownloadStatus::Completed => {
                 debug!("[Task {}] Task already completed, skipping start", self.id);
@@ -121,6 +129,16 @@ impl DownloadTask {
                     return Box::pin(self.start()).await;
                 }
                 DownloadStatus::Paused => {
+                    if !self.protocol_probe_completed() {
+                        debug!(
+                            "[Task {}] Paused task has no protocol probe state, restarting through start()",
+                            self.id
+                        );
+                        *status = DownloadStatus::Pending;
+                        drop(status);
+                        return Box::pin(self.start()).await;
+                    }
+
                     if self.total_size.load(Ordering::Relaxed) == 0 {
                         debug!(
                             "[Task {}] Resuming paused task in Preparing/Pending phase",
@@ -215,6 +233,10 @@ impl DownloadTask {
 
         self.downloaded_size.store(0, Ordering::Relaxed);
         self.total_size.store(0, Ordering::Relaxed);
+        self.range_requests_supported
+            .store(false, Ordering::Relaxed);
+        self.protocol_probe_completed
+            .store(false, Ordering::Relaxed);
 
         self.delete_task_file().await?;
         Ok(())

@@ -1,10 +1,12 @@
 use crate::config::FileConflictStrategy;
 use crate::error::DownloadError;
 use crate::job_finalize::{finish_job, verify_checksums};
+use crate::protocol_probe::{DownloadProtocolProbe, probe_download_target};
 use crate::task::DownloadTask;
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::fs;
 
 pub(crate) struct PreparedDownload {
@@ -35,14 +37,21 @@ pub(crate) async fn prepare_download(
     let file_path = job.get_or_init_file_path(download_dir)?;
     debug!("[Task {}] Download file path: {:?}", job.id, file_path);
 
-    let total_size = probe_total_size(job).await?;
-    debug!("[Task {}] Total file size: {} bytes", job.id, total_size);
+    let protocol_probe = probe_download_target(job.client.as_ref(), &job.url).await?;
+    job.update_protocol_probe(
+        protocol_probe.total_size,
+        protocol_probe.supports_range_requests,
+    );
+    debug!(
+        "[Task {}] Probe result: total_size={} supports_range_requests={}",
+        job.id, protocol_probe.total_size, protocol_probe.supports_range_requests
+    );
 
-    if handle_existing_file(job, &file_path, total_size).await? {
+    if handle_existing_file(job, &file_path, protocol_probe).await? {
         return Ok(PreparationOutcome::Finished);
     }
 
-    if total_size == 0 {
+    if protocol_probe.total_size == 0 {
         tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -62,34 +71,13 @@ pub(crate) async fn prepare_download(
     Ok(PreparationOutcome::Ready(PreparedDownload { file_path }))
 }
 
-async fn probe_total_size(job: &Arc<DownloadTask>) -> Result<u64, DownloadError> {
-    let known_size = job.total_size.load(std::sync::atomic::Ordering::Relaxed);
-    if known_size > 0 {
-        return Ok(known_size);
-    }
-
-    let resp = job.client.head(&job.url).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("Failed to fetch file info: {}", resp.status()).into());
-    }
-
-    let size = resp
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)
-        .ok_or("No Content-Length")?
-        .to_str()?
-        .parse::<u64>()?;
-    job.total_size
-        .store(size, std::sync::atomic::Ordering::Relaxed);
-    Ok(size)
-}
-
 async fn handle_existing_file(
     job: &Arc<DownloadTask>,
     file_path: &Arc<PathBuf>,
-    total_size: u64,
+    probe: DownloadProtocolProbe,
 ) -> Result<bool, DownloadError> {
     if !file_path.as_ref().exists() {
+        reset_missing_file_state(job).await?;
         return Ok(false);
     }
 
@@ -97,17 +85,18 @@ async fn handle_existing_file(
         .await
         .map_err(|e| DownloadError::Io(format!("Failed to read file metadata: {}", e)))?;
     let current_size = metadata.len();
-    let checksum_ok = verify_existing_file(job, file_path).await?;
 
     match job.config.file_conflict_strategy {
         FileConflictStrategy::Overwrite => {
             fs::remove_file(file_path.as_ref())
                 .await
                 .map_err(|e| DownloadError::Io(format!("Failed to remove existing file: {}", e)))?;
+            reset_resume_state(job).await?;
             debug!("[Task {}] Overwriting existing file", job.id);
             Ok(false)
         }
         FileConflictStrategy::SkipIfValid => {
+            let checksum_ok = verify_existing_file(job, file_path).await?;
             if checksum_ok {
                 info!("[Task {}] File exists and valid, skipping download", job.id);
                 finish_job(job, Ok(())).await?;
@@ -115,24 +104,38 @@ async fn handle_existing_file(
             } else {
                 debug!("[Task {}] File exists but invalid, will redownload", job.id);
                 fs::remove_file(file_path.as_ref()).await?;
+                reset_resume_state(job).await?;
                 Ok(false)
             }
         }
         FileConflictStrategy::Resume => {
-            if current_size < total_size {
-                debug!(
-                    "[Task {}] Resuming download from byte {}",
-                    job.id, current_size
-                );
+            if current_size < probe.total_size {
+                if can_resume_partial_download(job, probe.supports_range_requests).await {
+                    debug!(
+                        "[Task {}] Resuming download from byte {}",
+                        job.id, current_size
+                    );
+                } else {
+                    info!(
+                        "[Task {}] Partial file cannot be resumed safely, restarting download from scratch",
+                        job.id
+                    );
+                    fs::remove_file(file_path.as_ref()).await?;
+                    reset_resume_state(job).await?;
+                }
                 Ok(false)
-            } else if checksum_ok {
-                info!("[Task {}] File exists and valid, skipping download", job.id);
-                finish_job(job, Ok(())).await?;
-                Ok(true)
             } else {
-                debug!("[Task {}] File exists but invalid, will redownload", job.id);
-                fs::remove_file(file_path.as_ref()).await?;
-                Ok(false)
+                let checksum_ok = verify_existing_file(job, file_path).await?;
+                if checksum_ok {
+                    info!("[Task {}] File exists and valid, skipping download", job.id);
+                    finish_job(job, Ok(())).await?;
+                    Ok(true)
+                } else {
+                    debug!("[Task {}] File exists but invalid, will redownload", job.id);
+                    fs::remove_file(file_path.as_ref()).await?;
+                    reset_resume_state(job).await?;
+                    Ok(false)
+                }
             }
         }
     }
@@ -160,4 +163,38 @@ async fn verify_existing_file(
     }
 
     Ok(true)
+}
+
+async fn can_resume_partial_download(
+    job: &Arc<DownloadTask>,
+    supports_range_requests: bool,
+) -> bool {
+    if !supports_range_requests {
+        return false;
+    }
+
+    let workers = job.workers.read().await;
+    !workers.is_empty()
+}
+
+async fn reset_missing_file_state(job: &Arc<DownloadTask>) -> Result<(), DownloadError> {
+    let has_partial_progress = job.downloaded_size.load(Ordering::Relaxed) > 0;
+    let has_workers = !job.workers.read().await.is_empty();
+
+    if !has_partial_progress && !has_workers {
+        return Ok(());
+    }
+
+    info!(
+        "[Task {}] Local file is missing, clearing persisted worker progress and restarting",
+        job.id
+    );
+    reset_resume_state(job).await
+}
+
+async fn reset_resume_state(job: &Arc<DownloadTask>) -> Result<(), DownloadError> {
+    job.downloaded_size.store(0, Ordering::Relaxed);
+    job.clear_task_workers().await?;
+    job.purge_task_workers().await?;
+    Ok(())
 }

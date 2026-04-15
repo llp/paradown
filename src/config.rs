@@ -83,7 +83,10 @@ pub struct Config {
     pub download_dir: PathBuf,
     #[serde(default)]
     pub shuffle: bool,
-    #[serde(default = "default_concurrent_tasks", alias = "max_concurrent_downloads")]
+    #[serde(
+        default = "default_concurrent_tasks",
+        alias = "max_concurrent_downloads"
+    )]
     pub concurrent_tasks: usize,
     #[serde(default = "default_segments_per_task", alias = "worker_threads")]
     pub segments_per_task: usize,
@@ -101,6 +104,8 @@ pub struct Config {
     pub file_conflict_strategy: FileConflictStrategy,
     #[serde(default = "default_debug")]
     pub debug: bool,
+    #[serde(default)]
+    pub on_complete: Option<String>,
     #[serde(default)]
     pub http: HttpConfig,
 }
@@ -133,6 +138,7 @@ impl Default for Config {
             progress_throttle: ProgressThrottleConfig::default(),
             file_conflict_strategy: default_file_conflict_strategy(),
             debug: default_debug(),
+            on_complete: None,
             http: HttpConfig::default(),
         }
     }
@@ -198,6 +204,11 @@ impl ConfigBuilder {
 
     pub fn debug(mut self, debug: bool) -> Self {
         self.inner.debug = debug;
+        self
+    }
+
+    pub fn on_complete(mut self, command: impl Into<String>) -> Self {
+        self.inner.on_complete = Some(command.into());
         self
     }
 
@@ -304,6 +315,9 @@ impl Config {
         }
         if let Some(value) = parse_env_bool("PARADOWN_DEBUG")? {
             self.debug = value;
+        }
+        if let Some(value) = read_env("PARADOWN_ON_COMPLETE") {
+            self.on_complete = Some(value);
         }
 
         if let Some(value) = parse_env_bool("PARADOWN_USE_ENV_PROXY")? {
@@ -513,7 +527,10 @@ mod tests {
         let parsed = config.parse::<Config>().unwrap();
         assert_eq!(parsed.segments_per_task, 8);
         assert_eq!(parsed.concurrent_tasks, 6);
-        assert!(matches!(parsed.storage_backend, crate::storage::Backend::Memory));
+        assert!(matches!(
+            parsed.storage_backend,
+            crate::storage::Backend::Memory
+        ));
     }
 
     #[test]
@@ -527,7 +544,10 @@ mod tests {
         );
 
         let parsed = config.parse::<Config>().unwrap();
-        assert_eq!(parsed.download_dir, std::path::PathBuf::from("./custom-downloads"));
+        assert_eq!(
+            parsed.download_dir,
+            std::path::PathBuf::from("./custom-downloads")
+        );
         assert!(matches!(
             parsed.file_conflict_strategy,
             FileConflictStrategy::Overwrite

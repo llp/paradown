@@ -5,6 +5,7 @@
 #
 # Paths are resolved relative to the current working directory.
 
+schema_version = 1
 download_dir = "./downloads"
 shuffle = false
 concurrent_tasks = 4
@@ -14,6 +15,7 @@ connection_timeout = { secs = 30, nanos = 0 }
 storage_backend = { Sqlite = "./downloads.db" }
 file_conflict_strategy = "Resume"
 debug = false
+on_complete = "echo paradown finished: completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"
 
 [retry]
 max_retries = 3
@@ -24,3 +26,13 @@ backoff_factor = 2.0
 [progress_throttle]
 interval_ms = 200
 threshold_bytes = 1048576
+
+[http.client.proxy]
+use_env_proxy = true
+
+[http.request]
+user_agent = "paradown/0.1.1"
+
+[[http.request.headers]]
+name = "Accept"
+value = "*/*"

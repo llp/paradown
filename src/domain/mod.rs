@@ -4,8 +4,8 @@ mod piece;
 mod spec;
 
 pub use http::{
-    HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions,
-    HttpResourceIdentity, ProxyOptions,
+    HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions, HttpResourceIdentity,
+    ProxyOptions,
 };
 pub use manifest::{FileManifest, SessionManifest};
 pub use piece::{

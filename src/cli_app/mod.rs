@@ -1,7 +1,7 @@
 mod commands;
 mod render;
 
-use self::commands::{Command, CommandTarget, help_lines, parse_command};
+use self::commands::{Command, CommandTarget, StatusFilter, help_lines, parse_command};
 use self::render::{DashboardHandle, DashboardMessageTx, JsonHandle, PlainTextHandle};
 use clap::Parser;
 use log::{LevelFilter, error, info, warn};
@@ -72,7 +72,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     interactive: bool,
 
-    #[arg(short = 'u', long = "urls", value_name = "URL", num_args = 1.., required = true)]
+    #[arg(long = "urls-file", value_name = "FILE")]
+    urls_file: Vec<PathBuf>,
+
+    #[arg(long = "on-complete", value_name = "COMMAND")]
+    on_complete: Option<String>,
+
+    #[arg(short = 'u', long = "urls", value_name = "URL", num_args = 1..)]
     urls: Vec<String>,
 }
 
@@ -113,7 +119,14 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
         _ => None,
     };
 
-    for url in prepare_urls(&cli.urls, config.shuffle) {
+    let urls = collect_urls(&cli).await?;
+    if urls.is_empty() {
+        return Err(Error::ConfigError(
+            "at least one URL must be provided via --urls or --urls-file".into(),
+        ));
+    }
+
+    for url in prepare_urls(&urls, config.shuffle) {
         let task_id = manager
             .add_download(DownloadSpec::parse(url.clone())?)
             .await?;
@@ -145,6 +158,7 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
         OutputMode::Json => print_json_completion_summary(&completion_summary),
         _ => print_completion_summary(&completion_summary),
     }
+    run_completion_hook(&config, &completion_summary).await;
 
     Ok(exit_code_from_summary(&completion_summary))
 }
@@ -209,6 +223,9 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     if let Some(rate_limit_kbps) = cli.rate_limit_kbps {
         config.rate_limit_kbps = NonZeroU64::new(rate_limit_kbps);
     }
+    if let Some(command) = &cli.on_complete {
+        config.on_complete = Some(command.clone());
+    }
     if cli.no_env_proxy {
         config.http.client.proxy.use_env_proxy = false;
     }
@@ -244,7 +261,10 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
 }
 
 fn parse_cli_headers(values: &[String]) -> Result<Vec<HttpHeader>, Error> {
-    values.iter().map(|value| parse_single_header(value)).collect()
+    values
+        .iter()
+        .map(|value| parse_single_header(value))
+        .collect()
 }
 
 fn parse_single_header(value: &str) -> Result<HttpHeader, Error> {
@@ -370,6 +390,9 @@ async fn execute_command(manager: &Arc<Manager>, command: Command) -> Vec<String
     match command {
         Command::Help => help_lines(),
         Command::Status(target) => status_messages(manager, target).await,
+        Command::List(filter) => list_messages(manager, filter, false).await,
+        Command::History(filter) => list_messages(manager, filter, true).await,
+        Command::Show(task_id) => show_task_messages(manager, task_id).await,
         Command::Pause(target) => apply_task_command(manager, target, TaskControl::Pause).await,
         Command::Resume(target) => apply_task_command(manager, target, TaskControl::Resume).await,
         Command::Retry(target) => apply_task_command(manager, target, TaskControl::Retry).await,
@@ -420,6 +443,67 @@ async fn status_messages(manager: &Arc<Manager>, target: CommandTarget) -> Vec<S
         messages.push(format_status_line(&snapshot));
     }
     messages
+}
+
+async fn list_messages(
+    manager: &Arc<Manager>,
+    filter: StatusFilter,
+    terminal_only: bool,
+) -> Vec<String> {
+    let mut tasks = manager.get_all_tasks();
+    tasks.sort_by_key(|task| task.id);
+
+    let mut lines = Vec::new();
+    for task in tasks {
+        let snapshot = task.snapshot().await;
+        if terminal_only && !matches_status_filter(&snapshot, StatusFilter::Terminal) {
+            continue;
+        }
+        if !matches_status_filter(&snapshot, filter) {
+            continue;
+        }
+        lines.push(format_status_line(&snapshot));
+    }
+
+    if lines.is_empty() {
+        vec!["No matching tasks".into()]
+    } else {
+        lines
+    }
+}
+
+async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String> {
+    let Some(task) = manager.get_task_by_id(task_id) else {
+        return vec![format!("Task #{task_id} not found")];
+    };
+    let snapshot = task.snapshot().await;
+    vec![
+        format!("Task #{} ({})", snapshot.id, snapshot.trace_id),
+        format!("  status: {}", snapshot.status),
+        format!(
+            "  progress: {} / {} (pieces {}/{})",
+            format_bytes(snapshot.downloaded_size),
+            format_bytes(snapshot.total_size),
+            snapshot.completed_pieces,
+            snapshot.piece_count
+        ),
+        format!("  source: {}", snapshot.url),
+        format!(
+            "  file: {}",
+            snapshot
+                .file_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<uninitialized>".into())
+        ),
+        format!(
+            "  avg_speed: {} retries: {} resume_hits: {}/{}",
+            format_bytes(snapshot.stats.average_speed_bps),
+            snapshot.stats.retry_count,
+            snapshot.stats.resume_hits,
+            snapshot.stats.resume_attempts
+        ),
+    ]
 }
 
 async fn apply_task_command(
@@ -504,18 +588,43 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
     };
 
     format!(
-        "#{} {} {} {}/{}{} {}",
+        "#{} {} {} {}/{}{} {} {}",
         snapshot.id,
         snapshot.status,
         progress,
         format_bytes(snapshot.downloaded_size),
         format_bytes(snapshot.total_size),
         piece_label,
+        snapshot.trace_id,
         snapshot
             .file_name
             .as_deref()
             .unwrap_or(snapshot.url.as_str())
     )
+}
+
+fn matches_status_filter(snapshot: &TaskSnapshot, filter: StatusFilter) -> bool {
+    match filter {
+        StatusFilter::All => true,
+        StatusFilter::Pending => snapshot.status == "Pending",
+        StatusFilter::Preparing => snapshot.status == "Preparing",
+        StatusFilter::Running => snapshot.status == "Running",
+        StatusFilter::Paused => snapshot.status == "Paused",
+        StatusFilter::Completed => snapshot.status == "Completed",
+        StatusFilter::Failed => snapshot.status.starts_with("Failed"),
+        StatusFilter::Canceled => snapshot.status == "Canceled",
+        StatusFilter::Deleted => snapshot.status == "Deleted",
+        StatusFilter::Active => matches!(
+            snapshot.status.as_str(),
+            "Pending" | "Preparing" | "Running" | "Paused"
+        ),
+        StatusFilter::Terminal => {
+            matches!(
+                snapshot.status.as_str(),
+                "Completed" | "Canceled" | "Deleted"
+            ) || snapshot.status.starts_with("Failed")
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -704,6 +813,12 @@ fn print_completion_summary(summary: &CompletionSummary) {
     );
     for snapshot in &summary.snapshots {
         println!("  {}", format_status_line(snapshot));
+        if snapshot.status.starts_with("Failed") {
+            println!(
+                "    diagnostic: {}",
+                diagnostic_path_for(summary, snapshot.id).display()
+            );
+        }
     }
 }
 
@@ -730,6 +845,72 @@ fn exit_code_from_summary(summary: &CompletionSummary) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+async fn collect_urls(cli: &Cli) -> Result<Vec<String>, Error> {
+    let mut urls = cli.urls.clone();
+
+    for path in &cli.urls_file {
+        let content = tokio::fs::read_to_string(path).await.map_err(|err| {
+            Error::ConfigError(format!("failed to read {}: {err}", path.display()))
+        })?;
+        urls.extend(
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(ToOwned::to_owned),
+        );
+    }
+
+    Ok(urls)
+}
+
+async fn run_completion_hook(config: &Config, summary: &CompletionSummary) {
+    let Some(command) = &config.on_complete else {
+        return;
+    };
+
+    let mut shell = if cfg!(target_os = "windows") {
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.arg("/C").arg(command);
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    };
+
+    shell
+        .env("PARADOWN_TOTAL_TASKS", summary.snapshots.len().to_string())
+        .env("PARADOWN_COMPLETED", summary.completed.to_string())
+        .env("PARADOWN_FAILED", summary.failed.to_string())
+        .env("PARADOWN_CANCELED", summary.canceled.to_string())
+        .env("PARADOWN_DELETED", summary.deleted.to_string())
+        .env(
+            "PARADOWN_TOTAL_DOWNLOADED",
+            summary.total_downloaded.to_string(),
+        )
+        .env("PARADOWN_TOTAL_SIZE", summary.total_size.to_string());
+
+    if let Err(err) = shell.status().await {
+        eprintln!("paradown: failed to run completion hook: {err}");
+    }
+}
+
+fn diagnostic_path_for(summary: &CompletionSummary, task_id: u32) -> PathBuf {
+    let download_dir = summary
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == task_id)
+        .and_then(|snapshot| snapshot.file_path.as_ref())
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    download_dir
+        .join(".paradown")
+        .join("diagnostics")
+        .join(format!("task-{}.json", task_id))
 }
 
 fn format_bytes(bytes: u64) -> String {

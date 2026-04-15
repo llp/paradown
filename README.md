@@ -18,6 +18,7 @@ What is implemented today:
 
 - Production path for `HTTP/HTTPS`
 - Official `paradown` CLI binary with a live multi-task dashboard
+- JSON line output for automation and scripting
 - Multi-worker downloads when the origin supports HTTP range requests
 - SQLite and in-memory persistence
 - Restart recovery with worker layout validation
@@ -26,6 +27,9 @@ What is implemented today:
 - Checksum verification
 - Retry/backoff controls
 - Global rate limiting across workers
+- Config schema versioning plus env/CLI override precedence
+- HTTP request customization (`headers / cookie / auth / proxy overrides`)
+- Failure diagnostics written to `.paradown/diagnostics`
 - Optional interactive commands for pause/resume/cancel/status/rate updates
 
 What is not implemented yet:
@@ -73,6 +77,22 @@ cargo run --all-features -- \
   --urls https://example.com/file.iso https://example.com/file-2.iso
 ```
 
+Download from a URL file:
+
+```bash
+cargo run --all-features -- \
+  --urls-file ./examples/urls.txt \
+  --download-dir ./downloads
+```
+
+Emit JSON lines for automation:
+
+```bash
+cargo run --all-features -- \
+  --json \
+  --urls https://example.com/file.iso
+```
+
 Build a distributable archive:
 
 ```bash
@@ -95,10 +115,18 @@ Release automation:
 - `--rate-limit-kbps <KBPS>`: set global rate limit
 - `-s, --shuffle`: shuffle task order
 - `-v, --verbose`: verbose logging
+- `--json`: emit JSON progress frames and JSON summary
 - `--interactive`: enable stdin command mode
+- `--urls-file <FILE>`: read one or more URLs from a text file
+- `--header <NAME:VALUE>`: append an HTTP header
+- `--cookie <COOKIE>`: send a Cookie header
+- `--basic-auth <USER[:PASS]>`: send HTTP basic auth
+- `--bearer-token <TOKEN>`: send bearer auth
+- `--http-proxy <URL>` / `--https-proxy <URL>` / `--no-proxy <PATTERN>` / `--no-env-proxy`
+- `--on-complete <COMMAND>`: run a shell hook after the session finishes
 - `-u, --urls <URL>...`: one or more URLs to download
 
-CLI overrides are applied on top of config file values when both are present.
+Config precedence is: `CLI > environment > config file > defaults`.
 
 ## Interactive mode
 
@@ -115,6 +143,9 @@ Supported commands:
 
 - `help`
 - `status [all|id ...]`
+- `list [filter]`
+- `history [filter]`
+- `show <id>`
 - `pause [all|id ...]`
 - `resume [all|id ...]`
 - `retry [all|id ...]`
@@ -157,9 +188,11 @@ threshold_bytes = 1048576
 
 Important notes:
 
+- `schema_version = 1` is the current config format
 - `Backend::JsonFile(...)` is defined but not implemented
 - if `rate_limit_kbps` is omitted, rate limiting is disabled
 - `connection_timeout` uses TOML struct form: `connection_timeout = { secs = 30, nanos = 0 }`
+- `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` are enabled by default unless `--no-env-proxy` is used
 
 ## Architecture
 
@@ -209,6 +242,7 @@ The suite currently includes:
 - recovery rule tests
 - worker runtime tests
 - integration tests for actual downloads, restart recovery, safe resume, redirect/content-disposition handling, and HTTP error cases
+- resilience tests for dropped connections and failure diagnostic export
 
 ## Release process
 
@@ -238,6 +272,16 @@ git tag v0.1.2
 git push origin main
 git push origin v0.1.2
 ```
+
+Additional release-facing assets:
+
+- Docker runtime image: [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
+- SBOM generator: [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
+- Optional signing helper: [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
+- Homebrew template: [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)
+- Scoop template: [packaging/scoop/paradown.json](/Users/liulipeng/workspace/rust/paradown/packaging/scoop/paradown.json)
+- Security policy: [SECURITY.md](/Users/liulipeng/workspace/rust/paradown/SECURITY.md)
+- Release policy: [docs/release-policy.md](/Users/liulipeng/workspace/rust/paradown/docs/release-policy.md)
 
 What happens after the tag is pushed:
 

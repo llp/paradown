@@ -18,7 +18,10 @@ fn download_benchmark(c: &mut Criterion) {
             || body.clone(),
             |payload| async move {
                 let server = MultiFileTestServer::spawn(
-                    vec![TestAsset::from_shared("/bench.bin", std::sync::Arc::new(payload))],
+                    vec![TestAsset::from_shared(
+                        "/bench.bin",
+                        std::sync::Arc::new(payload),
+                    )],
                     MultiFileServerConfig::default(),
                 )
                 .await;

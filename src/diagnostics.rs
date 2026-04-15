@@ -14,11 +14,12 @@ struct FailureDiagnostic {
     resource_identity: HttpResourceIdentity,
 }
 
-pub(crate) async fn write_failure_diagnostic(
-    task: &Task,
-    error: &Error,
-) -> Result<PathBuf, Error> {
-    let diagnostics_dir = task.config.download_dir.join(".paradown").join("diagnostics");
+pub(crate) async fn write_failure_diagnostic(task: &Task, error: &Error) -> Result<PathBuf, Error> {
+    let diagnostics_dir = task
+        .config
+        .download_dir
+        .join(".paradown")
+        .join("diagnostics");
     tokio::fs::create_dir_all(&diagnostics_dir).await?;
 
     let snapshot = task.snapshot().await;

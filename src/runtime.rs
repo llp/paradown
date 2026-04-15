@@ -47,10 +47,7 @@ pub(crate) fn apply_http_request_options(
         let name = HeaderName::from_bytes(header.name.as_bytes())
             .map_err(|err| Error::Other(format!("Invalid header name '{}': {err}", header.name)))?;
         let value = HeaderValue::from_str(&header.value).map_err(|err| {
-            Error::Other(format!(
-                "Invalid value for header '{}': {err}",
-                header.name
-            ))
+            Error::Other(format!("Invalid value for header '{}': {err}", header.name))
         })?;
         builder = builder.header(name, value);
     }

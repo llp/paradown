@@ -35,8 +35,8 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     }
 
     let previous_identity = job.http_resource_identity().await;
-    let protocol_probe = discover_origin(job.client.as_ref(), &job.spec, job.http_request_options())
-        .await?;
+    let protocol_probe =
+        discover_origin(job.client.as_ref(), &job.spec, job.http_request_options()).await?;
     let origin_changed = previous_identity.validator_changed(&protocol_probe.resource_identity);
     job.update_protocol_probe(
         protocol_probe.total_size,

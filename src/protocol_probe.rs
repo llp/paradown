@@ -47,9 +47,10 @@ pub(crate) async fn probe_download_target(
         });
     }
 
-    let response = apply_http_request_options(client.get(url).header(RANGE, "bytes=0-0"), request_options)?
-        .send()
-        .await?;
+    let response =
+        apply_http_request_options(client.get(url).header(RANGE, "bytes=0-0"), request_options)?
+            .send()
+            .await?;
     probe_with_range_response(response, head_probe)
 }
 

@@ -47,6 +47,8 @@ By default the script:
 - builds the `paradown` CLI in release mode
 - creates a versioned archive under `./dist`
 - generates a SHA-256 checksum file
+- generates an SBOM artifact
+- optionally signs the release archive when signing keys are configured
 
 Useful options:
 
@@ -68,10 +70,13 @@ paradown --config ./examples/config.toml --urls https://example.com/file.iso
 
 Important config notes:
 
+- config files now carry `schema_version`; missing versions are treated as schema `1`
 - `connection_timeout` uses TOML struct form, for example `connection_timeout = { secs = 30, nanos = 0 }`
 - `rate_limit_kbps` is optional; omit it to disable throttling
 - `storage_backend = { Sqlite = "./downloads.db" }` is the recommended production path today
 - `storage_backend = { JsonFile = ... }` is defined in code but not implemented
+- `http.client.proxy.use_env_proxy = true` keeps `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` enabled
+- `on_complete` runs once after the session finishes and receives summary env vars
 
 ## Usage
 
@@ -94,6 +99,33 @@ paradown \
   https://example.com/c.iso
 ```
 
+### Download From A URL File
+
+```bash
+paradown \
+  --download-dir ./downloads \
+  --urls-file ./examples/urls.txt
+```
+
+### Add Request Headers, Auth, Or Cookie
+
+```bash
+paradown \
+  --header "Accept: application/octet-stream" \
+  --header "X-Trace: cli-smoke" \
+  --cookie "session=demo" \
+  --basic-auth user:password \
+  --urls https://example.com/private.iso
+```
+
+### Run A Completion Hook
+
+```bash
+paradown \
+  --on-complete 'echo "completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"' \
+  --urls https://example.com/file.iso
+```
+
 ### Interactive Mode
 
 ```bash
@@ -107,6 +139,9 @@ Interactive commands:
 
 - `help`
 - `status [all|id ...]`
+- `list [filter]`
+- `history [filter]`
+- `show <id>`
 - `pause [all|id ...]`
 - `resume [all|id ...]`
 - `retry [all|id ...]`
@@ -116,16 +151,42 @@ Interactive commands:
 
 ## Output Modes
 
-`paradown` has three CLI output modes:
+`paradown` has four CLI output modes:
 
 - TTY + non-verbose: live dashboard
 - non-TTY stdout: line-oriented progress output plus final summary
+- `--json`: JSON line snapshots plus JSON summary
 - `--verbose`: log-oriented mode
 
 This means redirection works well for CI and automation:
 
 ```bash
 paradown --urls https://example.com/file.iso > download.log
+paradown --json --urls https://example.com/file.iso > download.jsonl
+```
+
+## Proxy Support
+
+`paradown` keeps the standard proxy environment variables enabled by default:
+
+- `HTTP_PROXY`
+- `HTTPS_PROXY`
+- `NO_PROXY`
+
+You can also override them explicitly:
+
+```bash
+paradown \
+  --http-proxy http://127.0.0.1:8080 \
+  --https-proxy http://127.0.0.1:8080 \
+  --no-proxy localhost,127.0.0.1 \
+  --urls https://example.com/file.iso
+```
+
+Disable inherited env proxies with:
+
+```bash
+paradown --no-env-proxy --urls https://example.com/file.iso
 ```
 
 ## HTTP Behavior
@@ -152,3 +213,13 @@ If the remote `ETag` or `Last-Modified` changed, `paradown` intentionally falls 
 ### I want a distributable tarball instead of a local binary
 
 Use [scripts/build-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-release.sh). It builds the release binary, packages the release files, and writes a checksum file.
+
+### I need Docker / SBOM / package-manager files
+
+Repository-side release assets now include:
+
+- [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
+- [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
+- [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
+- [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)
+- [packaging/scoop/paradown.json](/Users/liulipeng/workspace/rust/paradown/packaging/scoop/paradown.json)

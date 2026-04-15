@@ -1,8 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
-fn download_benchmark(c: &mut Criterion) {
-
-}
+fn download_benchmark(c: &mut Criterion) {}
 
 criterion_group! {
     name = benches;

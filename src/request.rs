@@ -16,6 +16,8 @@ pub struct DownloadTaskRequest {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+pub type DownloadJobRequest = DownloadTaskRequest;
+
 impl DownloadTaskRequest {
     /// 新建 Builder，必须提供 URL
     pub fn builder(url: impl Into<String>) -> DownloadRequestBuilder {
@@ -125,6 +127,8 @@ pub struct DownloadWorkerRequest {
     pub status: Option<String>, // Pending / Running / Paused / Completed / Failed
     pub updated_at: Option<DateTime<Utc>>,
 }
+
+pub type SegmentRequest = DownloadWorkerRequest;
 
 pub struct DownloadWorkerBuilder {
     id: Option<u32>,

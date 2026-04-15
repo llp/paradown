@@ -18,10 +18,14 @@ pub enum PersistenceType {
     Sqlite(PathBuf),
 }
 
+pub type StorageBackend = PersistenceType;
+
 pub struct DownloadPersistenceManager {
     repository: Arc<dyn DownloadRepository>,
     config: Arc<DownloadConfig>,
 }
+
+pub type DownloadStore = DownloadPersistenceManager;
 
 impl DownloadPersistenceManager {
     pub async fn new(config: Arc<DownloadConfig>) -> Result<Self, DownloadError> {

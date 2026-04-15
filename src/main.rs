@@ -1,34 +1,13 @@
-mod checksum;
-mod cli;
-mod config;
-mod error;
-mod events;
-mod manager;
-mod persistence;
-mod progress;
-mod repository;
-mod request;
-mod stats;
-mod status;
-mod task;
-mod worker;
-
-use crate::checksum::DownloadChecksum;
-use crate::cli::InteractiveMode;
-use crate::config::{
-    DownloadConfig, DownloadConfigBuilder, FileConflictStrategy, ProgressThrottleConfig,
-    RetryConfig,
-};
-use crate::error::DownloadError;
-use crate::events::DownloadEvent;
-use crate::manager::DownloadManager;
-use crate::persistence::PersistenceType;
-use crate::request::DownloadTaskRequest;
-use crate::status::DownloadStatus;
 use clap::Parser;
-use log::{LevelFilter, error, info};
+use log::{error, info};
+use paradown::cli::InteractiveMode;
+use paradown::download::{DownloadCoordinator, DownloadEvent, DownloadJobRequest};
+use paradown::storage::StorageBackend;
+use paradown::{
+    DownloadConfig, DownloadConfigBuilder, DownloadError, FileConflictStrategy,
+    ProgressThrottleConfig, RetryConfig, init_logger,
+};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "paradown")]
@@ -56,16 +35,6 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), DownloadError> {
     let cli = Cli::parse();
-    let log_level = if cli.verbose {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Info
-    };
-
-    env_logger::Builder::from_default_env()
-        .filter_level(log_level)
-        .filter_module("sqlx::query", LevelFilter::Info) // 只让 sqlx 输出 info 级别以上
-        .init();
 
     let config = match cli.config {
         Some(path) => DownloadConfig::from_file(&path)?,
@@ -78,10 +47,12 @@ async fn main() -> Result<(), DownloadError> {
             .connection_timeout(30)
             .retry(RetryConfig::default())
             .file_conflict_strategy(FileConflictStrategy::Overwrite)
-            .persistence_type(PersistenceType::Sqlite("./downloads/downloads.db".into()))
+            .persistence_type(StorageBackend::Sqlite("./downloads/downloads.db".into()))
             .progress_throttle(ProgressThrottleConfig::default())
             .build()?,
     };
+
+    init_logger(cli.verbose || config.debug);
 
     info!(
         "Starting download process with {} workers",
@@ -90,14 +61,14 @@ async fn main() -> Result<(), DownloadError> {
     info!("Download directory: {}", config.download_dir.display());
     info!("Random order: {}", config.shuffle);
 
-    let (mut interactive, status_tx, command_rx) = InteractiveMode::new();
-    let manager = DownloadManager::new(config)?;
+    let (mut interactive, _status_tx, _command_rx) = InteractiveMode::new();
+    let manager = DownloadCoordinator::new(config)?;
     manager.init().await?;
 
     // let task_progress_manager = Arc::new(DownloadProgressManager::new());
 
     for url in cli.urls {
-        let request = DownloadTaskRequest::builder(url).build();
+        let request = DownloadJobRequest::builder(url).build();
         let task_id = manager.add_task(request).await?;
         manager.start_task(task_id).await?;
     }
@@ -105,42 +76,44 @@ async fn main() -> Result<(), DownloadError> {
     let rx = manager.subscribe_events();
     tokio::spawn(async move {
         let mut rx = rx;
-        while let Ok(event) = rx.recv().await {
-            match event {
-                DownloadEvent::Start(id) => {
-                    error!("任务 {id} 开始");
-                    // let task = task_progress_manager.add_task(id);
-                    // task.set_status("Downloading");
+        loop {
+            match rx.recv().await {
+                Ok(event) => match event {
+                    DownloadEvent::Start(id) => {
+                        error!("任务 {id} 开始");
+                        // let task = task_progress_manager.add_task(id);
+                        // task.set_status("Downloading");
+                    }
+                    DownloadEvent::Progress { .. } => {
+                        // error!("任务 {id} 进度: {downloaded}/{total}");
+                        // if let Some(task) = task_progress_manager.get_task(id) {
+                        //     task.update(downloaded, Some(total));
+                        // } else {
+                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
+                        // }
+                    }
+                    DownloadEvent::Complete(id) => {
+                        error!("任务 {id} 已完成");
+                        // if let Some(task) = task_progress_manager.get_task(id) {
+                        //     task.finish();
+                        // } else {
+                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
+                        // }
+                    }
+                    DownloadEvent::Error(id, err) => {
+                        error!("任务 {id} 出错: {err:?}");
+                        // if let Some(task) = task_progress_manager.get_task(id) {
+                        //     task.set_status("Error");
+                        // } else {
+                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
+                        // }
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    error!("下载事件消费落后，跳过了 {skipped} 条事件");
                 }
-                DownloadEvent::Progress {
-                    id,
-                    downloaded,
-                    total,
-                } => {
-                    // error!("任务 {id} 进度: {downloaded}/{total}");
-                    // if let Some(task) = task_progress_manager.get_task(id) {
-                    //     task.update(downloaded, Some(total));
-                    // } else {
-                    //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                    // }
-                }
-                DownloadEvent::Complete(id) => {
-                    error!("任务 {id} 已完成");
-                    // if let Some(task) = task_progress_manager.get_task(id) {
-                    //     task.finish();
-                    // } else {
-                    //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                    // }
-                }
-                DownloadEvent::Error(id, err) => {
-                    error!("任务 {id} 出错: {err:?}");
-                    // if let Some(task) = task_progress_manager.get_task(id) {
-                    //     task.set_status("Error");
-                    // } else {
-                    //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                    // }
-                }
-                _ => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });

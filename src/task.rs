@@ -1,4 +1,5 @@
 use crate::checksum::DownloadChecksum;
+use crate::chunk::plan_download_chunks;
 use crate::config::{DownloadConfig, FileConflictStrategy};
 use crate::error::DownloadError;
 use crate::events::DownloadEvent;
@@ -15,7 +16,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
 use url::Url;
@@ -43,6 +43,8 @@ pub struct DownloadTask {
     pub permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
 
+pub type DownloadJob = DownloadTask;
+
 #[derive(Serialize, Deserialize)]
 pub struct DownloadTaskSnapshot {
     pub id: u32,
@@ -57,6 +59,8 @@ pub struct DownloadTaskSnapshot {
     pub checksums: Vec<DownloadChecksum>,
 }
 
+pub type DownloadJobSnapshot = DownloadTaskSnapshot;
+
 impl DownloadTask {
     pub fn new(
         id: u32,
@@ -67,6 +71,7 @@ impl DownloadTask {
         downloaded_size: Option<u64>,
         total_size: Option<u64>,
         checksums: Vec<DownloadChecksum>,
+        client: Arc<reqwest::Client>,
         config: Arc<DownloadConfig>,
         persistence: Option<Arc<DownloadPersistenceManager>>,
         manager: Weak<DownloadManager>,
@@ -89,17 +94,6 @@ impl DownloadTask {
 
         // 初始化 status Mutex
         let initial_status = status.unwrap_or(DownloadStatus::Pending);
-
-        let client = Arc::new(
-            reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(300))
-                .pool_max_idle_per_host(50)
-                .pool_idle_timeout(Duration::from_secs(60))
-                .gzip(true)
-                .build()
-                .map_err(|e| DownloadError::Other(format!("Failed to build HTTP client: {}", e)))?,
-        );
 
         let now = Utc::now();
 
@@ -159,219 +153,240 @@ impl DownloadTask {
 
         let mut rx = self.worker_event_tx.subscribe();
         tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let task_clone = Arc::clone(&task_clone);
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let task_clone = Arc::clone(&task_clone);
 
-                match event {
-                    DownloadEvent::Progress {
-                        id,
-                        downloaded: _downloaded,
-                        total: _,
-                        ..
-                    } => {
-                        // 保存单个 worker 状态和进度
-                        let task_clone_for_persist = Arc::clone(&task_clone);
-                        tokio::spawn(async move {
-                            let _ = task_clone_for_persist.persist_task_worker(id).await;
-                        });
+                        match event {
+                            DownloadEvent::Progress {
+                                id,
+                                downloaded: _downloaded,
+                                total: _,
+                                ..
+                            } => {
+                                // 保存单个 worker 状态和进度
+                                let task_clone_for_persist = Arc::clone(&task_clone);
+                                tokio::spawn(async move {
+                                    let _ = task_clone_for_persist.persist_task_worker(id).await;
+                                });
 
-                        let workers = task_clone.workers.read().await;
-                        let total_downloaded: u64 = workers
-                            .iter()
-                            .map(|w| w.downloaded_size.load(Ordering::Relaxed))
-                            .sum();
+                                let workers = task_clone.workers.read().await;
+                                let total_downloaded: u64 = workers
+                                    .iter()
+                                    .map(|w| w.downloaded_size.load(Ordering::Relaxed))
+                                    .sum();
 
-                        task_clone
-                            .downloaded_size
-                            .store(total_downloaded, Ordering::Relaxed);
+                                task_clone
+                                    .downloaded_size
+                                    .store(total_downloaded, Ordering::Relaxed);
 
-                        let total_size = task_clone.total_size.load(Ordering::Relaxed);
-                        // debug!(
-                        //     "[Task {}] Progress: {}/{} ({:.2}%)",
-                        //     task_clone.id,
-                        //     total_downloaded,
-                        //     total_size,
-                        //     total_downloaded as f64 / total_size as f64 * 100.0
-                        // );
+                                let total_size = task_clone.total_size.load(Ordering::Relaxed);
 
-                        if let Some(manager) = task_clone.manager.upgrade() {
-                            let _ = manager.task_event_tx.send(DownloadEvent::Progress {
-                                id: task_clone.id,
-                                downloaded: total_downloaded,
-                                total: total_size,
-                            });
-                        }
-                    }
-                    DownloadEvent::Complete(worker_id) => {
-                        debug!(
-                            "[Task {} Worker {}] Worker completed its download chunk",
-                            task_clone.id, worker_id
-                        );
-
-                        // 保存单个 worker 状态和进度
-                        let task_clone_for_persist = Arc::clone(&task_clone);
-                        tokio::spawn(async move {
-                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
-                        });
-
-                        let workers = task_clone.workers.read().await;
-                        let mut all_done = true;
-                        for w in workers.iter() {
-                            let status = w.status.lock().await;
-                            if !matches!(*status, DownloadStatus::Completed) {
-                                all_done = false;
-                                debug!(
-                                    "[Task {}] Worker Not completed -> id: {}, status: {:?}",
-                                    task_clone.id, w.id, *status
-                                );
-                                break;
+                                if let Some(manager) = task_clone.manager.upgrade() {
+                                    let _ = manager.task_event_tx.send(DownloadEvent::Progress {
+                                        id: task_clone.id,
+                                        downloaded: total_downloaded,
+                                        total: total_size,
+                                    });
+                                }
                             }
-                        }
+                            DownloadEvent::Complete(worker_id) => {
+                                debug!(
+                                    "[Task {} Worker {}] Worker completed its download chunk",
+                                    task_clone.id, worker_id
+                                );
 
-                        if all_done {
-                            debug!(
-                                "[Task {}] All workers finished, starting checksum verification",
-                                task_clone.id
-                            );
+                                // 保存单个 worker 状态和进度
+                                let task_clone_for_persist = Arc::clone(&task_clone);
+                                tokio::spawn(async move {
+                                    let _ =
+                                        task_clone_for_persist.persist_task_worker(worker_id).await;
+                                });
 
-                            stats_clone.snapshot().await;
-
-                            let checksum_ok = if let Some(path) = task_clone.file_path.get() {
-                                let mut ok = true;
-                                let mut checksums = task_clone.checksums.lock().await;
-                                for checksum in checksums.iter_mut() {
-                                    match checksum.verify(path.as_ref()) {
-                                        Ok(true) => {
-                                            checksum.verified = Some(true);
-                                            checksum.verified_at = Some(Utc::now());
-                                            debug!(
-                                                "[Task {}] Checksum {:?} passed for file {:?}",
-                                                task_clone.id, checksum.algorithm, path
-                                            );
-                                        }
-                                        Ok(false) => {
-                                            debug!(
-                                                "[Task {}] Checksum {:?} FAILED for file {:?}",
-                                                task_clone.id, checksum.algorithm, path
-                                            );
-                                            ok = false;
-                                            checksum.verified = Some(true);
-                                            checksum.verified_at = Some(Utc::now());
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            debug!(
-                                                "[Task {}] Checksum {:?} ERROR for file {:?}: {:?}",
-                                                task_clone.id, checksum.algorithm, path, e
-                                            );
-                                            ok = false;
-                                            checksum.verified = Some(false);
-                                            checksum.verified_at = Some(Utc::now());
-                                            break;
-                                        }
+                                let workers = task_clone.workers.read().await;
+                                let mut all_done = true;
+                                for w in workers.iter() {
+                                    let status = w.status.lock().await;
+                                    if !matches!(*status, DownloadStatus::Completed) {
+                                        all_done = false;
+                                        debug!(
+                                            "[Task {}] Worker Not completed -> id: {}, status: {:?}",
+                                            task_clone.id, w.id, *status
+                                        );
+                                        break;
                                     }
                                 }
-                                ok
-                            } else {
-                                debug!(
-                                    "[Task {}] No file path set for task, cannot verify checksum",
-                                    task_clone.id
-                                );
-                                false
-                            };
 
-                            let mut status = task_clone.status.lock().await;
-                            *status = if checksum_ok {
-                                debug!(
-                                    "[Task {}] All workers finished and checksum passed",
-                                    task_clone.id
-                                );
-                                debug!("[Task {}] Download task completed", task_clone.id);
-                                DownloadStatus::Completed
-                            } else {
-                                debug!("[Task {}] Checksum verification failed", task_clone.id);
-                                DownloadStatus::Failed(DownloadError::Other(
-                                    "Checksum failed".into(),
-                                ))
-                            };
+                                if all_done {
+                                    debug!(
+                                        "[Task {}] All workers finished, starting checksum verification",
+                                        task_clone.id
+                                    );
 
-                            if let Some(manager) = task_clone.manager.upgrade() {
-                                let _ = manager
-                                    .task_event_tx
-                                    .send(DownloadEvent::Complete(task_clone.id));
+                                    stats_clone.snapshot().await;
+
+                                    let checksum_ok = if let Some(path) = task_clone.file_path.get()
+                                    {
+                                        let mut ok = true;
+                                        let mut checksums = task_clone.checksums.lock().await;
+                                        for checksum in checksums.iter_mut() {
+                                            match checksum.verify(path.as_ref()) {
+                                                Ok(true) => {
+                                                    checksum.verified = Some(true);
+                                                    checksum.verified_at = Some(Utc::now());
+                                                    debug!(
+                                                        "[Task {}] Checksum {:?} passed for file {:?}",
+                                                        task_clone.id, checksum.algorithm, path
+                                                    );
+                                                }
+                                                Ok(false) => {
+                                                    debug!(
+                                                        "[Task {}] Checksum {:?} FAILED for file {:?}",
+                                                        task_clone.id, checksum.algorithm, path
+                                                    );
+                                                    ok = false;
+                                                    checksum.verified = Some(false);
+                                                    checksum.verified_at = Some(Utc::now());
+                                                    break;
+                                                }
+                                                Err(e) => {
+                                                    debug!(
+                                                        "[Task {}] Checksum {:?} ERROR for file {:?}: {:?}",
+                                                        task_clone.id, checksum.algorithm, path, e
+                                                    );
+                                                    ok = false;
+                                                    checksum.verified = Some(false);
+                                                    checksum.verified_at = Some(Utc::now());
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        ok
+                                    } else {
+                                        debug!(
+                                            "[Task {}] No file path set for task, cannot verify checksum",
+                                            task_clone.id
+                                        );
+                                        false
+                                    };
+
+                                    let final_error =
+                                        DownloadError::Other("Checksum failed".into());
+                                    let mut status = task_clone.status.lock().await;
+                                    *status = if checksum_ok {
+                                        debug!(
+                                            "[Task {}] All workers finished and checksum passed",
+                                            task_clone.id
+                                        );
+                                        debug!("[Task {}] Download task completed", task_clone.id);
+                                        DownloadStatus::Completed
+                                    } else {
+                                        debug!(
+                                            "[Task {}] Checksum verification failed",
+                                            task_clone.id
+                                        );
+                                        DownloadStatus::Failed(final_error.clone())
+                                    };
+                                    drop(status);
+
+                                    if let Some(manager) = task_clone.manager.upgrade() {
+                                        let _ = manager.task_event_tx.send(if checksum_ok {
+                                            DownloadEvent::Complete(task_clone.id)
+                                        } else {
+                                            DownloadEvent::Error(task_clone.id, final_error.clone())
+                                        });
+                                    }
+                                }
                             }
+                            DownloadEvent::Error(worker_id, e) => {
+                                debug!(
+                                    "[Task {}] Task encountered an error: {:?}",
+                                    task_clone.id, e
+                                );
+
+                                // 保存单个 worker 状态和进度
+                                let task_clone_for_persist = Arc::clone(&task_clone);
+                                tokio::spawn(async move {
+                                    let _ =
+                                        task_clone_for_persist.persist_task_worker(worker_id).await;
+                                });
+
+                                stats_clone.snapshot().await;
+
+                                let workers = task_clone.workers.read().await;
+                                for w in workers.iter() {
+                                    let _ = w.cancel().await;
+                                }
+
+                                let mut status = task_clone.status.lock().await;
+                                *status = DownloadStatus::Failed(DownloadError::Other(
+                                    "Worker error".into(),
+                                ));
+                                drop(status);
+
+                                if let Some(manager) = task_clone.manager.upgrade() {
+                                    let _ = manager.task_event_tx.send(DownloadEvent::Error(
+                                        task_clone.id,
+                                        DownloadError::Other("Worker error".into()),
+                                    ));
+                                }
+                            }
+                            DownloadEvent::Pause(worker_id) => {
+                                debug!("[Task {}] Task was paused", task_clone.id);
+
+                                // 保存单个 worker 状态和进度
+                                let task_clone_for_persist = Arc::clone(&task_clone);
+                                tokio::spawn(async move {
+                                    let _ =
+                                        task_clone_for_persist.persist_task_worker(worker_id).await;
+                                });
+                            }
+                            DownloadEvent::Cancel(worker_id) => {
+                                debug!("[Task {}] Task was cancelled", task_clone.id);
+
+                                // 保存单个 worker 状态和进度
+                                let task_clone_for_persist = Arc::clone(&task_clone);
+                                tokio::spawn(async move {
+                                    let _ =
+                                        task_clone_for_persist.persist_task_worker(worker_id).await;
+                                });
+
+                                let workers = task_clone.workers.read().await;
+                                let mut all_canceled = true;
+                                for w in workers.iter() {
+                                    let status = w.status.lock().await;
+                                    if !matches!(
+                                        *status,
+                                        DownloadStatus::Canceled | DownloadStatus::Completed
+                                    ) {
+                                        all_canceled = false;
+                                        break;
+                                    }
+                                }
+
+                                if all_canceled {
+                                    let mut status = task_clone.status.lock().await;
+                                    *status = DownloadStatus::Canceled;
+                                    drop(status);
+
+                                    if let Some(manager) = task_clone.manager.upgrade() {
+                                        let _ = manager
+                                            .task_event_tx
+                                            .send(DownloadEvent::Cancel(task_clone.id));
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    DownloadEvent::Error(worker_id, e) => {
-                        debug!(
-                            "[Task {}] Task encountered an error: {:?}",
-                            task_clone.id, e
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "[Task {}] Worker event consumer lagged and skipped {} events",
+                            task_clone.id, skipped
                         );
-
-                        // 保存单个 worker 状态和进度
-                        let task_clone_for_persist = Arc::clone(&task_clone);
-                        tokio::spawn(async move {
-                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
-                        });
-
-                        stats_clone.snapshot().await;
-
-                        let workers = task_clone.workers.read().await;
-                        for w in workers.iter() {
-                            let _ = w.cancel().await;
-                        }
-
-                        let mut status = task_clone.status.lock().await;
-                        *status =
-                            DownloadStatus::Failed(DownloadError::Other("Worker error".into()));
-
-                        if let Some(manager) = task_clone.manager.upgrade() {
-                            let _ = manager.task_event_tx.send(DownloadEvent::Error(
-                                task_clone.id,
-                                DownloadError::Other("Worker error".into()),
-                            ));
-                        }
                     }
-                    DownloadEvent::Pause(worker_id) => {
-                        debug!("[Task {}] Task was paused", task_clone.id);
-
-                        // 保存单个 worker 状态和进度
-                        let task_clone_for_persist = Arc::clone(&task_clone);
-                        tokio::spawn(async move {
-                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
-                        });
-                    }
-                    DownloadEvent::Cancel(worker_id) => {
-                        debug!("[Task {}] Task was cancelled", task_clone.id);
-
-                        // 保存单个 worker 状态和进度
-                        let task_clone_for_persist = Arc::clone(&task_clone);
-                        tokio::spawn(async move {
-                            let _ = task_clone_for_persist.persist_task_worker(worker_id).await;
-                        });
-
-                        let workers = task_clone.workers.read().await;
-                        let mut all_canceled = true;
-                        for w in workers.iter() {
-                            let status = w.status.lock().await;
-                            if !matches!(*status, DownloadStatus::Completed) {
-                                all_canceled = false;
-                                break;
-                            }
-                        }
-
-                        if all_canceled {
-                            let mut status = task_clone.status.lock().await;
-                            *status = DownloadStatus::Canceled;
-
-                            if let Some(manager) = task_clone.manager.upgrade() {
-                                let _ = manager
-                                    .task_event_tx
-                                    .send(DownloadEvent::Cancel(task_clone.id));
-                            }
-                        }
-                    }
-                    _ => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -582,6 +597,55 @@ impl DownloadTask {
                 }
             }
         }
+
+        if total_size == 0 {
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(file_path.as_ref())
+                .await?;
+
+            let checksum_ok = {
+                let mut checksums = self.checksums.lock().await;
+                checksums
+                    .iter_mut()
+                    .all(|checksum| match checksum.verify(file_path.as_ref()) {
+                        Ok(true) => {
+                            checksum.verified = Some(true);
+                            checksum.verified_at = Some(Utc::now());
+                            true
+                        }
+                        Ok(false) | Err(_) => {
+                            checksum.verified = Some(false);
+                            checksum.verified_at = Some(Utc::now());
+                            false
+                        }
+                    })
+            };
+
+            {
+                let mut status = self.status.lock().await;
+                *status = if checksum_ok {
+                    DownloadStatus::Completed
+                } else {
+                    DownloadStatus::Failed(DownloadError::Other("Checksum failed".into()))
+                };
+            }
+
+            self.persist_task_checksums().await?;
+            self.persist_task().await?;
+
+            if let Some(manager) = self.manager.upgrade() {
+                let _ = manager.task_event_tx.send(if checksum_ok {
+                    DownloadEvent::Complete(self.id)
+                } else {
+                    DownloadEvent::Error(self.id, DownloadError::Other("Checksum failed".into()))
+                });
+            }
+            return Ok(());
+        }
+
         //-----------------------------------------------------------------------
         {
             let mut status = self.status.lock().await;
@@ -600,27 +664,21 @@ impl DownloadTask {
         let mut workers_vec = self.workers.read().await.clone();
         if workers_vec.is_empty() {
             // 如果没有 worker，则创建新的
-            let worker_count = self.config.worker_threads;
-            let total_size = self.total_size.load(Ordering::Relaxed);
-            let chunk_size = total_size / worker_count as u64;
             let now = Utc::now();
+            let chunks = plan_download_chunks(
+                self.total_size.load(Ordering::Relaxed),
+                self.config.worker_threads,
+            );
 
-            for i in 0..worker_count {
-                let start = i as u64 * chunk_size;
-                let end = if i == worker_count - 1 {
-                    total_size - 1
-                } else {
-                    (i as u64 + 1) * chunk_size - 1
-                };
-
+            for chunk in chunks {
                 let worker = Arc::new(DownloadWorker::new(
-                    i as u32,
+                    chunk.index,
                     Arc::clone(&self.config),
                     Arc::downgrade(self),
                     Arc::clone(&self.client),
                     self.url.clone(),
-                    start,
-                    end,
+                    chunk.start,
+                    chunk.end,
                     Some(0),
                     Arc::clone(&file_path),
                     Some(DownloadStatus::Pending),

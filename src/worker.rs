@@ -37,6 +37,8 @@ pub struct DownloadWorker {
     pub is_running: AtomicBool,
 }
 
+pub type SegmentWorker = DownloadWorker;
+
 impl DownloadWorker {
     pub fn new(
         id: u32,

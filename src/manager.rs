@@ -4,13 +4,14 @@ use crate::events::DownloadEvent;
 use crate::persistence::DownloadPersistenceManager;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
 use crate::request::{DownloadTaskRequest, DownloadWorkerRequest};
+use crate::runtime::build_http_client;
 use crate::status::DownloadStatus;
 use crate::task::DownloadTask;
 use crate::worker::DownloadWorker;
 use dashmap::DashMap;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use log::{LevelFilter, debug, error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::str::FromStr;
@@ -27,9 +28,12 @@ pub struct DownloadManager {
     pub persistence: OnceCell<Arc<DownloadPersistenceManager>>,
     pub pending_queue: Arc<Mutex<VecDeque<(u32, PendingAction)>>>,
     pub task_event_tx: broadcast::Sender<DownloadEvent>,
+    pub http_client: Arc<reqwest::Client>,
 
     semaphore: Arc<Semaphore>,
 }
+
+pub type DownloadCoordinator = DownloadManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingAction {
@@ -42,6 +46,7 @@ impl DownloadManager {
     pub fn new(config: DownloadConfig) -> Result<Arc<Self>, DownloadError> {
         let (task_event_tx, _) = broadcast::channel(100);
         let max_concurrent = config.max_concurrent_downloads;
+        let http_client = Arc::new(build_http_client(&config)?);
 
         let manager = Arc::new(Self {
             config: Arc::new(config),
@@ -50,23 +55,13 @@ impl DownloadManager {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             task_event_tx,
+            http_client,
         });
 
         Ok(manager)
     }
 
     pub async fn init(self: &Arc<Self>) -> Result<(), DownloadError> {
-        let log_level = if self.config.debug {
-            log::LevelFilter::Debug
-        } else {
-            log::LevelFilter::Info
-        };
-
-        env_logger::Builder::from_default_env()
-            .filter_level(log_level)
-            .filter_module("sqlx::query", LevelFilter::Info) // 只让 sqlx 输出 info 级别以上
-            .init();
-
         let persistence = Arc::new(DownloadPersistenceManager::new(self.config.clone()).await?);
         self.persistence
             .set(persistence)
@@ -86,94 +81,115 @@ impl DownloadManager {
         let manager_clone = Arc::clone(self);
         let mut rx = self.task_event_tx.subscribe();
         tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                match event {
-                    DownloadEvent::Complete(task_id) => {
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
+            loop {
+                match rx.recv().await {
+                    Ok(event) => match event {
+                        DownloadEvent::Complete(task_id) => {
+                            if let Err(e) = manager_clone.persist_task(task_id).await {
+                                error!("Failed to persist task {}: {:?}", task_id, e);
+                            }
+                            //----------------------------------------------------------
+                            //
+                            if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                                error!(
+                                    "Failed remove_from_queue on Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
+                            //
+                            manager_clone.release_task_permit(task_id).await;
+                            //
+                            if let Err(e) = manager_clone.spawn_next_task().await {
+                                error!(
+                                    "Failed to spawn next task after Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
                         }
-                        //----------------------------------------------------------
-                        //
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
-                        }
-                        //
-                        manager_clone.release_task_permit(task_id).await;
-                        //
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Complete({}): {:?}",
-                                task_id, e
-                            );
-                        }
-                    }
-                    DownloadEvent::Cancel(task_id) => {
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
-                        }
+                        DownloadEvent::Cancel(task_id) => {
+                            if let Err(e) = manager_clone.persist_task(task_id).await {
+                                error!("Failed to persist task {}: {:?}", task_id, e);
+                            }
 
-                        //----------------------------------------------------------
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                            //----------------------------------------------------------
+                            if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                                error!(
+                                    "Failed remove_from_queue on Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
+                            //
+                            manager_clone.release_task_permit(task_id).await;
+                            //
+                            if let Err(e) = manager_clone.spawn_next_task().await {
+                                error!(
+                                    "Failed to spawn next task after Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
                         }
-                        //
-                        manager_clone.release_task_permit(task_id).await;
-                        //
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Complete({}): {:?}",
-                                task_id, e
-                            );
-                        }
-                    }
-                    DownloadEvent::Error(task_id, _err) => {
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
-                        }
+                        DownloadEvent::Error(task_id, _err) => {
+                            if let Err(e) = manager_clone.persist_task(task_id).await {
+                                error!("Failed to persist task {}: {:?}", task_id, e);
+                            }
 
-                        //----------------------------------------------------------
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
+                            //----------------------------------------------------------
+                            if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                                error!(
+                                    "Failed remove_from_queue on Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
+                            //
+                            manager_clone.release_task_permit(task_id).await;
+                            //
+                            if let Err(e) = manager_clone.spawn_next_task().await {
+                                error!(
+                                    "Failed to spawn next task after Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
                         }
-                        //
-                        manager_clone.release_task_permit(task_id).await;
-                        //
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Complete({}): {:?}",
-                                task_id, e
-                            );
+                        DownloadEvent::Preparing(task_id) => {
+                            if let Err(e) = manager_clone.persist_task(task_id).await {
+                                error!("Failed to persist task {}: {:?}", task_id, e);
+                            }
                         }
+                        DownloadEvent::Pause(task_id) => {
+                            if let Err(e) = manager_clone.persist_task(task_id).await {
+                                error!("Failed to persist task {}: {:?}", task_id, e);
+                            }
+                            //----------------------------------------------------------
+                            if let Err(e) = manager_clone.remove_from_queue(task_id).await {
+                                error!(
+                                    "Failed remove_from_queue on Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
+                            //
+                            manager_clone.release_task_permit(task_id).await;
+                            //
+                            if let Err(e) = manager_clone.spawn_next_task().await {
+                                error!(
+                                    "Failed to spawn next task after Complete({}): {:?}",
+                                    task_id, e
+                                );
+                            }
+                        }
+                        DownloadEvent::Progress { id, .. } => {
+                            if let Err(e) = manager_clone.persist_task(id).await {
+                                error!("Failed to persist task {}: {:?}", id, e);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "[Manager] Task event consumer lagged and skipped {} events",
+                            skipped
+                        );
                     }
-                    DownloadEvent::Preparing(task_id) => {
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
-                        }
-                    }
-                    DownloadEvent::Pause(task_id) => {
-                        if let Err(e) = manager_clone.persist_task(task_id).await {
-                            error!("Failed to persist task {}: {:?}", task_id, e);
-                        }
-                        //----------------------------------------------------------
-                        if let Err(e) = manager_clone.remove_from_queue(task_id).await {
-                            error!("Failed remove_from_queue on Complete({}): {:?}", task_id, e);
-                        }
-                        //
-                        manager_clone.release_task_permit(task_id).await;
-                        //
-                        if let Err(e) = manager_clone.spawn_next_task().await {
-                            error!(
-                                "Failed to spawn next task after Complete({}): {:?}",
-                                task_id, e
-                            );
-                        }
-                    }
-                    DownloadEvent::Progress { id, .. } => {
-                        if let Err(e) = manager_clone.persist_task(id).await {
-                            error!("Failed to persist task {}: {:?}", id, e);
-                        }
-                    }
-                    _ => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -407,6 +423,7 @@ impl DownloadManager {
             task_request.downloaded_size,                       // 对应 Option<u64>
             task_request.total_size,                            // 对应 Option<u64>
             task_request.checksums.clone().unwrap_or_default(), // 对应 Vec<DownloadChecksum>
+            Arc::clone(&self.http_client),
             self.config.clone(),
             Some(persistence),
             Arc::downgrade(self),

@@ -1,26 +1,30 @@
 use clap::Parser;
-use log::{error, info};
-use paradown::cli::InteractiveMode;
+use log::{error, info, warn};
+use paradown::cli::{Command, InteractiveMode, print_help};
 use paradown::download::{DownloadCoordinator, DownloadEvent, DownloadJobRequest};
-use paradown::storage::StorageBackend;
-use paradown::{
-    DownloadConfig, DownloadConfigBuilder, DownloadError, FileConflictStrategy,
-    ProgressThrottleConfig, RetryConfig, init_logger,
-};
+use paradown::{DownloadConfig, DownloadError, init_logger};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "paradown")]
-#[command(about = "A multi-threaded download tool", long_about = None)]
+#[command(about = "A multi-threaded download tool")]
 struct Cli {
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    #[arg(short, long, default_value_t = 4)]
-    workers: usize,
+    #[arg(short, long, value_name = "N")]
+    workers: Option<usize>,
+
+    #[arg(long, value_name = "N")]
+    max_concurrent: Option<usize>,
 
     #[arg(short, long, value_name = "DIR")]
-    download_dir: PathBuf,
+    download_dir: Option<PathBuf>,
+
+    #[arg(long, value_name = "KBPS")]
+    rate_limit_kbps: Option<u64>,
 
     #[arg(short, long)]
     shuffle: bool,
@@ -28,160 +32,189 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    #[arg(short = 'u', long = "urls", value_name = "URLS", num_args = 1.., required = true)]
+    #[arg(long)]
+    interactive: bool,
+
+    #[arg(short = 'u', long = "urls", value_name = "URL", num_args = 1.., required = true)]
     urls: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), DownloadError> {
     let cli = Cli::parse();
-
-    let config = match cli.config {
-        Some(path) => DownloadConfig::from_file(&path)?,
-        None => DownloadConfigBuilder::new()
-            .download_dir(cli.download_dir)
-            .shuffle(cli.shuffle)
-            .worker_threads(cli.workers)
-            .max_concurrent_downloads(cli.workers)
-            .rate_limit_kbps(None)
-            .connection_timeout(30)
-            .retry(RetryConfig::default())
-            .file_conflict_strategy(FileConflictStrategy::Overwrite)
-            .persistence_type(StorageBackend::Sqlite("./downloads/downloads.db".into()))
-            .progress_throttle(ProgressThrottleConfig::default())
-            .build()?,
-    };
+    let config = build_config(&cli)?;
 
     init_logger(cli.verbose || config.debug);
 
     info!(
-        "Starting download process with {} workers",
-        config.worker_threads
+        "Starting download process with {} workers (max_concurrent = {})",
+        config.worker_threads, config.max_concurrent_downloads
     );
     info!("Download directory: {}", config.download_dir.display());
-    info!("Random order: {}", config.shuffle);
+    info!(
+        "Rate limit: {}",
+        config
+            .rate_limit_kbps
+            .map(|value| format!("{} KB/s", value))
+            .unwrap_or_else(|| "unlimited".to_string())
+    );
+    info!("Interactive mode: {}", cli.interactive);
 
-    let (mut interactive, _status_tx, _command_rx) = InteractiveMode::new();
     let manager = DownloadCoordinator::new(config)?;
     manager.init().await?;
 
-    // let task_progress_manager = Arc::new(DownloadProgressManager::new());
+    let event_task = spawn_event_reporter(Arc::clone(&manager));
+    let (interactive_task, command_task) = if cli.interactive {
+        let (mut interactive, command_rx) = InteractiveMode::new();
+        let command_task = spawn_command_handler(Arc::clone(&manager), command_rx);
+        let interactive_task = tokio::spawn(async move {
+            interactive.run().await;
+        });
+        (Some(interactive_task), Some(command_task))
+    } else {
+        (None, None)
+    };
 
-    for url in cli.urls {
+    for url in &cli.urls {
         let request = DownloadJobRequest::builder(url).build();
         let task_id = manager.add_task(request).await?;
         manager.start_task(task_id).await?;
     }
 
-    let rx = manager.subscribe_events();
+    manager.wait_for_all_tasks().await?;
+
+    if let Some(task) = interactive_task {
+        task.abort();
+    }
+    if let Some(task) = command_task {
+        task.abort();
+    }
+    event_task.abort();
+
+    info!("Download process completed successfully");
+    Ok(())
+}
+
+fn build_config(cli: &Cli) -> Result<DownloadConfig, DownloadError> {
+    let mut config = match &cli.config {
+        Some(path) => DownloadConfig::from_file(path)?,
+        None => DownloadConfig::default(),
+    };
+
+    if let Some(download_dir) = &cli.download_dir {
+        config.download_dir = download_dir.clone();
+    }
+    if let Some(workers) = cli.workers {
+        config.worker_threads = workers;
+        if cli.max_concurrent.is_none() {
+            config.max_concurrent_downloads = workers;
+        }
+    }
+    if let Some(max_concurrent) = cli.max_concurrent {
+        config.max_concurrent_downloads = max_concurrent;
+    }
+    if cli.shuffle {
+        config.shuffle = true;
+    }
+    if let Some(rate_limit_kbps) = cli.rate_limit_kbps {
+        config.rate_limit_kbps = NonZeroU64::new(rate_limit_kbps);
+    }
+
+    config.validate().map_err(DownloadError::from)?;
+    Ok(config)
+}
+
+fn spawn_event_reporter(manager: Arc<DownloadCoordinator>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut rx = rx;
+        let mut rx = manager.subscribe_events();
+
         loop {
             match rx.recv().await {
-                Ok(event) => match event {
-                    DownloadEvent::Start(id) => {
-                        error!("任务 {id} 开始");
-                        // let task = task_progress_manager.add_task(id);
-                        // task.set_status("Downloading");
-                    }
-                    DownloadEvent::Progress { .. } => {
-                        // error!("任务 {id} 进度: {downloaded}/{total}");
-                        // if let Some(task) = task_progress_manager.get_task(id) {
-                        //     task.update(downloaded, Some(total));
-                        // } else {
-                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                        // }
-                    }
-                    DownloadEvent::Complete(id) => {
-                        error!("任务 {id} 已完成");
-                        // if let Some(task) = task_progress_manager.get_task(id) {
-                        //     task.finish();
-                        // } else {
-                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                        // }
-                    }
-                    DownloadEvent::Error(id, err) => {
-                        error!("任务 {id} 出错: {err:?}");
-                        // if let Some(task) = task_progress_manager.get_task(id) {
-                        //     task.set_status("Error");
-                        // } else {
-                        //     eprintln!("⚠️ 进度事件丢失: 任务 {id}");
-                        // }
-                    }
-                    _ => {}
-                },
+                Ok(DownloadEvent::Start(id)) => info!("任务 {id} 开始"),
+                Ok(DownloadEvent::Pause(id)) => info!("任务 {id} 已暂停"),
+                Ok(DownloadEvent::Complete(id)) => info!("任务 {id} 已完成"),
+                Ok(DownloadEvent::Cancel(id)) => warn!("任务 {id} 已取消"),
+                Ok(DownloadEvent::Delete(id)) => warn!("任务 {id} 已删除"),
+                Ok(DownloadEvent::Error(id, err)) => error!("任务 {id} 出错: {err}"),
+                Ok(DownloadEvent::Preparing(_))
+                | Ok(DownloadEvent::Pending(_))
+                | Ok(DownloadEvent::Progress { .. }) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    error!("下载事件消费落后，跳过了 {skipped} 条事件");
+                    warn!("下载事件消费落后，跳过了 {skipped} 条事件");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    })
+}
 
-    //-------------------------start---------------------------
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    // manager.start_all().await?;
-    //-------------------------Pause & Resume---------------------------
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    // manager.pause_all().await?;
+fn spawn_command_handler(
+    manager: Arc<DownloadCoordinator>,
+    mut command_rx: tokio::sync::mpsc::Receiver<Command>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(command) = command_rx.recv().await {
+            if let Err(err) = handle_command(&manager, command).await {
+                error!("Interactive command failed: {err}");
+            }
+        }
+    })
+}
 
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    // manager.resume_all().await?;
+async fn handle_command(
+    manager: &Arc<DownloadCoordinator>,
+    command: Command,
+) -> Result<(), DownloadError> {
+    match command {
+        Command::Help => {
+            print_help();
+            Ok(())
+        }
+        Command::Status => {
+            print_task_summary(manager).await;
+            Ok(())
+        }
+        Command::PauseAll => manager.pause_all().await.map(|_| ()),
+        Command::ResumeAll => manager.resume_all().await.map(|_| ()),
+        Command::CancelAll => manager.cancel_all().await.map(|_| ()),
+        Command::SetRateLimit(limit_kbps) => {
+            manager.set_rate_limit_kbps(limit_kbps).await;
+            let label = manager
+                .current_rate_limit_kbps()
+                .map(|value| format!("{value} KB/s"))
+                .unwrap_or_else(|| "unlimited".to_string());
+            info!("Global rate limit updated to {label}");
+            Ok(())
+        }
+    }
+}
 
-    //-------------------------Pause & Resume---------------------------
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    //
-    // if let Some(t) = manager.get_task_by_id(1) {
-    //     println!("[Main] Pausing task...");
-    //     if let Err(e) = t.pause().await {
-    //         eprintln!("[Main] Failed to pause task: {:?}", e);
-    //     } else {
-    //         println!("[Main] Task paused successfully");
-    //     }
-    // }
-    //
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    //
-    // if let Some(t) = manager.get_task_by_id(1) {
-    //     println!("[Main] Resuming task...");
-    //     if let Err(e) = t.resume().await {
-    //         eprintln!("[Main] Failed to resume task: {:?}", e);
-    //     } else {
-    //         println!("[Main] Task resumed successfully");
-    //     }
-    // }
-    //------------------------add_task---------------------------------
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    //
-    // warn!("Add new task ...");
-    // let request = DownloadRequest {
-    //     url: "https://extcdn.hsrc.tv/channelzero/video/zero_public/2024/03/04/26405d75acd94645b117cd075a0b5c89_transcode_1137855.mp4".to_string(),
-    //     file_name: None,
-    //     checksums: vec![
-    //         DownloadChecksum {
-    //             algorithm: ChecksumAlgorithm::MD5,
-    //             value: Some("9d15d120a60995be4f66a30ff66be684".to_string()),
-    //         }
-    //     ],
-    // };
-    //
-    // let request = DownloadRequest {
-    //     url: "https://extcdn.hsrc.tv/channelzero/video/zero_public/2024/03/01/96e83f0c3cce4c8c952a5334c41252c9_transcode_1137855.mp4".to_string(),
-    //     file_name: None,
-    //     checksums: vec![
-    //         DownloadChecksum {
-    //             algorithm: ChecksumAlgorithm::MD5,
-    //             value: Some("9020e80bdf8012d15f75ca57b01ab862".to_string()),
-    //         }
-    //     ],
-    // };
-    //
-    // let task_id = manager.add_task(request).await?;
-    // manager.start_task(task_id).await?;
+async fn print_task_summary(manager: &Arc<DownloadCoordinator>) {
+    let mut tasks = manager.get_all_tasks();
+    tasks.sort_by_key(|task| task.id);
 
-    //----------------------------------------------------------------
-    interactive.run().await;
+    println!(
+        "Rate limit: {}",
+        manager
+            .current_rate_limit_kbps()
+            .map(|value| format!("{value} KB/s"))
+            .unwrap_or_else(|| "unlimited".to_string())
+    );
 
-    info!("Download process completed successfully");
-    Ok(())
+    if tasks.is_empty() {
+        println!("No tasks");
+        return;
+    }
+
+    for task in tasks {
+        let snapshot = task.snapshot().await;
+        println!(
+            "#{} {} {} {}/{}",
+            snapshot.id,
+            snapshot.status,
+            snapshot.url,
+            snapshot.downloaded_size,
+            snapshot.total_size
+        );
+    }
 }

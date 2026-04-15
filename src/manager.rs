@@ -339,6 +339,35 @@ impl DownloadManager {
         self.rate_limiter.current_limit_kbps()
     }
 
+    pub async fn wait_for_all_tasks(self: &Arc<Self>) -> Result<(), DownloadError> {
+        let mut rx = self.subscribe_events();
+
+        loop {
+            if self.tasks.is_empty() {
+                return Ok(());
+            }
+
+            let mut all_terminal = true;
+            for task in self.get_all_tasks() {
+                let status = task.status.lock().await.clone();
+                if !status.is_terminal() {
+                    all_terminal = false;
+                    break;
+                }
+            }
+
+            if all_terminal {
+                return Ok(());
+            }
+
+            match rx.recv().await {
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
+    }
+
     async fn run_task_transition<'a, F>(
         self: &'a Arc<Self>,
         task_id: u32,

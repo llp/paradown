@@ -1,96 +1,131 @@
-use crate::status::DownloadStatus;
+use std::num::NonZeroU64;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    Pause,
-    Resume,
-    Cancel,
-    SetRateLimit(u64),
+    Help,
+    Status,
+    PauseAll,
+    ResumeAll,
+    CancelAll,
+    SetRateLimit(Option<NonZeroU64>),
 }
 
 pub struct InteractiveMode {
     pub command_tx: mpsc::Sender<Command>,
-    pub status_rx: mpsc::Receiver<DownloadStatus>,
 }
 
 impl InteractiveMode {
-    pub fn new() -> (Self, mpsc::Sender<DownloadStatus>, mpsc::Receiver<Command>) {
+    pub fn new() -> (Self, mpsc::Receiver<Command>) {
         let (command_tx, command_rx) = mpsc::channel(32);
-        let (status_tx, status_rx) = mpsc::channel(32);
-
-        (
-            Self {
-                command_tx,
-                status_rx,
-            },
-            status_tx,
-            command_rx,
-        )
+        (Self { command_tx }, command_rx)
     }
 
     pub async fn run(&mut self) {
         use tokio::io::AsyncBufReadExt;
+
+        print_help();
+
         let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
         let mut line = String::new();
 
         loop {
-            tokio::select! {
-                result = stdin.read_line(&mut line) => {
-                    if let Ok(n) = result {
-                        if n == 0 {
-                            break;
-                        }
-                        self.handle_command(&line.trim()).await;
-                        line.clear();
-                    }
+            match stdin.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    self.handle_command(line.trim()).await;
+                    line.clear();
                 }
-                Some(status) = self.status_rx.recv() => {
-                    self.handle_status(status).await;
+                Err(err) => {
+                    println!("Failed to read interactive command: {err}");
+                    break;
                 }
             }
         }
     }
 
-    async fn handle_command(&self, cmd: &str) {
-        let command = match cmd.to_lowercase().as_str() {
-            "pause" => Some(Command::Pause),
-            "resume" => Some(Command::Resume),
-            "cancel" => Some(Command::Cancel),
-            _ if cmd.starts_with("limit ") => cmd
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .map(Command::SetRateLimit),
-            _ => {
-                println!("Unknown command: {}", cmd);
-                None
+    async fn handle_command(&self, raw_command: &str) {
+        let normalized = raw_command.trim();
+        if normalized.is_empty() {
+            return;
+        }
+
+        let command = match parse_command(normalized) {
+            Ok(command) => command,
+            Err(err) => {
+                println!("{err}");
+                return;
             }
         };
 
-        if let Some(cmd) = command {
-            if let Err(e) = self.command_tx.send(cmd).await {
-                println!("Failed to send command: {}", e);
-            }
+        if let Err(err) = self.command_tx.send(command).await {
+            println!("Failed to send interactive command: {err}");
         }
     }
+}
 
-    async fn handle_status(&self, status: DownloadStatus) {
-        match status {
-            DownloadStatus::Pending => println!("Download is pending"),
-            DownloadStatus::Preparing => {
-                // println!("Download is Preparing")
-            }
-            DownloadStatus::Running => {
-                // println!("Download is running")
-            }
-            DownloadStatus::Deleted => {
-                // println!("Download is running")
-            }
-            DownloadStatus::Paused => println!("Download is paused"),
-            DownloadStatus::Canceled => println!("Download is canceled"),
-            DownloadStatus::Completed => println!("Download completed"),
-            DownloadStatus::Failed(err) => println!("Download failed: {}", err),
+fn parse_command(input: &str) -> Result<Command, String> {
+    let lowercase = input.to_ascii_lowercase();
+    let mut parts = lowercase.split_whitespace();
+    let command = parts.next().ok_or_else(|| "Empty command".to_string())?;
+
+    match command {
+        "help" => Ok(Command::Help),
+        "status" => Ok(Command::Status),
+        "pause" => Ok(Command::PauseAll),
+        "resume" => Ok(Command::ResumeAll),
+        "cancel" => Ok(Command::CancelAll),
+        "limit" => {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: limit <kbps|off>".to_string())?;
+            let limit = match value {
+                "off" | "none" | "unlimited" | "0" => None,
+                _ => NonZeroU64::new(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "limit expects a positive integer or 'off'".to_string())?,
+                ),
+            };
+            Ok(Command::SetRateLimit(limit))
         }
+        _ => Err(format!("Unknown command: {input}. Type 'help' for usage.")),
+    }
+}
+
+pub fn print_help() {
+    println!("Interactive commands:");
+    println!("  help                 Show available commands");
+    println!("  status               Print task summary and current rate limit");
+    println!("  pause                Pause all active downloads");
+    println!("  resume               Resume paused downloads");
+    println!("  cancel               Cancel all downloads");
+    println!("  limit <kbps|off>     Set global rate limit, or disable it");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, parse_command};
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn parses_limit_disable_command() {
+        assert!(matches!(
+            parse_command("limit off").unwrap(),
+            Command::SetRateLimit(None)
+        ));
+    }
+
+    #[test]
+    fn parses_limit_value_command() {
+        assert!(matches!(
+            parse_command("limit 128").unwrap(),
+            Command::SetRateLimit(Some(value)) if value == NonZeroU64::new(128).unwrap()
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_command() {
+        assert!(parse_command("wat").is_err());
     }
 }

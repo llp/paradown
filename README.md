@@ -1,179 +1,144 @@
 # paradown
 
-**paradown** — a high-performance, multi-threaded CLI download manager written in Rust.
+`paradown` is a Rust download manager with resumable state, segmented downloads, SQLite persistence, and a CLI-focused runtime.
 
-Aims:
+## Current status
 
-- Robust concurrent downloading with multiple worker threads.
-- Resume / checkpointing support through SQLite / in-memory / JSON persistence.
-- Integrity verification with checksums.
-- Interactive control (pause/resume/cancel, rate limiting).
-- Retry/backoff, configurable timeouts and file conflict strategies.
+What is implemented today:
 
----
+- Multi-worker downloads when the origin supports HTTP range requests
+- SQLite and in-memory persistence
+- Restart recovery with worker layout validation
+- Checksum verification
+- Retry/backoff controls
+- Global rate limiting across workers
+- Optional interactive commands for pause/resume/cancel/status/rate updates
 
-## Features
+What is not implemented yet:
 
-- Multi-threaded downloads with configurable worker count.
-- Persistence backends:
-    - SQLite (default) — persistent state across restarts.
-    - In-memory — ephemeral (useful for testing).
-    - JSON file — simple file-based persistence.
-- Resumable downloads when possible (supports partial content / range requests).
-- Per-task checksum verification (MD5/SHA variants: see `checksum` module).
-- Rate limiting (bytes/sec or kilobytes/sec configurable).
-- Retry configuration with exponential backoff.
-- CLI and interactive mode (stdin-driven commands).
-- Progress reporting and throttling to avoid flooding output.
-- Configurable file conflict strategies: overwrite, resume, skip-if-valid, etc.
-- Clear modular architecture: `manager`, `worker`, `repository`, `persistence`, `task`, `cli`, `progress`, `stats`.
-
----
+- JSON file persistence backend
+- Polished terminal UI beyond log output and interactive stdin commands
 
 ## Quick start
 
-Build locally:
+Build:
 
 ```bash
-# From crate root:
 cargo build --release
-# Or to install locally:
-cargo install --path .
 ```
 
-Basic usage (download one or more URLs — --urls is required):
+Download one file:
 
 ```bash
-# download into ./downloads (default)
-paradown -u https://example.com/file.iso
-
-# specify workers and download directory
-paradown -u https://a -u https://b -w 8 -d /path/to/dir
-
-# use a config file
-paradown -c ./paradown.toml
+cargo run --all-features -- --urls https://example.com/file.iso
 ```
 
-> The CLI expects at least one --urls (-u) argument. See “Configuration” for file-based setup.
+Download multiple files with overrides:
 
-## Example configuration (TOML)
+```bash
+cargo run --all-features -- \
+  --urls https://example.com/a.iso https://example.com/b.iso \
+  --workers 8 \
+  --max-concurrent 4 \
+  --download-dir ./downloads
+```
 
-This crate uses serde for config deserialization. Example paradown.toml:
+Run with interactive commands enabled:
+
+```bash
+cargo run --all-features -- \
+  --interactive \
+  --rate-limit-kbps 512 \
+  --urls https://example.com/file.iso
+```
+
+## CLI flags
+
+`paradown --help` currently exposes:
+
+- `-c, --config <FILE>`: load config from TOML
+- `-w, --workers <N>`: override worker thread count
+- `--max-concurrent <N>`: override max concurrent tasks
+- `-d, --download-dir <DIR>`: override download directory
+- `--rate-limit-kbps <KBPS>`: set global rate limit
+- `-s, --shuffle`: shuffle task order
+- `-v, --verbose`: verbose logging
+- `--interactive`: enable stdin command mode
+- `-u, --urls <URL>...`: one or more URLs to download
+
+CLI overrides are applied on top of config file values when both are present.
+
+## Interactive mode
+
+Interactive mode is only enabled when `--interactive` is passed.
+
+Supported commands:
+
+- `help`
+- `status`
+- `pause`
+- `resume`
+- `cancel`
+- `limit <kbps|off>`
+
+These commands operate on the current download session globally, not per task.
+
+## Configuration
+
+`DownloadConfig` is deserialized directly from TOML. A minimal example that matches the current code shape:
 
 ```toml
-# paradown.toml - example
 download_dir = "./downloads"
 shuffle = false
 max_concurrent_downloads = 4
 worker_threads = 4
-rate_limit_kbps = 0            # 0 or omit => no limit; otherwise use integer KB/s
-connection_timeout_secs = 30   # connection timeout in seconds
+rate_limit_kbps = 256
 debug = true
-
-[persistence]
-# Use one of:
-# type = "Sqlite"
-# sqlite_path = "./downloads.db"
-# type = "Memory"
-# type = "JsonFile"
-type = "Sqlite"
-sqlite_path = "./downloads.db"
+file_conflict_strategy = "Resume"
+persistence_type = { Sqlite = "./downloads.db" }
 
 [retry]
-max_retries = 5
-initial_delay_secs = 1
-max_delay_secs = 60
+max_retries = 3
+initial_delay = 1
+max_delay = 30
 backoff_factor = 2.0
 
 [progress_throttle]
-# example throttle config (fields vary; defaults applied if omitted)
+interval_ms = 200
 threshold_bytes = 1048576
-interval_millis = 500
 ```
 
-> Field names above are illustrative — match actual keys with your crate’s DownloadConfig (see src/config.rs).
-> DownloadConfig defaults: download_dir = "./downloads", worker_threads = 4, persistence = Sqlite("./downloads.db"),
-> connection_timeout = 30s, file_conflict_strategy = Resume, debug = true.
+Important notes:
 
-## CLI & Interactive commands
+- `PersistenceType::JsonFile(...)` is defined but not implemented
+- if `rate_limit_kbps` is omitted or set to `0` through CLI interactive commands, rate limiting is disabled
+- `connection_timeout` is available in code but not shown above because its raw TOML representation is less ergonomic than the CLI path
 
-CLI flags (from the source main.rs):
+## Architecture
 
-* -c, --config <FILE> — path to config TOML file.
-* -w, --workers <N> — number of worker threads (overrides config).
-* -d, --download-dir <DIR> — download destination directory (overrides config).
-* -s, --shuffle — shuffle task list before starting.
-* -v, --verbose — verbose logging.
-* -u, --urls <URLS>... — one or more URLs to download (required if not using config to load tasks).
+The current internal structure is roughly:
 
-Interactive mode (stdin-based) supports commands implemented in src/cli.rs:
+- `manager`: coordinator API and task lifecycle entry points
+- `coordinator_*`: queueing, event fan-in, task registration
+- `task` + `job_*`: per-download lifecycle, preparation, persistence helpers, finalization
+- `worker` + `worker_*`: worker facade, runtime loop, transfer logic, retry logic
+- `recovery`: restore planning and trust rules for persisted state
+- `persistence` + `storage_mapping` + `repository/*`: storage facade, model mapping, backend implementations
+- `protocol_probe`: range support and target probing
 
-* Pause current active downloads.
-* Resume paused downloads.
-* Cancel a task.
-* Set rate limit dynamically (e.g., set global KB/s).
+## Testing
 
-## Architecture & module overview
-
-Top-level modules (short description):
-
-* main.rs — CLI parsing, startup, logger initialization, bootstraps manager and interactive loop.
-* manager — orchestrates tasks, assigns workers, handles lifecycle (start/stop/pause/resume).
-* worker — per-thread worker logic that executes HTTP requests, writes to files, reports progress.
-* task — download task model, chunk/worker assignment, state machine for download progress.
-* request — request struct, builder for creating download requests and metadata (file path, checksums).
-* persistence — persistence manager that chooses repository backend and provides save/load functions.
-* repository — trait and implementations:
-* sqlite_repository — persistent DB storage using SQLite.
-* memory_repository — volatile in-memory storage (useful for tests).
-* models: DB representation types for tasks/workers/checksums.
-* checksum — checksum calculation & types (support for multiple algorithms).
-* progress — throttling and progress reporting utilities.
-* stats — collection and reporting of aggregate download statistics.
-* cli — interactive stdin handler and command dispatcher.
-* error — centralized error types.
-
-This separation makes it easier to:
-
-* Swap persistence backends.
-* Replace the HTTP client implementation or instrument workers.
-* Integrate with higher-level apps (library-mode) in the future (requires exposing APIs and making a lib crate).
-
-## Configuration keys and defaults
-
-Key defaults (from DownloadConfig::default()):
-
-* download_dir: ./downloads
-* shuffle: false
-* max_concurrent_downloads: 4
-* worker_threads: 4
-* retry: uses RetryConfig::default()
-* rate_limit_kbps: None (no limit)
-* connection_timeout: 30s
-* persistence_type: Sqlite("./downloads.db")
-* progress_throttle: ProgressThrottleConfig::default()
-* file_conflict_strategy: Resume
-* debug: true
-
-## Examples
-
-Download two files with 8 worker threads into /tmp/dls:
+Run the full test suite:
 
 ```bash
-paradown -u https://example.com/one.iso -u https://example.com/two.iso -w 8 -d /tmp/dls
+cargo test --all-features
 ```
 
-Run interactively and type commands to pause/resume/cancel or change rate limit (stdin mode).
+The suite currently includes:
 
-## Building & testing
-
-```bash
-# build
-cargo build --release
-
-# run (examples)
-cargo run -- --urls https://example.com/file.iso
-
-# run tests (if any)
-cargo test
-```
+- chunk planning tests
+- protocol probe tests
+- repository tests
+- recovery rule tests
+- worker runtime tests
+- integration tests for actual downloads and restart recovery

@@ -317,7 +317,7 @@
 
 提交：
 
-- 见本轮提交记录
+- `8909c0a` `拆分恢复规则与存储映射层`
 
 已完成内容：
 
@@ -344,246 +344,98 @@
 - 恢复规则与存储转换都不方便独立测试
 - 协调器、恢复层、存储层之间还缺一层明确的“恢复输入/恢复决策”边界
 
-## 4. 本轮重构具体改了什么
+### 3.10 第十轮：补全恢复与下载链路集成测试
 
-如果只聚焦“这一轮”即第九轮，已经修改的重点如下：
+提交：
 
-### 4.1 已改
+- `654e26a` `补充恢复与下载链路集成测试`
 
-- 恢复计划和恢复规则已经整体迁到 `recovery.rs`
-- `persistence.rs` 里的模型转换已经迁到 `storage_mapping.rs`
-- `coordinator_registry.rs` 现在基本只保留任务注册、恢复装配和去重逻辑
-- storage mapping 和 recovery 都补了独立测试，恢复层的 completed 文件尺寸校验也补齐了
-- 这轮后 `persistence.rs` 和 `coordinator_registry.rs` 都不再是“既当门面又当规则中心”的混合角色
+已完成内容：
 
-### 4.2 还没改完
+- 新增集成测试文件：[runtime_integration.rs](/Users/liulipeng/workspace/rust/paradown/tests/runtime_integration.rs:1)
+  - 验证 SQLite 持久化数据在 manager 重启后能恢复为 paused 任务
+  - 验证本地 HTTP server 下真实下载链路可以完整跑通
+- 为后续限速和 CLI 收尾建立了稳定的端到端回归基线
 
-- `persistence.rs` 这个命名仍然偏历史包袱，对外虽然有 `storage`，内部还没彻底对齐
-- `request.rs` 里的 task/worker request 还没有按 job/segment 拆开
-- `worker` runtime 的限速、I/O 错误分类和更细的可观测性还没继续收口
-- 恢复路径虽然已经模块化，但还缺少更完整的跨进程端到端验证
-- `main.rs` 的 interactive mode 仍未完整接线
+这一轮解决的主要问题：
 
-### 4.3 本轮实际触达的文件
+- 之前恢复路径和下载运行时主要靠单元测试验证
+- 缺少真正穿过 `manager -> task -> worker -> storage` 的回归路径
 
-本轮第九轮重构实际触达的核心文件如下：
+### 3.11 第十一轮：接入全局速率限制并收紧运行时错误分类
 
-- [recovery.rs](/Users/liulipeng/workspace/rust/paradown/src/recovery.rs:1)
-- [storage_mapping.rs](/Users/liulipeng/workspace/rust/paradown/src/storage_mapping.rs:1)
-- [coordinator_registry.rs](/Users/liulipeng/workspace/rust/paradown/src/coordinator_registry.rs:1)
-- [persistence.rs](/Users/liulipeng/workspace/rust/paradown/src/persistence.rs:1)
-- [lib.rs](/Users/liulipeng/workspace/rust/paradown/src/lib.rs:1)
+提交：
 
-本轮的重构重点不是新增功能，而是让恢复链路和存储映射成为两层明确职责：
+- `01dc93e` `接入全局速率限制并收紧运行时错误分类`
 
-- `recovery.rs` 负责恢复输入的可信性判断和恢复计划构建
-- `storage_mapping.rs` 负责 runtime 模型和存储模型之间的转换
-- `coordinator_registry.rs` 负责把恢复计划装配回运行时任务
+已完成内容：
 
-这样做的直接收益是：后续如果继续补恢复集成测试、重构 storage 命名或调整恢复规则，不需要再改协调器和存储门面的大文件。
+- 新增全局限速模块：[rate_limiter.rs](/Users/liulipeng/workspace/rust/paradown/src/rate_limiter.rs:1)
+- [manager.rs](/Users/liulipeng/workspace/rust/paradown/src/manager.rs:1) 接入共享 rate limiter，并提供运行时更新接口
+- [worker_transfer.rs](/Users/liulipeng/workspace/rust/paradown/src/worker_transfer.rs:1) 在实际写入路径上接入限速控制
+- 流式响应的 chunk 错误改为更明确的 `NetworkError`
+- 集成测试补上真实限速下载验证
 
-### 4.4 本轮明确未触达的范围
+这一轮解决的主要问题：
 
-这轮有意识地没有去碰下面这些区域，原因是先把恢复边界和存储映射层拉直，再进入更细的运行时与用户层收口：
+- `rate_limit_kbps` 之前只是配置字段，没有真正影响下载行为
+- worker 流式下载中的网络错误分类不够明确
 
-- `storage` 的内部命名仍然还没有完全替换掉 `persistence`
-- `rate_limit_kbps` 还没有真正接到 worker 运行时
-- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 里的目录准备、文件策略和协议结果消费仍然混杂
-- [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 的 interactive mode 接线
-- README、CLI 帮助文案、默认值说明的一致性问题
+### 3.12 第十二轮：收拢 CLI 入口并拆分请求模型
 
-## 5. 尚未完成的重构
+提交：
 
-下面这些属于“已经看清楚问题，但这几轮还没完全动到”的部分。
+- 见本轮提交记录
 
-### 5.1 recovery/storage 边界已经明确，但还没完全产品化
+已完成内容：
 
-这一轮之后，恢复链路已经更稳，但仍未完全收口的职责主要变成：
+- [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1) 改为真正的 CLI 入口层
+  - CLI 覆盖会统一应用到默认配置或 TOML 配置之上
+  - 默认下载完成后自动退出，不再无条件卡在 stdin
+  - interactive mode 改为显式 `--interactive`
+  - interactive 命令已真正接入 manager
+- [cli.rs](/Users/liulipeng/workspace/rust/paradown/src/cli.rs:1) 收成更明确的命令层
+  - 支持 `help/status/pause/resume/cancel/limit <kbps|off>`
+  - 为命令解析补了单测
+- [request.rs](/Users/liulipeng/workspace/rust/paradown/src/request.rs:1) 及其子模块拆分为：
+  - [job_request.rs](/Users/liulipeng/workspace/rust/paradown/src/request/job_request.rs:1)
+  - [segment_request.rs](/Users/liulipeng/workspace/rust/paradown/src/request/segment_request.rs:1)
+- [README.md](/Users/liulipeng/workspace/rust/paradown/README.md:1) 已与实际实现重新对齐
 
-- `storage` 命名空间和 `persistence.rs` 历史命名之间的不一致
-- `request.rs` 里的恢复请求模型仍然偏杂
-- worker runtime 里剩余的限速、I/O 分类与更细的错误分层
+这一轮解决的主要问题：
 
-建议后续进一步收敛为：
+- CLI 之前会无条件等待 stdin，非交互运行体验不正确
+- interactive mode 之前只是壳层，没有真正接入 manager
+- `request.rs` 之前仍然把 job/segment 请求混在同一个文件
+- README 和 `--help` 与实际实现不一致
 
-- `protocol_probe`
-- `job_prepare`
-- `storage model`
-- `recovery layer`
-- `worker runtime`
+## 4. 当前状态
 
-### 5.2 持久化层命名和模型还未真正重构
+截至当前，主干架构重构已经基本收尾。
 
-虽然对外已经补了 `storage` 命名空间，但内部仍然主要是：
+已经完成的核心收口：
 
-- `persistence.rs`
-- `repository/*`
+- `manager`、`task`、`worker`、`persistence/storage` 的职责边界已经明显清晰
+- 恢复规则和存储映射已经从协调器与存储门面中拆出
+- worker 运行时已经拆成 facade / runtime / transfer / retry 四层
+- `request` 模型已经拆成 job request 与 segment request
+- CLI、interactive mode、README、`--help` 已经和当前实现基本对齐
+- 自动化验证已经覆盖单元测试、恢复测试、真实下载集成测试、限速集成测试
 
-还没有做的事：
+## 5. 仍可继续优化的点
 
-- 统一 `storage` 层命名
-- 梳理 task/worker/checksum 的主键与关联关系
-- 修正持久化模型和恢复模型之间的边界
+这些已经不再是主干架构重构的阻塞项，更偏后续增强：
 
-### 5.3 `request.rs` 仍然偏杂
+- `PersistenceType::JsonFile(...)` 仍未实现
+- `persistence.rs` 的内部命名仍带有历史痕迹，如果要进一步统一，可以继续向 `storage` 命名收口
+- [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job_prepare.rs:1) 仍然兼有目录准备、文件策略和协议结果消费，后续还可以再细拆
+- interactive mode 目前是全局命令，不是按 task 粒度控制
 
-当前 `DownloadTaskRequest` 和 `DownloadWorkerRequest` 还混在一个文件里，后续可以考虑：
+## 6. 当前判断
 
-- job request
-- segment request
-- builder
+截至 2026-04-15，重构工作已经完成了十二轮，当前可以认为：
 
-分开组织。
-
-### 5.4 `main.rs` 仍然有 CLI 与交互壳逻辑
-
-虽然 `main.rs` 比之前清爽很多，但还没完成的点包括：
-
-- interactive mode 真实接线
-- CLI 参数与配置覆盖策略统一
-- 帮助信息与 README 对齐
-
-### 5.5 协议正确性主干已建立，但运行时与恢复验证还未完全收口
-
-目前还没做完的关键结构性工作：
-
-- 让 `rate_limit_kbps` 这类配置真正影响运行时行为
-- 为 worker 的 I/O 错误和协议错误补更细的分类
-- 为跨进程恢复补更完整的端到端验证
-- 为 recovery/storage 边界补更靠近真实场景的集成测试
-
-这部分会直接决定“恢复后是否真的能稳定继续下载”。
-
-## 6. 当前未重构但高优先级的问题
-
-这些问题不是“结构还不够漂亮”，而是会影响正确性和稳定性：
-
-- 断点续传仍未真正闭环
-- 恢复路径虽然已模块化，但还缺端到端验证来证明规则真的可靠
-- worker 运行时职责仍然偏杂，出错路径较难继续收紧
-- CLI/README 仍然存在偏差
-- 测试覆盖仍然很薄
-
-## 7. 下一阶段重构计划
-
-### 阶段 A：继续拆 `task.rs`
-
-目标：
-
-- 让 `DownloadJob` 成为真正的作业门面，而不是 God object
-
-计划：
-
-- 拆 worker 生命周期与 worker 集合管理
-- 拆作业状态流转
-- 拆作业重置/删除逻辑
-- 拆作业持久化辅助逻辑
-
-状态：
-
-- 已完成
-- 当前 `task.rs` 已收敛为门面层，后续不再优先做表面拆分
-
-### 阶段 B：重构协议探测与下载正确性层
-
-目标：
-
-- 先让下载行为正确，再谈恢复与优化
-
-计划：
-
-- 独立 range 能力探测
-- 校验 `206` 与 `Content-Range`
-- 明确单线程退化路径
-- 明确分块下载允许条件
-
-状态：
-
-- 已完成第一阶段
-- 已完成第二阶段
-- 仍需继续接入限速与补齐 worker 端到端验证
-
-### 阶段 C：重构存储模型
-
-目标：
-
-- 让恢复逻辑可信
-
-计划：
-
-- 统一 task/worker/checksum 的主键与关联设计
-- 校正 sqlite 时间字段处理
-- 修正 memory backend 的冲突问题
-- 为恢复路径补集成测试
-
-状态：
-
-- 已完成第一阶段
-- 已完成第二阶段
-- 已完成第三阶段
-- 仍需继续补 recovery/storage 的集成测试与对外命名收口
-
-### 阶段 D：补测试
-
-目标：
-
-- 让重构后可以稳定迭代
-
-计划：
-
-- chunk 规划单测
-- job_prepare 单测
-- finalize 单测
-- manager/coordinator 行为测试
-- 模拟 server 的集成测试
-
-### 阶段 E：整理用户层体验
-
-目标：
-
-- 让 CLI 和文档一致
-
-计划：
-
-- 清理 interactive mode 接线
-- 对齐 README 与实际实现
-- 明确实验性能力和正式能力
-
-## 8. 当前建议的推进顺序
-
-建议按照下面顺序继续：
-
-1. 补 worker 与恢复路径的端到端测试
-2. 接上 `rate_limit_kbps` 和更细的运行时错误分类
-3. 最后再收 CLI/README/交互体验
-
-原因：
-
-- 当前最大的结构复杂度已经从 `task.rs` 转移到了 worker runtime 的剩余细节和缺失的恢复集成验证
-- 当前最大的正确性风险仍然在协议层和恢复层
-- 如果先做 UI 或 CLI 体验，只会把错误行为包装得更漂亮
-
-## 9. 文档维护规则
-
-从现在开始，每一轮重构都应该更新本文件：
-
-- 写明本轮提交号
-- 写明本轮改了哪些模块
-- 写明本轮没有改哪些问题
-- 写明下一轮计划
-
-这样能保证重构过程可回顾、可中断、可接续。
-
-## 10. 当前判断
-
-截至 2026-04-15，重构工作已经完成了九轮，当前可以认为：
-
-- 对外命名和主干分层已经开始稳定
-- `manager.rs` 的结构性压力已经明显下降
-- `task.rs` 已经从复杂度中心退回到门面层
-- `protocol_probe.rs` 已经补齐，存储后端的主键/时间模型也更稳定了
-- `worker.rs`、`coordinator_registry.rs`、`persistence.rs` 都已经明显瘦身，恢复规则和存储映射也开始独立
-- 当前更需要优先补的是恢复/运行时的真实场景验证，而不只是继续拆文件
-- 协议正确性和持久化一致性仍是最需要优先解决的稳定性问题
-
-因此，下一轮不建议再做表面命名调整，而应该直接进入恢复链路与 worker runtime 的端到端测试和运行时行为补齐。
+- 主干架构重构已经完成
+- 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态
+- 项目从“原型结构”推进到了“有清晰边界和回归基线的可演进结构”
+- 后续更值得投入的是功能增强和体验优化，而不是继续大规模拆主干文件

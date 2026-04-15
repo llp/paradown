@@ -31,6 +31,18 @@ impl fmt::Display for DownloadStatus {
     }
 }
 
+impl DownloadStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            DownloadStatus::Completed
+                | DownloadStatus::Canceled
+                | DownloadStatus::Failed(_)
+                | DownloadStatus::Deleted
+        )
+    }
+}
+
 impl FromStr for DownloadStatus {
     type Err = ();
 

@@ -278,6 +278,7 @@ async fn reset_missing_file_state(job: &Arc<Task>) -> Result<(), Error> {
 
 async fn reset_resume_state(job: &Arc<Task>) -> Result<(), Error> {
     job.downloaded_size.store(0, Ordering::Relaxed);
+    job.reset_piece_progress().await;
     job.clear_task_workers().await?;
     job.purge_task_workers().await?;
     Ok(())

@@ -1,6 +1,8 @@
 use crate::Error;
 use crate::repository::contract::Repository;
-use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
+use crate::repository::models::{
+    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{Row, SqlitePool};
@@ -75,6 +77,20 @@ impl SqliteRepository {
                 status TEXT DEFAULT 'Pending',
                 updated_at TEXT DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 UNIQUE(task_id, "index")                    -- 确保同一任务内部 index 唯一
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS download_pieces (
+                task_id INTEGER NOT NULL,
+                piece_index INTEGER NOT NULL,
+                completed BOOLEAN DEFAULT 0,
+                updated_at TEXT DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(task_id, piece_index)
             );
             "#,
         )
@@ -303,6 +319,60 @@ impl Repository for SqliteRepository {
         Ok(())
     }
 
+    async fn load_pieces(&self, task_id: u32) -> Result<Vec<DBDownloadPiece>, Error> {
+        let rows = sqlx::query(
+            "SELECT * FROM download_pieces WHERE task_id = ?1 ORDER BY piece_index",
+        )
+        .bind(task_id)
+        .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| DBDownloadPiece {
+                task_id: r.get("task_id"),
+                piece_index: r.get::<i64, _>("piece_index") as u32,
+                completed: r.get::<i64, _>("completed") != 0,
+                updated_at: r
+                    .try_get::<String, _>("updated_at")
+                    .ok()
+                    .and_then(|s| parse_db_datetime(&s)),
+            })
+            .collect())
+    }
+
+    async fn save_pieces(&self, task_id: u32, pieces: &[DBDownloadPiece]) -> Result<(), Error> {
+        sqlx::query("DELETE FROM download_pieces WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&*self.pool)
+            .await?;
+
+        for piece in pieces {
+            sqlx::query(
+                r#"
+                INSERT INTO download_pieces (task_id, piece_index, completed, updated_at)
+                VALUES (?1, ?2, ?3, COALESCE(?4, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                "#,
+            )
+            .bind(piece.task_id)
+            .bind(piece.piece_index)
+            .bind(if piece.completed { 1 } else { 0 })
+            .bind(piece.updated_at.map(|dt| dt.to_rfc3339()))
+            .execute(&*self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_pieces(&self, task_id: u32) -> Result<(), Error> {
+        sqlx::query("DELETE FROM download_pieces WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&*self.pool)
+            .await?;
+        Ok(())
+    }
+
     // ---------------- Checksum ----------------
     async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error> {
         let rows = sqlx::query("SELECT * FROM download_checksums WHERE task_id = ?1")
@@ -421,7 +491,7 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
 mod tests {
     use super::SqliteRepository;
     use crate::repository::contract::Repository;
-    use crate::repository::models::DBDownloadTask;
+    use crate::repository::models::{DBDownloadPiece, DBDownloadTask};
     use chrono::{TimeZone, Utc};
     use tempfile::tempdir;
 
@@ -515,5 +585,40 @@ mod tests {
         assert_eq!(loaded.downloaded_size, 512);
         assert_eq!(loaded.created_at, Some(created_at));
         assert_eq!(loaded.updated_at, Some(updated_at));
+    }
+
+    #[tokio::test]
+    async fn round_trips_piece_state_snapshots() {
+        let tempdir = tempdir().unwrap();
+        let db_path = tempdir.path().join("paradown-pieces.db");
+        let repository = SqliteRepository::new(&db_path).await.unwrap();
+
+        repository
+            .save_pieces(
+                9,
+                &[
+                    DBDownloadPiece {
+                        task_id: 9,
+                        piece_index: 1,
+                        completed: true,
+                        updated_at: None,
+                    },
+                    DBDownloadPiece {
+                        task_id: 9,
+                        piece_index: 2,
+                        completed: false,
+                        updated_at: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let pieces = repository.load_pieces(9).await.unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].piece_index, 1);
+        assert!(pieces[0].completed);
+        assert_eq!(pieces[1].piece_index, 2);
+        assert!(!pieces[1].completed);
     }
 }

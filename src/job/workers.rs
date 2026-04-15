@@ -77,10 +77,19 @@ impl Task {
         file_path: &Arc<PathBuf>,
     ) -> Result<Vec<Arc<Worker>>, Error> {
         let created_at = Utc::now();
+        let manifest = self
+            .manifest
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| Error::Other(format!("Task {} manifest not initialized", self.id)))?;
+        let piece_states = self.piece_states.read().await.clone();
         let assignments = self.plan_worker_assignments().await?;
 
         let mut workers = Vec::with_capacity(assignments.len());
         for assignment in assignments {
+            let seeded_downloaded =
+                seeded_downloaded_from_piece_states(&manifest, &piece_states, &assignment);
             let worker = Arc::new(Worker::new(
                 assignment.index,
                 Arc::clone(&self.config),
@@ -89,7 +98,7 @@ impl Task {
                 self.spec.clone(),
                 assignment.start,
                 assignment.end,
-                Some(0),
+                Some(seeded_downloaded),
                 Arc::clone(file_path),
                 Some(Status::Pending),
                 Arc::clone(&self.stats),
@@ -313,5 +322,85 @@ impl Task {
             }
         }
         true
+    }
+}
+
+fn seeded_downloaded_from_piece_states(
+    manifest: &crate::domain::SessionManifest,
+    piece_states: &[crate::domain::PieceState],
+    assignment: &PieceAssignment,
+) -> u64 {
+    let mut downloaded = 0u64;
+
+    for piece in manifest
+        .pieces
+        .iter()
+        .filter(|piece| piece.piece_index >= assignment.piece_start)
+        .filter(|piece| piece.piece_index <= assignment.piece_end)
+    {
+        let completed = piece_states
+            .iter()
+            .find(|state| state.piece_index == piece.piece_index)
+            .map(|state| state.completed)
+            .unwrap_or(false);
+        if !completed {
+            break;
+        }
+        downloaded = downloaded.saturating_add(piece.length as u64);
+    }
+
+    downloaded.min(
+        assignment
+            .end
+            .saturating_sub(assignment.start)
+            .saturating_add(1),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::seeded_downloaded_from_piece_states;
+    use crate::domain::{DownloadSpec, PieceState, SessionManifest};
+    use crate::scheduler::planner::PieceAssignment;
+    use std::path::PathBuf;
+
+    #[test]
+    fn seeds_worker_progress_from_contiguous_completed_pieces() {
+        let manifest = SessionManifest::for_single_file_with_piece_size(
+            DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+            "archive.bin".into(),
+            PathBuf::from("/tmp/archive.bin"),
+            12,
+            4,
+            Vec::new(),
+        );
+        let piece_states = vec![
+            PieceState {
+                piece_index: 0,
+                completed: true,
+            },
+            PieceState {
+                piece_index: 1,
+                completed: true,
+            },
+            PieceState {
+                piece_index: 2,
+                completed: false,
+            },
+        ];
+
+        let downloaded = seeded_downloaded_from_piece_states(
+            &manifest,
+            &piece_states,
+            &PieceAssignment {
+                index: 0,
+                piece_start: 0,
+                piece_end: 2,
+                start: 0,
+                end: 11,
+            },
+        );
+
+        assert_eq!(downloaded, 8);
     }
 }

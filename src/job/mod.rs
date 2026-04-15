@@ -86,6 +86,7 @@ impl Task {
         file_name: Option<String>,
         file_path: Option<String>,
         resource_identity: Option<HttpResourceIdentity>,
+        piece_states: Option<Vec<PieceState>>,
         status: Option<Status>,
         downloaded_size: Option<u64>,
         total_size: Option<u64>,
@@ -120,7 +121,7 @@ impl Task {
             http_resource_identity: RwLock::new(resource_identity.unwrap_or_default()),
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
-            piece_states: RwLock::new(Vec::new()),
+            piece_states: RwLock::new(piece_states.unwrap_or_default()),
             payload_store: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
@@ -286,7 +287,13 @@ impl Task {
         manifest: SessionManifest,
     ) -> Arc<PayloadStore> {
         let payload_store = Arc::new(PayloadStore::new(&manifest));
-        let piece_states = initialize_piece_states(&manifest.pieces);
+        let existing_piece_states = self.piece_states.read().await.clone();
+        let mut piece_states = initialize_piece_states(&manifest.pieces);
+        if piece_state_layout_matches(&piece_states, &existing_piece_states) {
+            for (next, restored) in piece_states.iter_mut().zip(existing_piece_states.iter()) {
+                next.completed = restored.completed;
+            }
+        }
         *self.manifest.write().await = Some(manifest);
         *self.piece_states.write().await = piece_states;
         *self.payload_store.write().await = Some(Arc::clone(&payload_store));
@@ -315,6 +322,17 @@ impl Task {
         *self.http_resource_identity.write().await = identity;
     }
 
+    pub(crate) async fn piece_states_snapshot(&self) -> Vec<PieceState> {
+        self.piece_states.read().await.clone()
+    }
+
+    pub(crate) async fn reset_piece_progress(&self) {
+        let mut piece_states = self.piece_states.write().await;
+        for piece in piece_states.iter_mut() {
+            piece.completed = false;
+        }
+    }
+
     pub(crate) async fn resume_validator(&self) -> Option<String> {
         self.http_resource_identity
             .read()
@@ -332,7 +350,15 @@ impl Task {
             })?;
         let workers = self.workers.read().await.clone();
 
-        let mut piece_states = initialize_piece_states(&manifest.pieces);
+        let existing_piece_states = self.piece_states.read().await.clone();
+        let mut piece_states = if piece_state_layout_matches(
+            &initialize_piece_states(&manifest.pieces),
+            &existing_piece_states,
+        ) {
+            existing_piece_states
+        } else {
+            initialize_piece_states(&manifest.pieces)
+        };
         let mut downloaded = 0u64;
 
         for worker in workers {
@@ -379,6 +405,14 @@ impl Task {
                 .store(manifest.total_size, Ordering::Relaxed);
         }
     }
+}
+
+fn piece_state_layout_matches(expected: &[PieceState], restored: &[PieceState]) -> bool {
+    expected.len() == restored.len()
+        && expected
+            .iter()
+            .zip(restored.iter())
+            .all(|(expected, restored)| expected.piece_index == restored.piece_index)
 }
 
 impl fmt::Debug for Task {

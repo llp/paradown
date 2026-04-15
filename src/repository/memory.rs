@@ -1,6 +1,8 @@
 use super::contract::Repository;
 use crate::Error;
-use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
+use crate::repository::models::{
+    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +12,7 @@ use tokio::sync::RwLock;
 pub struct MemoryRepository {
     tasks: Arc<RwLock<HashMap<u32, DBDownloadTask>>>,
     workers: Arc<RwLock<HashMap<(u32, u32), DBDownloadWorker>>>,
+    pieces: Arc<RwLock<HashMap<(u32, u32), DBDownloadPiece>>>,
     checksums: Arc<RwLock<HashMap<(u32, String), DBDownloadChecksum>>>,
 }
 
@@ -18,6 +21,7 @@ impl MemoryRepository {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             workers: Arc::new(RwLock::new(HashMap::new())),
+            pieces: Arc::new(RwLock::new(HashMap::new())),
             checksums: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -47,6 +51,9 @@ impl Repository for MemoryRepository {
         // 删除关联 workers
         let mut workers = self.workers.write().await;
         workers.retain(|_, w| w.task_id != task_id);
+
+        let mut pieces = self.pieces.write().await;
+        pieces.retain(|_, piece| piece.task_id != task_id);
 
         // 删除关联 checksums
         let mut checksums = self.checksums.write().await;
@@ -92,6 +99,34 @@ impl Repository for MemoryRepository {
     async fn delete_workers(&self, task_id: u32) -> Result<(), Error> {
         let mut workers = self.workers.write().await;
         workers.retain(|_, w| w.task_id != task_id);
+        Ok(())
+    }
+
+    async fn load_pieces(&self, task_id: u32) -> Result<Vec<DBDownloadPiece>, Error> {
+        let mut pieces: Vec<_> = self
+            .pieces
+            .read()
+            .await
+            .values()
+            .filter(|piece| piece.task_id == task_id)
+            .cloned()
+            .collect();
+        pieces.sort_by_key(|piece| piece.piece_index);
+        Ok(pieces)
+    }
+
+    async fn save_pieces(&self, task_id: u32, pieces: &[DBDownloadPiece]) -> Result<(), Error> {
+        let mut storage = self.pieces.write().await;
+        storage.retain(|(stored_task_id, _), _| *stored_task_id != task_id);
+        for piece in pieces {
+            storage.insert((task_id, piece.piece_index), piece.clone());
+        }
+        Ok(())
+    }
+
+    async fn delete_pieces(&self, task_id: u32) -> Result<(), Error> {
+        let mut pieces = self.pieces.write().await;
+        pieces.retain(|_, piece| piece.task_id != task_id);
         Ok(())
     }
 

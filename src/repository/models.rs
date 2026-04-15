@@ -30,6 +30,14 @@ pub struct DBDownloadWorker {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DBDownloadPiece {
+    pub task_id: u32,
+    pub piece_index: u32,
+    pub completed: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DBDownloadChecksum {
     pub id: u32,
     pub task_id: u32,

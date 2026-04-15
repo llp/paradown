@@ -74,6 +74,7 @@ pub(crate) async fn add_task_with_workers(
         file_name,
         file_path,
         task_request.resource_identity.clone(),
+        task_request.piece_states.clone(),
         task_request.status,
         task_request.downloaded_size,
         task_request.total_size,

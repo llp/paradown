@@ -1,7 +1,9 @@
 use crate::checksum::{Checksum, ChecksumAlgorithm};
-use crate::domain::{DownloadSpec, HttpResourceIdentity};
+use crate::domain::{DownloadSpec, HttpResourceIdentity, PieceState};
 use crate::job::Task;
-use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
+use crate::repository::models::{
+    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+};
 use crate::request::{SegmentRequest, TaskRequest};
 use crate::status::Status;
 use crate::worker::Worker;
@@ -86,6 +88,7 @@ pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> Checksum {
 
 pub(crate) fn db_task_to_request(
     task: &DBDownloadTask,
+    pieces: &[DBDownloadPiece],
     checksums: &[DBDownloadChecksum],
 ) -> TaskRequest {
     TaskRequest {
@@ -100,6 +103,7 @@ pub(crate) fn db_task_to_request(
             entity_tag: normalized_text_field(&task.entity_tag),
             last_modified: normalized_text_field(&task.last_modified),
         }),
+        piece_states: Some(db_pieces_to_piece_states(pieces)),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
@@ -107,6 +111,30 @@ pub(crate) fn db_task_to_request(
         created_at: task.created_at.clone(),
         updated_at: task.updated_at.clone(),
     }
+}
+
+pub(crate) fn piece_states_to_db(task_id: u32, piece_states: &[PieceState]) -> Vec<DBDownloadPiece> {
+    piece_states
+        .iter()
+        .map(|piece| DBDownloadPiece {
+            task_id,
+            piece_index: piece.piece_index,
+            completed: piece.completed,
+            updated_at: None,
+        })
+        .collect()
+}
+
+pub(crate) fn db_pieces_to_piece_states(pieces: &[DBDownloadPiece]) -> Vec<PieceState> {
+    let mut pieces = pieces.to_vec();
+    pieces.sort_by_key(|piece| piece.piece_index);
+    pieces
+        .into_iter()
+        .map(|piece| PieceState {
+            piece_index: piece.piece_index,
+            completed: piece.completed,
+        })
+        .collect()
 }
 
 pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<SegmentRequest> {
@@ -136,8 +164,10 @@ fn normalized_text_field(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_task_to_request, db_workers_to_requests};
-    use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
+    use super::{db_task_to_request, db_pieces_to_piece_states, db_workers_to_requests};
+    use crate::repository::models::{
+        DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    };
     use crate::status::Status;
 
     #[test]
@@ -157,6 +187,12 @@ mod tests {
                 created_at: None,
                 updated_at: None,
             },
+            &[DBDownloadPiece {
+                task_id: 7,
+                piece_index: 0,
+                completed: true,
+                updated_at: None,
+            }],
             &[DBDownloadChecksum {
                 id: 0,
                 task_id: 7,
@@ -178,6 +214,7 @@ mod tests {
         );
         assert!(matches!(request.status, Some(Status::Pending)));
         assert_eq!(request.checksums.as_ref().map(Vec::len), Some(1));
+        assert_eq!(request.piece_states.as_ref().map(Vec::len), Some(1));
     }
 
     #[test]
@@ -198,5 +235,28 @@ mod tests {
         assert_eq!(workers[0].index, 1);
         assert_eq!(workers[0].downloaded, Some(25));
         assert_eq!(workers[0].status.as_deref(), Some("Paused"));
+    }
+
+    #[test]
+    fn normalizes_piece_states_from_storage_order() {
+        let pieces = db_pieces_to_piece_states(&[
+            DBDownloadPiece {
+                task_id: 1,
+                piece_index: 2,
+                completed: false,
+                updated_at: None,
+            },
+            DBDownloadPiece {
+                task_id: 1,
+                piece_index: 1,
+                completed: true,
+                updated_at: None,
+            },
+        ]);
+
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].piece_index, 1);
+        assert!(pieces[0].completed);
+        assert_eq!(pieces[1].piece_index, 2);
     }
 }

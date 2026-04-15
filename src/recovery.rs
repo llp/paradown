@@ -22,9 +22,10 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
     let StoredBundle {
         task,
         workers,
+        pieces,
         checksums,
     } = bundle;
-    let mut task_request = db_task_to_request(&task, &checksums);
+    let mut task_request = db_task_to_request(&task, &pieces, &checksums);
     let worker_requests = db_workers_to_requests(&workers);
 
     let mut restored_status =
@@ -39,6 +40,7 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
             task.id
         );
         restored_status = Status::Pending;
+        task_request.piece_states = Some(Vec::new());
     }
 
     let sanitized_workers = if matches!(restored_status, Status::Paused) && file_state.exists {
@@ -47,7 +49,10 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
         Vec::new()
     };
 
-    if matches!(restored_status, Status::Paused) && sanitized_workers.is_empty() {
+    if matches!(restored_status, Status::Paused)
+        && sanitized_workers.is_empty()
+        && !has_restorable_piece_state(&task_request)
+    {
         warn!(
             "[Restore Task {}] No trustworthy worker state found, downgrading to Pending",
             task.id
@@ -70,8 +75,15 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
                 .map(|worker| worker.end.saturating_add(1))
                 .max();
         }
-    } else if !file_state.exists || !matches!(task_request.status, Some(Status::Completed)) {
+    } else if !file_state.exists
+        || (!matches!(task_request.status, Some(Status::Completed))
+            && !has_restorable_piece_state(&task_request))
+    {
         task_request.downloaded_size = Some(0);
+    }
+
+    if !file_state.exists {
+        task_request.piece_states = Some(Vec::new());
     }
 
     RestorePlan {
@@ -82,6 +94,13 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
             Some(sanitized_workers)
         },
     }
+}
+
+fn has_restorable_piece_state(task_request: &TaskRequest) -> bool {
+    task_request
+        .piece_states
+        .as_ref()
+        .is_some_and(|pieces| pieces.iter().any(|piece| piece.completed))
 }
 
 fn normalize_restored_status(status: Status) -> Status {
@@ -259,6 +278,7 @@ mod tests {
                 status: "Running".into(),
                 updated_at: None,
             }],
+            pieces: vec![],
             checksums: vec![],
         });
 
@@ -310,6 +330,7 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            pieces: vec![],
             checksums: vec![DBDownloadChecksum {
                 id: 0,
                 task_id: 2,
@@ -372,6 +393,7 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            pieces: vec![],
             checksums: vec![],
         });
 
@@ -402,6 +424,7 @@ mod tests {
                 updated_at: None,
             },
             workers: vec![],
+            pieces: vec![],
             checksums: vec![],
         });
 
@@ -409,5 +432,43 @@ mod tests {
         assert!(workers.is_none());
         assert!(matches!(task_request.status, Some(Status::Pending)));
         assert_eq!(task_request.downloaded_size, Some(0));
+    }
+
+    #[test]
+    fn keeps_paused_restore_when_piece_state_can_rebuild_progress() {
+        let file = NamedTempFile::new().unwrap();
+        let file_path = file.path().to_string_lossy().to_string();
+
+        let plan = build_restore_plan(StoredBundle {
+            task: DBDownloadTask {
+                id: 5,
+                url: "https://example.com/pieces.bin".into(),
+                resolved_url: "".into(),
+                entity_tag: "\"etag-a\"".into(),
+                last_modified: "".into(),
+                file_name: "pieces.bin".into(),
+                file_path,
+                status: "Paused".into(),
+                downloaded_size: 32,
+                total_size: Some(64),
+                created_at: None,
+                updated_at: None,
+            },
+            workers: vec![],
+            pieces: vec![crate::repository::models::DBDownloadPiece {
+                task_id: 5,
+                piece_index: 0,
+                completed: true,
+                updated_at: None,
+            }],
+            checksums: vec![],
+        });
+
+        let (task_request, workers) = plan.into_parts();
+        assert!(workers.is_none());
+        assert!(matches!(task_request.status, Some(Status::Paused)));
+        assert_eq!(task_request.downloaded_size, Some(32));
+        assert_eq!(task_request.piece_states.as_ref().map(Vec::len), Some(1));
+        assert!(task_request.piece_states.unwrap()[0].completed);
     }
 }

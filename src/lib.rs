@@ -9,6 +9,9 @@ mod job_storage;
 mod job_workers;
 mod protocol_probe;
 mod runtime;
+mod worker_retry;
+mod worker_runtime;
+mod worker_transfer;
 
 pub mod checksum;
 pub mod cli;

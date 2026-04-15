@@ -1,6 +1,7 @@
 pub use crate::coordinator::Manager;
 pub use crate::domain::{
-    DownloadSpec, FileManifest, PieceBlock, PieceLayout, PieceState, SessionManifest,
+    DownloadSpec, FileManifest, HttpResourceIdentity, PieceBlock, PieceLayout, PieceState,
+    SessionManifest,
 };
 pub use crate::events::Event;
 pub use crate::job::{Task, TaskSnapshot};

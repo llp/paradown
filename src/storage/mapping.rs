@@ -1,5 +1,5 @@
 use crate::checksum::{Checksum, ChecksumAlgorithm};
-use crate::domain::DownloadSpec;
+use crate::domain::{DownloadSpec, HttpResourceIdentity};
 use crate::job::Task;
 use crate::repository::models::{DBDownloadChecksum, DBDownloadTask, DBDownloadWorker};
 use crate::request::{SegmentRequest, TaskRequest};
@@ -17,10 +17,14 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
         .unwrap_or_default();
     let file_name = task.file_name.get().cloned().unwrap_or_default();
     let updated_at = task.updated_at.lock().await.clone();
+    let resource_identity = task.http_resource_identity().await;
 
     DBDownloadTask {
         id: task.id,
         url: task.spec.locator().to_string(),
+        resolved_url: resource_identity.resolved_url.unwrap_or_default(),
+        entity_tag: resource_identity.entity_tag.unwrap_or_default(),
+        last_modified: resource_identity.last_modified.unwrap_or_default(),
         file_name,
         file_path,
         status: task.status.lock().await.to_string(),
@@ -91,6 +95,11 @@ pub(crate) fn db_task_to_request(
         }),
         file_name: normalized_text_field(&task.file_name),
         file_path: normalized_text_field(&task.file_path),
+        resource_identity: Some(HttpResourceIdentity {
+            resolved_url: normalized_text_field(&task.resolved_url),
+            entity_tag: normalized_text_field(&task.entity_tag),
+            last_modified: normalized_text_field(&task.last_modified),
+        }),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
@@ -137,6 +146,9 @@ mod tests {
             &DBDownloadTask {
                 id: 7,
                 url: "https://example.com/file.bin".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
                 file_name: "   ".into(),
                 file_path: "".into(),
                 status: "Unknown".into(),
@@ -157,6 +169,13 @@ mod tests {
 
         assert_eq!(request.file_name, None);
         assert_eq!(request.file_path, None);
+        assert_eq!(
+            request
+                .resource_identity
+                .as_ref()
+                .and_then(|identity| identity.entity_tag.clone()),
+            None
+        );
         assert!(matches!(request.status, Some(Status::Pending)));
         assert_eq!(request.checksums.as_ref().map(Vec::len), Some(1));
     }

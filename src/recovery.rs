@@ -238,6 +238,9 @@ mod tests {
             task: DBDownloadTask {
                 id: 1,
                 url: "https://example.com/file.bin".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
                 file_name: "file.bin".into(),
                 file_path: "/tmp/missing-file.bin".into(),
                 status: "Running".into(),
@@ -274,6 +277,9 @@ mod tests {
             task: DBDownloadTask {
                 id: 2,
                 url: "https://example.com/archive.iso".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
                 file_name: "archive.iso".into(),
                 file_path: file_path.clone(),
                 status: "Paused".into(),
@@ -333,6 +339,9 @@ mod tests {
             task: DBDownloadTask {
                 id: 3,
                 url: "https://example.com/video.mp4".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
                 file_name: "video.mp4".into(),
                 file_path,
                 status: "Paused".into(),
@@ -381,6 +390,9 @@ mod tests {
             task: DBDownloadTask {
                 id: 4,
                 url: "https://example.com/release.tar".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
                 file_name: "release.tar".into(),
                 file_path: file.path().to_string_lossy().to_string(),
                 status: "Completed".into(),

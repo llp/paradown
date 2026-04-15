@@ -5,6 +5,9 @@ use sqlx::types::chrono::{DateTime, Utc};
 pub struct DBDownloadTask {
     pub id: u32,
     pub url: String,
+    pub resolved_url: String,
+    pub entity_tag: String,
+    pub last_modified: String,
     pub file_name: String,
     pub file_path: String,
     pub status: String, // Pending / Running / Paused / Completed / Failed

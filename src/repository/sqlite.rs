@@ -46,6 +46,9 @@ impl SqliteRepository {
             CREATE TABLE IF NOT EXISTS download_tasks (
                 id INTEGER PRIMARY KEY,
                 url TEXT UNIQUE NOT NULL,
+                resolved_url TEXT,
+                entity_tag TEXT,
+                last_modified TEXT,
                 file_name TEXT NOT NULL,
                 file_path TEXT,
                 status TEXT NOT NULL,
@@ -58,6 +61,7 @@ impl SqliteRepository {
         )
         .execute(&pool)
         .await?;
+        ensure_download_task_columns(&pool).await?;
 
         sqlx::query(
             r#"
@@ -112,6 +116,9 @@ impl Repository for SqliteRepository {
             .map(|row| DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                resolved_url: row.try_get("resolved_url").unwrap_or_default(),
+                entity_tag: row.try_get("entity_tag").unwrap_or_default(),
+                last_modified: row.try_get("last_modified").unwrap_or_default(),
                 file_name: row.get("file_name"),
                 file_path: row.get("file_path"),
                 status: row.get("status"),
@@ -141,6 +148,9 @@ impl Repository for SqliteRepository {
             Ok(Some(DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                resolved_url: row.try_get("resolved_url").unwrap_or_default(),
+                entity_tag: row.try_get("entity_tag").unwrap_or_default(),
+                last_modified: row.try_get("last_modified").unwrap_or_default(),
                 file_name: row.get("file_name"),
                 file_path: row.get("file_path"),
                 status: row.get("status"),
@@ -164,11 +174,14 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
-                (id, url, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+                (id, url, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?9, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
             ON CONFLICT(id) DO UPDATE SET
                 url=excluded.url,
+                resolved_url=excluded.resolved_url,
+                entity_tag=excluded.entity_tag,
+                last_modified=excluded.last_modified,
                 file_name=excluded.file_name,
                 file_path=excluded.file_path,
                 status=excluded.status,
@@ -179,6 +192,9 @@ impl Repository for SqliteRepository {
         )
             .bind(task.id)
             .bind(&task.url)
+            .bind(&task.resolved_url)
+            .bind(&task.entity_tag)
+            .bind(&task.last_modified)
             .bind(&task.file_name)
             .bind(&task.file_path)
             .bind(&task.status)
@@ -374,6 +390,33 @@ fn parse_db_datetime(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
+    let existing_columns: Vec<String> = sqlx::query("PRAGMA table_info(download_tasks)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+
+    for (column, definition) in [
+        ("resolved_url", "TEXT"),
+        ("entity_tag", "TEXT"),
+        ("last_modified", "TEXT"),
+    ] {
+        if existing_columns.iter().any(|name| name == column) {
+            continue;
+        }
+
+        sqlx::query(&format!(
+            "ALTER TABLE download_tasks ADD COLUMN {column} {definition}"
+        ))
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqliteRepository;
@@ -393,6 +436,9 @@ mod tests {
         let task = DBDownloadTask {
             id: 42,
             url: "https://example.com/file.bin".into(),
+            resolved_url: "https://cdn.example.com/file.bin".into(),
+            entity_tag: "\"etag-42\"".into(),
+            last_modified: "Tue, 15 Apr 2026 12:00:00 GMT".into(),
             file_name: "file.bin".into(),
             file_path: "/tmp/file.bin".into(),
             status: "Paused".into(),
@@ -407,6 +453,9 @@ mod tests {
         let loaded = repository.load_task(42).await.unwrap().unwrap();
         assert_eq!(loaded.id, 42);
         assert_eq!(loaded.url, task.url);
+        assert_eq!(loaded.resolved_url, task.resolved_url);
+        assert_eq!(loaded.entity_tag, task.entity_tag);
+        assert_eq!(loaded.last_modified, task.last_modified);
         assert_eq!(loaded.status, "Paused");
         assert_eq!(loaded.downloaded_size, 128);
         assert_eq!(loaded.total_size, Some(1024));
@@ -425,6 +474,9 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                resolved_url: "https://example.com/archive.tar".into(),
+                entity_tag: "\"etag-a\"".into(),
+                last_modified: "Tue, 15 Apr 2026 10:00:00 GMT".into(),
                 file_name: "archive.tar".into(),
                 file_path: "/tmp/archive.tar".into(),
                 status: "Pending".into(),
@@ -441,6 +493,9 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                resolved_url: "https://cdn.example.com/archive.tar".into(),
+                entity_tag: "\"etag-b\"".into(),
+                last_modified: "Tue, 15 Apr 2026 11:00:00 GMT".into(),
                 file_name: "archive.tar".into(),
                 file_path: "/tmp/archive.tar".into(),
                 status: "Running".into(),
@@ -454,6 +509,8 @@ mod tests {
 
         let loaded = repository.load_task(7).await.unwrap().unwrap();
         assert_eq!(loaded.id, 7);
+        assert_eq!(loaded.resolved_url, "https://cdn.example.com/archive.tar");
+        assert_eq!(loaded.entity_tag, "\"etag-b\"");
         assert_eq!(loaded.status, "Running");
         assert_eq!(loaded.downloaded_size, 512);
         assert_eq!(loaded.created_at, Some(created_at));

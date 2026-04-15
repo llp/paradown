@@ -1,5 +1,5 @@
 use crate::checksum::Checksum;
-use crate::domain::DownloadSpec;
+use crate::domain::{DownloadSpec, HttpResourceIdentity};
 use crate::error::Error;
 use crate::status::Status;
 use chrono::{DateTime, Utc};
@@ -11,6 +11,7 @@ pub struct TaskRequest {
     pub spec: DownloadSpec,
     pub file_name: Option<String>,
     pub file_path: Option<String>,
+    pub resource_identity: Option<HttpResourceIdentity>,
     pub checksums: Option<Vec<Checksum>>,
     pub status: Option<Status>,
     pub downloaded_size: Option<u64>,
@@ -26,6 +27,7 @@ impl TaskRequest {
             spec,
             file_name: None,
             file_path: None,
+            resource_identity: None,
             checksums: Some(Vec::new()),
             status: None,
             downloaded_size: None,
@@ -49,6 +51,7 @@ pub struct TaskRequestBuilder {
     spec: DownloadSpec,
     file_name: Option<String>,
     file_path: Option<String>,
+    resource_identity: Option<HttpResourceIdentity>,
     checksums: Option<Vec<Checksum>>,
     status: Option<Status>,
     downloaded_size: Option<u64>,
@@ -75,6 +78,11 @@ impl TaskRequestBuilder {
 
     pub fn checksums(mut self, checksums: Vec<Checksum>) -> Self {
         self.checksums = Some(checksums);
+        self
+    }
+
+    pub fn resource_identity(mut self, identity: HttpResourceIdentity) -> Self {
+        self.resource_identity = Some(identity);
         self
     }
 
@@ -109,6 +117,7 @@ impl TaskRequestBuilder {
             spec: self.spec,
             file_name: self.file_name,
             file_path: self.file_path,
+            resource_identity: self.resource_identity,
             checksums: self.checksums,
             status: self.status,
             downloaded_size: self.downloaded_size,

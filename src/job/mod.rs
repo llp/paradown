@@ -10,8 +10,8 @@ use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
 use crate::domain::{
-    DownloadSpec, PieceState, SessionManifest, completed_piece_count, initialize_piece_states,
-    mark_completed_pieces,
+    DownloadSpec, HttpResourceIdentity, PieceState, SessionManifest, completed_piece_count,
+    file_name_hint_from_locator, initialize_piece_states, mark_completed_pieces,
 };
 use crate::error::Error;
 use crate::events::Event;
@@ -35,6 +35,7 @@ pub struct Task {
     pub status: Mutex<Status>,
     pub file_name: OnceCell<String>,
     pub file_path: Arc<OnceCell<PathBuf>>,
+    http_resource_identity: RwLock<HttpResourceIdentity>,
     pub checksums: Mutex<Vec<Checksum>>,
     manifest: RwLock<Option<SessionManifest>>,
     piece_states: RwLock<Vec<PieceState>>,
@@ -84,6 +85,7 @@ impl Task {
         spec: DownloadSpec,
         file_name: Option<String>,
         file_path: Option<String>,
+        resource_identity: Option<HttpResourceIdentity>,
         status: Option<Status>,
         downloaded_size: Option<u64>,
         total_size: Option<u64>,
@@ -115,6 +117,7 @@ impl Task {
             spec,
             file_name: file_name_cell,
             file_path: file_path_cell,
+            http_resource_identity: RwLock::new(resource_identity.unwrap_or_default()),
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
             piece_states: RwLock::new(Vec::new()),
@@ -229,10 +232,33 @@ impl Task {
         }
 
         let file_name = self
-            .spec
-            .file_name_hint()
+            .http_resource_identity
+            .try_read()
+            .ok()
+            .and_then(|identity| identity.resolved_url.clone())
+            .and_then(|url| file_name_hint_from_locator(&url))
+            .or_else(|| self.spec.file_name_hint())
             .unwrap_or_else(|| format!("download_{}.tmp", self.id));
 
+        let _ = self.file_name.set(file_name.clone());
+        file_name
+    }
+
+    pub(crate) fn initialize_file_name(&self, suggested_file_name: Option<String>) -> String {
+        if let Some(file_name) = self.file_name.get() {
+            return file_name.clone();
+        }
+
+        let file_name = suggested_file_name
+            .or_else(|| {
+                self.http_resource_identity
+                    .try_read()
+                    .ok()
+                    .and_then(|identity| identity.resolved_url.clone())
+                    .and_then(|url| file_name_hint_from_locator(&url))
+            })
+            .or_else(|| self.spec.file_name_hint())
+            .unwrap_or_else(|| format!("download_{}.tmp", self.id));
         let _ = self.file_name.set(file_name.clone());
         file_name
     }
@@ -286,6 +312,22 @@ impl Task {
         *self.manifest.write().await = None;
         self.piece_states.write().await.clear();
         *self.payload_store.write().await = None;
+    }
+
+    pub(crate) async fn http_resource_identity(&self) -> HttpResourceIdentity {
+        self.http_resource_identity.read().await.clone()
+    }
+
+    pub(crate) async fn set_http_resource_identity(&self, identity: HttpResourceIdentity) {
+        *self.http_resource_identity.write().await = identity;
+    }
+
+    pub(crate) async fn resume_validator(&self) -> Option<String> {
+        self.http_resource_identity
+            .read()
+            .await
+            .resume_validator()
+            .map(str::to_string)
     }
 
     pub(crate) async fn sync_piece_progress_from_workers(
@@ -354,6 +396,7 @@ impl fmt::Debug for Task {
             .field("status", &self.status)
             .field("file_name", &self.file_name)
             .field("file_path", &self.file_path)
+            .field("http_resource_identity", &self.http_resource_identity)
             .field("checksums", &self.checksums)
             .field("manifest", &self.manifest)
             .field("piece_states", &self.piece_states)

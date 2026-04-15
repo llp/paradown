@@ -1,11 +1,16 @@
+use crate::domain::HttpResourceIdentity;
 use crate::error::Error;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+use reqwest::header::{
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE,
+};
 use reqwest::{Client, Response, StatusCode};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DownloadProtocolProbe {
     pub total_size: u64,
     pub supports_range_requests: bool,
+    pub resource_identity: HttpResourceIdentity,
+    pub suggested_file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,10 +20,12 @@ pub(crate) struct ContentRange {
     pub total_size: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct HeadProbe {
     total_size: Option<u64>,
     accepts_ranges: bool,
+    resource_identity: HttpResourceIdentity,
+    suggested_file_name: Option<String>,
 }
 
 pub(crate) async fn probe_download_target(
@@ -27,11 +34,13 @@ pub(crate) async fn probe_download_target(
 ) -> Result<DownloadProtocolProbe, Error> {
     let head_probe = probe_with_head(client, url).await?;
 
-    if let Some(head) = head_probe {
+    if let Some(ref head) = head_probe {
         if head.total_size == Some(0) {
             return Ok(DownloadProtocolProbe {
                 total_size: 0,
                 supports_range_requests: head.accepts_ranges,
+                resource_identity: head.resource_identity.clone(),
+                suggested_file_name: head.suggested_file_name.clone(),
             });
         }
     }
@@ -74,6 +83,8 @@ async fn probe_with_head(client: &Client, url: &str) -> Result<Option<HeadProbe>
     Ok(Some(HeadProbe {
         total_size: parse_content_length(response.headers().get(CONTENT_LENGTH))?,
         accepts_ranges: header_accepts_ranges(response.headers().get(ACCEPT_RANGES)),
+        resource_identity: extract_resource_identity(&response)?,
+        suggested_file_name: extract_content_disposition_file_name(&response)?,
     }))
 }
 
@@ -93,20 +104,48 @@ fn probe_with_range_response(
             let total_size = content_range
                 .total_size
                 .ok_or_else(|| Error::Other("Content-Range missing total size".into()))?;
+            let resource_identity = merge_resource_identity(
+                head_probe.as_ref().map(|probe| &probe.resource_identity),
+                &extract_resource_identity(&response)?,
+            );
+            let suggested_file_name =
+                extract_content_disposition_file_name(&response)?.or_else(|| {
+                    head_probe
+                        .as_ref()
+                        .and_then(|probe| probe.suggested_file_name.clone())
+                });
 
             Ok(DownloadProtocolProbe {
                 total_size,
                 supports_range_requests: true,
+                resource_identity,
+                suggested_file_name,
             })
         }
         StatusCode::OK => {
             let total_size = parse_content_length(response.headers().get(CONTENT_LENGTH))?
-                .or_else(|| head_probe.and_then(|probe| probe.total_size))
-                .ok_or_else(|| Error::Other("No Content-Length".into()))?;
+                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size))
+                .ok_or_else(|| {
+                    Error::Other(
+                        "HTTP downloads without Content-Length are not supported yet".into(),
+                    )
+                })?;
+            let resource_identity = merge_resource_identity(
+                head_probe.as_ref().map(|probe| &probe.resource_identity),
+                &extract_resource_identity(&response)?,
+            );
+            let suggested_file_name =
+                extract_content_disposition_file_name(&response)?.or_else(|| {
+                    head_probe
+                        .as_ref()
+                        .and_then(|probe| probe.suggested_file_name.clone())
+                });
 
             Ok(DownloadProtocolProbe {
                 total_size,
                 supports_range_requests: false,
+                resource_identity,
+                suggested_file_name,
             })
         }
         StatusCode::RANGE_NOT_SATISFIABLE => {
@@ -115,12 +154,24 @@ fn probe_with_range_response(
                 .get(CONTENT_RANGE)
                 .and_then(|value| value.to_str().ok())
                 .and_then(parse_unsatisfied_content_range)
-                .or_else(|| head_probe.and_then(|probe| probe.total_size))
+                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size))
                 .unwrap_or(0);
+            let resource_identity = merge_resource_identity(
+                head_probe.as_ref().map(|probe| &probe.resource_identity),
+                &extract_resource_identity(&response)?,
+            );
+            let suggested_file_name =
+                extract_content_disposition_file_name(&response)?.or_else(|| {
+                    head_probe
+                        .as_ref()
+                        .and_then(|probe| probe.suggested_file_name.clone())
+                });
 
             Ok(DownloadProtocolProbe {
                 total_size,
                 supports_range_requests: total_size > 0,
+                resource_identity,
+                suggested_file_name,
             })
         }
         status => Err(Error::Other(format!(
@@ -134,6 +185,73 @@ fn parse_unsatisfied_content_range(value: &str) -> Option<u64> {
     let value = value.trim();
     let value = value.strip_prefix("bytes */")?;
     value.parse().ok()
+}
+
+fn extract_resource_identity(response: &Response) -> Result<HttpResourceIdentity, Error> {
+    Ok(HttpResourceIdentity {
+        resolved_url: Some(response.url().to_string()),
+        entity_tag: response
+            .headers()
+            .get(ETAG)
+            .map(|value| value.to_str().map(|value| value.to_string()))
+            .transpose()?,
+        last_modified: response
+            .headers()
+            .get(LAST_MODIFIED)
+            .map(|value| value.to_str().map(|value| value.to_string()))
+            .transpose()?,
+    })
+}
+
+fn merge_resource_identity(
+    head: Option<&HttpResourceIdentity>,
+    response: &HttpResourceIdentity,
+) -> HttpResourceIdentity {
+    HttpResourceIdentity {
+        resolved_url: response
+            .resolved_url
+            .clone()
+            .or_else(|| head.and_then(|probe| probe.resolved_url.clone())),
+        entity_tag: response
+            .entity_tag
+            .clone()
+            .or_else(|| head.and_then(|probe| probe.entity_tag.clone())),
+        last_modified: response
+            .last_modified
+            .clone()
+            .or_else(|| head.and_then(|probe| probe.last_modified.clone())),
+    }
+}
+
+fn extract_content_disposition_file_name(response: &Response) -> Result<Option<String>, Error> {
+    let Some(value) = response.headers().get(CONTENT_DISPOSITION) else {
+        return Ok(None);
+    };
+
+    parse_content_disposition_header(value)
+}
+
+fn parse_content_disposition_header(
+    value: &reqwest::header::HeaderValue,
+) -> Result<Option<String>, Error> {
+    let value = value.to_str()?;
+    for segment in value.split(';').skip(1) {
+        let segment = segment.trim();
+        if let Some(filename) = segment.strip_prefix("filename=") {
+            return Ok(normalize_content_disposition_filename(filename));
+        }
+    }
+
+    Ok(None)
+}
+
+fn normalize_content_disposition_filename(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches('"');
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn header_accepts_ranges(value: Option<&reqwest::header::HeaderValue>) -> bool {
@@ -198,6 +316,20 @@ mod tests {
         assert!(probe.supports_range_requests);
     }
 
+    #[tokio::test]
+    async fn rejects_targets_without_content_length() {
+        let server = TestHttpServer::spawn(TestServerMode::NoContentLength).await;
+        let client = Client::new();
+
+        let err = probe_download_target(&client, &server.url())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("HTTP downloads without Content-Length are not supported yet")
+        );
+    }
+
     struct TestHttpServer {
         addr: SocketAddr,
         handle: tokio::task::JoinHandle<()>,
@@ -243,7 +375,7 @@ mod tests {
                         } else if first_line.starts_with("GET ") && has_range {
                             build_range_response(mode, &body)
                         } else {
-                            build_full_response(&body)
+                            build_full_response(mode, &body)
                         };
 
                         let _ = socket.write_all(response.as_bytes()).await;
@@ -270,6 +402,7 @@ mod tests {
         RangeSupported,
         RangeIgnored,
         HeadRejected,
+        NoContentLength,
     }
 
     fn build_head_response(mode: TestServerMode, body_len: usize) -> String {
@@ -283,6 +416,9 @@ mod tests {
             TestServerMode::HeadRejected => {
                 "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n".to_string()
             }
+            TestServerMode::NoContentLength => {
+                "HTTP/1.1 200 OK\r\nAccept-Ranges: none\r\nConnection: close\r\n\r\n".to_string()
+            }
         }
     }
 
@@ -293,15 +429,23 @@ mod tests {
                 body.len(),
                 body[0] as char
             ),
-            TestServerMode::RangeIgnored => build_full_response(body),
+            TestServerMode::RangeIgnored | TestServerMode::NoContentLength => {
+                build_full_response(mode, body)
+            }
         }
     }
 
-    fn build_full_response(body: &[u8]) -> String {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            String::from_utf8_lossy(body)
-        )
+    fn build_full_response(mode: TestServerMode, body: &[u8]) -> String {
+        match mode {
+            TestServerMode::NoContentLength => format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}",
+                String::from_utf8_lossy(body)
+            ),
+            _ => format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            ),
+        }
     }
 }

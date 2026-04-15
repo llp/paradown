@@ -1,12 +1,20 @@
-use crate::domain::DownloadSpec;
+use crate::domain::{DownloadSpec, HttpResourceIdentity};
 use crate::error::Error;
 use crate::protocol_probe::probe_download_target;
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OriginMetadata {
     pub total_size: u64,
     pub supports_range_requests: bool,
+    pub resource_identity: HttpResourceIdentity,
+    pub suggested_file_name: Option<String>,
+}
+
+impl OriginMetadata {
+    pub(crate) fn has_resume_validator(&self) -> bool {
+        self.resource_identity.has_resume_validator()
+    }
 }
 
 #[async_trait]
@@ -47,6 +55,8 @@ impl DiscoveryDriver for HttpDiscoveryDriver {
         Ok(OriginMetadata {
             total_size: probe.total_size,
             supports_range_requests: probe.supports_range_requests,
+            resource_identity: probe.resource_identity,
+            suggested_file_name: probe.suggested_file_name,
         })
     }
 }

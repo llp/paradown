@@ -26,7 +26,7 @@ pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
     Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
-pub use domain::{FileManifest, PieceBlock, PieceLayout, SessionManifest};
+pub use domain::{FileManifest, PieceBlock, PieceLayout, PieceState, SessionManifest};
 pub use download::{
     DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionSnapshot,
     Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,

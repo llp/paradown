@@ -55,6 +55,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
         return Ok(PreparationOutcome::Finished);
     }
 
+    let _ = job.sync_piece_progress_from_workers().await?;
     payload_store.prepare().await?;
 
     if protocol_probe.total_size == 0 {

@@ -543,9 +543,39 @@
 - 小文件在进入 piece 模型后容易退化成单 piece / 单 worker
 - 调度真相还没有真正从 `chunk.rs` 迁到 `manifest + scheduler`
 
+### 3.17 第十七轮：补齐 piece state 与基于 piece 的运行时进度重建
+
+提交：
+
+- 见当前这轮 P4 收尾提交
+
+已完成内容：
+
+- [piece.rs](/Users/liulipeng/workspace/rust/paradown/src/domain/piece.rs:1) 新增 `PieceState`
+  - 可初始化 piece bitmap
+  - 可按覆盖区间标记完整 piece
+  - 增加 piece state 单测
+- [mod.rs](/Users/liulipeng/workspace/rust/paradown/src/job/mod.rs:1) 现在在任务运行时持有 `piece_states`
+  - 安装 manifest 时初始化 piece state
+  - 可从当前 worker 进度重建 piece bitmap
+  - `TaskSnapshot` 新增 `completed_pieces / piece_count`
+- [workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job/workers.rs:1)
+  - worker progress / complete / pause 事件都会触发 piece-aware 进度重算
+  - 既有 worker 是否可复用，改为校验是否仍匹配当前 scheduler assignment
+- [finalize.rs](/Users/liulipeng/workspace/rust/paradown/src/job/finalize.rs:1)
+  - 成功完成后统一把 piece state 收敛为全部完成
+- [main.rs](/Users/liulipeng/workspace/rust/paradown/src/main.rs:1)
+  - 任务摘要输出增加 piece 维度进度
+
+这一轮解决的主要问题：
+
+- `P4` 之前虽然已有 piece-aware planner，但运行时进度仍主要停留在裸 worker byte
+- 恢复后的 piece 完成度不能从已有 worker 状态重建
+- scheduler 改了之后，旧 worker 布局是否仍可复用没有严格校验
+
 ## 4. 当前状态
 
-截至当前，主干架构重构已经完成，多协议基础改造已经推进到 P4 的第一阶段。
+截至当前，主干架构重构已经完成，多协议基础改造已经完成 P4。
 
 已经完成的核心收口：
 
@@ -559,6 +589,7 @@
 - 自动化验证已经覆盖单元测试、恢复测试、真实下载集成测试、限速集成测试
 - HTTP/HTTPS 已经跑在 `DownloadSpec + discovery + transfer + SessionManifest + PayloadStore` 这条新主线上
 - HTTP worker 规划已经切到 `SessionManifest.pieces -> scheduler::planner -> Worker`
+- HTTP 运行时已经具备 `piece state / piece bitmap` 重建能力
 - FTP 目前已经有发现层/传输层架构占位，但真实协议实现还没开始
 
 ## 5. 仍可继续优化的点
@@ -571,11 +602,11 @@
 
 ## 6. 当前判断
 
-截至 2026-04-15，重构工作已经完成了十六轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了十七轮，当前可以认为：
 
 - 主干架构重构已经完成
 - 多协议演进的前三步骨架已经落地
-- `P4` 已经开始进入真实代码路径
+- `P4` 已经完成，HTTP 调度真相已经切到 piece 维度
 - 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态
 - 项目从“原型结构”推进到了“有清晰边界和回归基线的可演进结构”
-- 后续更值得投入的是 `P4` 剩余的 piece bitmap/恢复聚合、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件
+- 后续更值得投入的是 P5 的 torrent/magnet discovery、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件

@@ -204,13 +204,22 @@ async fn print_task_summary(manager: &Arc<Manager>) {
 
     for task in tasks {
         let snapshot = task.snapshot().await;
+        let piece_label = if snapshot.piece_count > 0 {
+            format!(
+                " pieces:{}/{}",
+                snapshot.completed_pieces, snapshot.piece_count
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "#{} {} {} {}/{}",
+            "#{} {} {} {}/{}{}",
             snapshot.id,
             snapshot.status,
             snapshot.url,
             snapshot.downloaded_size,
-            snapshot.total_size
+            snapshot.total_size,
+            piece_label
         );
     }
 }

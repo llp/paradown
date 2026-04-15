@@ -60,8 +60,9 @@ flowchart LR
 - `P1` 已完成：`DownloadSpec` 已经进入主路径
 - `P2` 已完成：`discovery / transfer` trait 边界已经立住
 - `P3` 已完成第一阶段：`SessionManifest / PieceLayout / PayloadStore` 已经接入 HTTP 单文件下载主路径
+- `P4` 已完成：HTTP 已经跑在 `manifest + scheduler + piece state` 这条调度主线上
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `P4` 已启动第一阶段：HTTP worker 规划已切到 piece-aware scheduler，但恢复和进度仍主要按 worker byte 聚合
+- 恢复仍然通过 worker 状态落盘，但运行时已能从 worker 进度重建 piece bitmap
 
 ## 3. 当前代码与目标代码的映射
 

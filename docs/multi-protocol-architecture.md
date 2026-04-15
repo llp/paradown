@@ -64,6 +64,13 @@
 - `src/scheduler/`：piece-aware 的 worker 规划
 - `src/protocol_probe.rs`：HTTP 资源探测
 
+当前 HTTP 运行时已经不只是“按区间拉流”，还具备：
+
+- `SessionManifest`
+- `PieceLayout`
+- `PieceState`
+- `PayloadStore`
+
 对照当前公开 API，可以看到它的中心模型还是：
 
 - `download::Manager`

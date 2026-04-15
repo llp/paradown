@@ -26,6 +26,7 @@ pub(crate) async fn finalize_download(job: &Arc<Task>) -> Result<(), Error> {
 pub(crate) async fn finish_job(job: &Arc<Task>, outcome: Result<(), Error>) -> Result<(), Error> {
     match outcome {
         Ok(()) => {
+            job.mark_all_pieces_completed().await;
             {
                 let mut status = job.status.lock().await;
                 *status = Status::Completed;

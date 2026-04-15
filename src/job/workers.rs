@@ -131,31 +131,45 @@ impl Task {
     }
 
     async fn can_reuse_existing_workers(&self, workers: &[Arc<Worker>]) -> bool {
-        if self.supports_range_requests() {
-            return true;
-        }
-
-        if workers.len() != 1 {
+        let Ok(assignments) = self.plan_worker_assignments().await else {
             debug!(
-                "[Task {}] Existing workers require range support, recreating as single worker",
+                "[Task {}] Manifest-backed assignment planning unavailable, recreating workers",
                 self.id
+            );
+            return false;
+        };
+
+        if workers.len() != assignments.len() {
+            debug!(
+                "[Task {}] Existing worker count {} does not match planned assignments {}",
+                self.id,
+                workers.len(),
+                assignments.len()
             );
             return false;
         }
 
-        let worker = &workers[0];
-        let expected_end = self.total_size.load(Ordering::Relaxed).saturating_sub(1);
-        let downloaded = worker.downloaded_size.load(Ordering::Relaxed);
-        let can_reuse = worker.start == 0 && worker.end == expected_end && downloaded == 0;
+        for (worker, assignment) in workers.iter().zip(assignments.iter()) {
+            let downloaded = worker.downloaded_size.load(Ordering::Relaxed);
+            let expected_length = assignment
+                .end
+                .saturating_sub(assignment.start)
+                .saturating_add(1);
+            let matches_assignment = worker.id == assignment.index
+                && worker.start == assignment.start
+                && worker.end == assignment.end
+                && downloaded <= expected_length;
 
-        if !can_reuse {
-            debug!(
-                "[Task {}] Existing single worker has stale range/progress state, recreating",
-                self.id
-            );
+            if !matches_assignment {
+                debug!(
+                    "[Task {}] Worker {} no longer matches planned assignment {}..{}",
+                    self.id, worker.id, assignment.start, assignment.end
+                );
+                return false;
+            }
         }
 
-        can_reuse
+        true
     }
 
     async fn handle_worker_event(self: &Arc<Self>, event: Event) {
@@ -171,21 +185,20 @@ impl Task {
 
     async fn handle_worker_progress(self: &Arc<Self>, worker_id: u32) {
         self.persist_task_worker_later(worker_id);
-
-        let total_downloaded = {
-            let workers = self.workers.read().await;
-            workers
-                .iter()
-                .map(|worker| worker.downloaded_size.load(Ordering::Relaxed))
-                .sum()
+        let progress = match self.sync_piece_progress_from_workers().await {
+            Ok(progress) => progress,
+            Err(err) => {
+                debug!(
+                    "[Task {}] Failed to recompute piece progress after worker {} update: {:?}",
+                    self.id, worker_id, err
+                );
+                return;
+            }
         };
-
-        self.downloaded_size
-            .store(total_downloaded, Ordering::Relaxed);
 
         self.emit_manager_event(Event::Progress {
             id: self.id,
-            downloaded: total_downloaded,
+            downloaded: progress.downloaded,
             total: self.total_size.load(Ordering::Relaxed),
         });
     }
@@ -197,6 +210,12 @@ impl Task {
         );
 
         self.persist_task_worker_later(worker_id);
+        if let Err(err) = self.sync_piece_progress_from_workers().await {
+            debug!(
+                "[Task {}] Failed to recompute piece progress after worker completion: {:?}",
+                self.id, err
+            );
+        }
 
         if !self.all_workers_completed().await {
             return;
@@ -230,6 +249,12 @@ impl Task {
     async fn handle_worker_pause(self: &Arc<Self>, worker_id: u32) {
         debug!("[Task {}] Task was paused", self.id);
         self.persist_task_worker_later(worker_id);
+        if let Err(err) = self.sync_piece_progress_from_workers().await {
+            debug!(
+                "[Task {}] Failed to recompute piece progress after pause: {:?}",
+                self.id, err
+            );
+        }
     }
 
     async fn handle_worker_cancel(self: &Arc<Self>, worker_id: u32) {

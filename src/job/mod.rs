@@ -9,7 +9,10 @@ use self::state::StartDirective;
 use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
-use crate::domain::{DownloadSpec, SessionManifest};
+use crate::domain::{
+    DownloadSpec, PieceState, SessionManifest, completed_piece_count, initialize_piece_states,
+    mark_completed_pieces,
+};
 use crate::error::Error;
 use crate::events::Event;
 use crate::payload::store::PayloadStore;
@@ -34,6 +37,7 @@ pub struct Task {
     pub file_path: Arc<OnceCell<PathBuf>>,
     pub checksums: Mutex<Vec<Checksum>>,
     manifest: RwLock<Option<SessionManifest>>,
+    piece_states: RwLock<Vec<PieceState>>,
     payload_store: RwLock<Option<Arc<PayloadStore>>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
@@ -62,9 +66,16 @@ pub struct TaskSnapshot {
     pub status: String,
     pub downloaded_size: u64,
     pub total_size: u64,
+    pub completed_pieces: u32,
+    pub piece_count: u32,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub checksums: Vec<Checksum>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PieceProgressSnapshot {
+    pub downloaded: u64,
 }
 
 impl Task {
@@ -106,6 +117,7 @@ impl Task {
             file_path: file_path_cell,
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
+            piece_states: RwLock::new(Vec::new()),
             payload_store: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
@@ -133,6 +145,9 @@ impl Task {
         };
 
         let updated_at_guard = self.updated_at.lock().await;
+        let piece_states = self.piece_states.read().await;
+        let completed_pieces = completed_piece_count(&piece_states);
+        let piece_count = piece_states.len() as u32;
         TaskSnapshot {
             id: self.id,
             url: self.spec.locator().to_string(),
@@ -141,6 +156,8 @@ impl Task {
             status: status_str,
             downloaded_size: self.downloaded_size.load(Ordering::Relaxed),
             total_size: self.total_size.load(Ordering::Relaxed),
+            completed_pieces,
+            piece_count,
             created_at: self.created_at.clone(),
             updated_at: updated_at_guard.clone(),
             checksums: self.checksums.lock().await.clone(),
@@ -250,7 +267,9 @@ impl Task {
         manifest: SessionManifest,
     ) -> Arc<PayloadStore> {
         let payload_store = Arc::new(PayloadStore::new(&manifest));
+        let piece_states = initialize_piece_states(&manifest.pieces);
         *self.manifest.write().await = Some(manifest);
+        *self.piece_states.write().await = piece_states;
         *self.payload_store.write().await = Some(Arc::clone(&payload_store));
         payload_store
     }
@@ -265,7 +284,65 @@ impl Task {
 
     pub(crate) async fn clear_manifest_state(&self) {
         *self.manifest.write().await = None;
+        self.piece_states.write().await.clear();
         *self.payload_store.write().await = None;
+    }
+
+    pub(crate) async fn sync_piece_progress_from_workers(
+        &self,
+    ) -> Result<PieceProgressSnapshot, Error> {
+        let manifest =
+            self.manifest.read().await.clone().ok_or_else(|| {
+                Error::Other(format!("Task {} manifest not initialized", self.id))
+            })?;
+        let workers = self.workers.read().await.clone();
+
+        let mut piece_states = initialize_piece_states(&manifest.pieces);
+        let mut downloaded = 0u64;
+
+        for worker in workers {
+            let worker_downloaded = worker
+                .downloaded_size
+                .load(Ordering::Relaxed)
+                .min(worker.expected_length());
+            downloaded = downloaded.saturating_add(worker_downloaded);
+
+            if worker_downloaded == 0 {
+                continue;
+            }
+
+            let covered_end = worker
+                .start
+                .saturating_add(worker_downloaded)
+                .saturating_sub(1);
+            mark_completed_pieces(
+                &mut piece_states,
+                &manifest.pieces,
+                worker.start,
+                covered_end,
+            );
+        }
+
+        let downloaded = downloaded.min(manifest.total_size);
+        *self.piece_states.write().await = piece_states;
+        self.downloaded_size.store(downloaded, Ordering::Relaxed);
+
+        Ok(PieceProgressSnapshot { downloaded })
+    }
+
+    pub(crate) async fn mark_all_pieces_completed(&self) {
+        let manifest = self.manifest.read().await.clone();
+        if let Some(manifest) = manifest {
+            let mut piece_states = self.piece_states.write().await;
+            if piece_states.len() != manifest.pieces.len() {
+                *piece_states = initialize_piece_states(&manifest.pieces);
+            }
+            for piece_state in piece_states.iter_mut() {
+                piece_state.completed = true;
+            }
+            self.downloaded_size
+                .store(manifest.total_size, Ordering::Relaxed);
+        }
     }
 }
 
@@ -279,6 +356,7 @@ impl fmt::Debug for Task {
             .field("file_path", &self.file_path)
             .field("checksums", &self.checksums)
             .field("manifest", &self.manifest)
+            .field("piece_states", &self.piece_states)
             .field("payload_store", &self.payload_store)
             .field("downloaded_size", &self.downloaded_size)
             .field("config", &self.config)

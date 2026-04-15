@@ -1,3 +1,5 @@
+mod support;
+
 use paradown::FileConflictStrategy;
 use paradown::download::{DownloadSpec, Event, Manager, Status};
 use paradown::repository::models::{DBDownloadTask, DBDownloadWorker};
@@ -6,6 +8,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use support::{MultiFileServerConfig, MultiFileTestServer, TestAsset};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -173,6 +176,119 @@ async fn respects_global_rate_limit_during_download() {
     );
 }
 
+#[tokio::test]
+async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
+    let alpha = Arc::new(
+        (0..(96 * 1024))
+            .map(|idx| (idx % 239) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let beta = Arc::new(
+        (0..(88 * 1024))
+            .map(|idx| ((idx * 3) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let server = MultiFileTestServer::spawn(
+        vec![
+            TestAsset::from_shared("/alpha.bin", Arc::clone(&alpha)),
+            TestAsset::from_shared("/beta.bin", Arc::clone(&beta)),
+        ],
+        MultiFileServerConfig {
+            response_chunk_size: 4 * 1024,
+            chunk_delay: Duration::from_millis(8),
+        },
+    )
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config_with_concurrency(
+        &download_dir,
+        &db_path,
+        4,
+        2,
+        None,
+        FileConflictStrategy::Overwrite,
+    );
+    let manager = Manager::new(config.clone()).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let alpha_task = manager
+        .add_download(DownloadSpec::parse(server.url("/alpha.bin")).unwrap())
+        .await
+        .unwrap();
+    let beta_task = manager
+        .add_download(DownloadSpec::parse(server.url("/beta.bin")).unwrap())
+        .await
+        .unwrap();
+
+    manager.start_task(alpha_task).await.unwrap();
+    manager.start_task(beta_task).await.unwrap();
+
+    wait_for_task_set_completion(&[alpha_task, beta_task], &mut rx)
+        .await
+        .unwrap();
+
+    let alpha_downloaded = tokio::fs::read(download_dir.join("alpha.bin"))
+        .await
+        .unwrap();
+    let beta_downloaded = tokio::fs::read(download_dir.join("beta.bin"))
+        .await
+        .unwrap();
+    assert_eq!(alpha_downloaded, *alpha);
+    assert_eq!(beta_downloaded, *beta);
+
+    let alpha_snapshot = manager.get_task_by_id(alpha_task).unwrap().snapshot().await;
+    assert_eq!(alpha_snapshot.status, "Completed");
+    assert_eq!(alpha_snapshot.completed_pieces, alpha_snapshot.piece_count);
+
+    let beta_snapshot = manager.get_task_by_id(beta_task).unwrap().snapshot().await;
+    assert_eq!(beta_snapshot.status, "Completed");
+    assert_eq!(beta_snapshot.completed_pieces, beta_snapshot.piece_count);
+
+    assert!(
+        server.max_active_transfers() >= 2,
+        "expected overlapping download transfers across multiple tasks"
+    );
+    assert!(
+        server.range_get_count("/alpha.bin").await >= 2,
+        "expected multiple ranged GETs for alpha.bin"
+    );
+    assert!(
+        server.range_get_count("/beta.bin").await >= 2,
+        "expected multiple ranged GETs for beta.bin"
+    );
+
+    drop(manager);
+
+    let persistence = Store::new(Arc::new(config.clone())).await.unwrap();
+    let mut bundles = persistence.load_task_bundles().await.unwrap();
+    bundles.sort_by_key(|bundle| bundle.task.id);
+    assert_eq!(bundles.len(), 2);
+    for bundle in &bundles {
+        assert_eq!(bundle.task.status, "Completed");
+        assert_eq!(bundle.task.downloaded_size, bundle.task.total_size.unwrap());
+        assert!(bundle.workers.len() >= 2);
+        assert!(!bundle.pieces.is_empty());
+        assert!(bundle.pieces.iter().all(|piece| piece.completed));
+    }
+
+    let restored_manager = Manager::new(config).unwrap();
+    restored_manager.init().await.unwrap();
+    let mut restored_tasks = restored_manager.get_all_tasks();
+    restored_tasks.sort_by_key(|task| task.id);
+    assert_eq!(restored_tasks.len(), 2);
+    for task in restored_tasks {
+        let snapshot = task.snapshot().await;
+        assert_eq!(snapshot.status, "Completed");
+        assert_eq!(snapshot.completed_pieces, snapshot.piece_count);
+    }
+}
+
 fn build_config(
     download_dir: &Path,
     db_path: &Path,
@@ -180,10 +296,28 @@ fn build_config(
     rate_limit_kbps: Option<NonZeroU64>,
     file_conflict_strategy: FileConflictStrategy,
 ) -> Config {
+    build_config_with_concurrency(
+        download_dir,
+        db_path,
+        workers,
+        1,
+        rate_limit_kbps,
+        file_conflict_strategy,
+    )
+}
+
+fn build_config_with_concurrency(
+    download_dir: &Path,
+    db_path: &Path,
+    workers: usize,
+    concurrent_tasks: usize,
+    rate_limit_kbps: Option<NonZeroU64>,
+    file_conflict_strategy: FileConflictStrategy,
+) -> Config {
     ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
         .segments_per_task(workers)
-        .concurrent_tasks(1)
+        .concurrent_tasks(concurrent_tasks)
         .rate_limit_kbps(rate_limit_kbps)
         .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(file_conflict_strategy)
@@ -195,11 +329,24 @@ async fn wait_for_task_completion(
     task_id: u32,
     rx: &mut broadcast::Receiver<Event>,
 ) -> Result<(), String> {
+    wait_for_task_set_completion(&[task_id], rx).await
+}
+
+async fn wait_for_task_set_completion(
+    task_ids: &[u32],
+    rx: &mut broadcast::Receiver<Event>,
+) -> Result<(), String> {
+    let mut pending = task_ids.to_vec();
     timeout(Duration::from_secs(10), async {
         loop {
             match rx.recv().await {
-                Ok(Event::Complete(id)) if id == task_id => return Ok(()),
-                Ok(Event::Error(id, err)) if id == task_id => {
+                Ok(Event::Complete(id)) => {
+                    pending.retain(|task_id| *task_id != id);
+                    if pending.is_empty() {
+                        return Ok(());
+                    }
+                }
+                Ok(Event::Error(id, err)) if task_ids.contains(&id) => {
                     return Err(format!("task failed: {err}"));
                 }
                 Ok(_) => {}

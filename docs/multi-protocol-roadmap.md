@@ -57,12 +57,19 @@ flowchart LR
 
 截至当前代码状态：
 
+- `P0` 已补齐 HTTP 恢复、重定向文件名、无 `Content-Length` 和安全续传的回归测试
 - `P1` 已完成：`DownloadSpec` 已经进入主路径
 - `P2` 已完成：`discovery / transfer` trait 边界已经立住
 - `P3` 已完成第一阶段：`SessionManifest / PieceLayout / PayloadStore` 已经接入 HTTP 单文件下载主路径
 - `P4` 已完成：HTTP 已经跑在 `manifest + scheduler + piece state` 这条调度主线上
+- `piece state` 已经持久化到存储层，恢复时不再只依赖旧 worker bytes
+- HTTP 当前已经支持：
+  - 重定向后的最终 URL 持久化
+  - `Content-Disposition` 文件名
+  - `ETag / Last-Modified / If-Range` 安全续传
+  - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- 恢复仍然通过 worker 状态落盘，但运行时已能从 worker 进度重建 piece bitmap
+- 当前研发重点仍然是把 HTTP/HTTPS 做扎实，而不是马上推进更多协议实现
 
 ## 3. 当前代码与目标代码的映射
 

@@ -573,6 +573,93 @@
 - 恢复后的 piece 完成度不能从已有 worker 状态重建
 - scheduler 改了之后，旧 worker 布局是否仍可复用没有严格校验
 
+### 3.18 第十八轮：持久化 HTTP 远端身份并扩展探测元数据
+
+提交：
+
+- `a9d9cc3` `持久化 HTTP 远端身份并扩展探测元数据`
+
+已完成内容：
+
+- 新增 [http.rs](/Users/liulipeng/workspace/rust/paradown/src/domain/http.rs:1)
+  - 引入 `HttpResourceIdentity`
+  - 统一持有 `resolved_url / entity_tag / last_modified`
+- [protocol_probe.rs](/Users/liulipeng/workspace/rust/paradown/src/protocol_probe.rs:1)
+  - 探测结果新增 `resource_identity / suggested_file_name`
+  - 支持提取 `Content-Disposition`
+  - 对无 `Content-Length` 目标给出明确错误
+- [prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1)
+  - 准备阶段开始消费远端身份
+  - 文件名优先使用 `Content-Disposition`，其次使用最终跳转 URL
+  - 已有文件策略开始对远端身份变化做区分
+- [storage/](/Users/liulipeng/workspace/rust/paradown/src/storage/mod.rs:1)、[sqlite.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite.rs:1)
+  - 把 `resolved_url / entity_tag / last_modified` 写入持久化
+- probe / storage / runtime tests 补齐元数据 round-trip
+
+这一轮解决的主要问题：
+
+- 恢复链路里没有“远端文件身份”概念
+- 文件名决策过度依赖原始 URL
+- 跳转后的最终 URL 在状态里不可见
+- 无 `Content-Length` 的 HTTP 源行为不明确
+
+### 3.19 第十九轮：收紧 HTTP 续传并接入 If-Range 校验
+
+提交：
+
+- `362e52c` `收紧 HTTP 续传并接入 If-Range 校验`
+
+已完成内容：
+
+- [http.rs](/Users/liulipeng/workspace/rust/paradown/src/transfer/http.rs:1)
+  - 续传请求在具备远端 validator 时发送 `If-Range`
+  - 续传收到 `200 OK` 时，识别为远端资源已变化并拒绝继续拼接
+- [state.rs](/Users/liulipeng/workspace/rust/paradown/src/job/state.rs:1)
+  - `resume()` 不再直接恢复旧 worker
+  - 暂停任务恢复时会重新走准备流程，先重新探测远端身份
+- [runtime.rs](/Users/liulipeng/workspace/rust/paradown/src/worker/runtime.rs:1)
+  - `ResumeInvalidated` 作为不可重试错误处理
+  - paused worker 通过 fresh prepare 后重新进入运行
+- 新增集成测试 [http_resume_integration.rs](/Users/liulipeng/workspace/rust/paradown/tests/http_resume_integration.rs:1)
+  - 验证续传请求包含 `If-Range`
+  - 验证远端 validator 变化后会自动回退全量重下
+
+这一轮解决的主要问题：
+
+- 暂停恢复路径没有重新确认远端文件是否还是同一份资源
+- 续传请求没有利用 `If-Range`
+- validator 失效时存在反复重试或错误拼接风险
+
+### 3.20 第二十轮：持久化 piece 状态并改进恢复重建
+
+提交：
+
+- `8a024bb` `持久化 piece 状态并改进恢复重建`
+
+已完成内容：
+
+- 新增 `download_pieces` 存储模型：
+  - [models.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/models.rs:1)
+  - [contract.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/contract.rs:1)
+  - [memory.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/memory.rs:1)
+  - [sqlite.rs](/Users/liulipeng/workspace/rust/paradown/src/repository/sqlite.rs:1)
+- [storage/](/Users/liulipeng/workspace/rust/paradown/src/storage/mod.rs:1) 现在会随 task 一起保存/加载 piece state
+- [request/task.rs](/Users/liulipeng/workspace/rust/paradown/src/request/task.rs:1) 增加 `piece_states`
+- [recovery.rs](/Users/liulipeng/workspace/rust/paradown/src/recovery.rs:1)
+  - worker 布局缺失但 piece state 可信时，不再立即降级为完全冷启动
+- [job/mod.rs](/Users/liulipeng/workspace/rust/paradown/src/job/mod.rs:1)
+  - manifest 安装时会合并已恢复的 piece state
+  - piece 重算不再只从零开始覆盖
+- [workers.rs](/Users/liulipeng/workspace/rust/paradown/src/job/workers.rs:1)
+  - 新 worker 可以从已完成 piece 的连续前缀安全重建 `downloaded_size`
+- 补充 piece round-trip 和恢复重建相关测试
+
+这一轮解决的主要问题：
+
+- 运行时的 piece truth 没有落盘
+- 恢复后进度仍过度依赖旧 worker byte
+- 当 worker 布局缺失或不可信时，没有利用 piece state 进行安全重建
+
 ## 4. 当前状态
 
 截至当前，主干架构重构已经完成，多协议基础改造已经完成 P4。
@@ -590,6 +677,8 @@
 - HTTP/HTTPS 已经跑在 `DownloadSpec + discovery + transfer + SessionManifest + PayloadStore` 这条新主线上
 - HTTP worker 规划已经切到 `SessionManifest.pieces -> scheduler::planner -> Worker`
 - HTTP 运行时已经具备 `piece state / piece bitmap` 重建能力
+- HTTP 远端身份、重定向结果、`Content-Disposition` 文件名和 `If-Range` 续传链路已经打通
+- HTTP `Content-Length` 缺失场景已有明确失败策略
 - FTP 目前已经有发现层/传输层架构占位，但真实协议实现还没开始
 
 ## 5. 仍可继续优化的点
@@ -599,14 +688,15 @@
 - `Backend::JsonFile(...)` 仍未实现
 - [job_prepare.rs](/Users/liulipeng/workspace/rust/paradown/src/job/prepare.rs:1) 仍然兼有目录准备、文件策略和协议结果消费，后续还可以再细拆
 - interactive mode 目前是全局命令，不是按 task 粒度控制
+- MIME 驱动的文件扩展名推断仍未实现，当前策略是优先信任显式服务端元数据
 
 ## 6. 当前判断
 
-截至 2026-04-15，重构工作已经完成了十七轮，当前可以认为：
+截至 2026-04-15，重构工作已经完成了二十轮，当前可以认为：
 
 - 主干架构重构已经完成
 - 多协议演进的前三步骨架已经落地
 - `P4` 已经完成，HTTP 调度真相已经切到 piece 维度
-- 运行时正确性、恢复正确性、速率限制和入口体验都已经落到可验证状态
+- 运行时正确性、恢复正确性、速率限制、HTTP 元数据链路和入口体验都已经落到可验证状态
 - 项目从“原型结构”推进到了“有清晰边界和回归基线的可演进结构”
 - 后续更值得投入的是 P5 的 torrent/magnet discovery、FTP 真实现和更深的协议扩展，而不是继续大规模拆主干文件

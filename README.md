@@ -6,9 +6,12 @@
 
 What is implemented today:
 
+- Production path for `HTTP/HTTPS`
 - Multi-worker downloads when the origin supports HTTP range requests
 - SQLite and in-memory persistence
 - Restart recovery with worker layout validation
+- Persisted HTTP resource identity (`resolved_url / ETag / Last-Modified`)
+- Persisted piece state with recovery-aware worker reconstruction
 - Checksum verification
 - Retry/backoff controls
 - Global rate limiting across workers
@@ -16,6 +19,7 @@ What is implemented today:
 
 What is not implemented yet:
 
+- Real FTP discovery / transfer implementation
 - JSON file persistence backend
 - Polished terminal UI beyond log output and interactive stdin commands
 
@@ -128,6 +132,23 @@ The current internal structure is roughly:
 - `recovery`: restore planning and trust rules for persisted state
 - `protocol_probe`: range support and target probing
 
+## HTTP behavior
+
+Current HTTP/HTTPS rules are intentionally explicit:
+
+- Redirects are followed and the final resolved URL is persisted
+- `Content-Disposition` filename is preferred over the URL path when naming files
+- Resume safety depends on remote validators:
+  - `ETag` and `Last-Modified` are persisted when available
+  - resumed range requests send `If-Range`
+  - if the remote validator changes, the task falls back to a full redownload
+- Existing local files are treated conservatively:
+  - checksum wins when present
+  - without checksum, a file is only trusted if the stored validator still matches the remote origin
+  - if no validator exists, the file is redownloaded instead of being blindly accepted
+- HTTP targets without `Content-Length` are currently rejected
+- MIME-based filename/extension inference is intentionally not implemented yet; the downloader prefers explicit server metadata over guessing
+
 ## Testing
 
 Run the full test suite:
@@ -143,4 +164,4 @@ The suite currently includes:
 - repository tests
 - recovery rule tests
 - worker runtime tests
-- integration tests for actual downloads and restart recovery
+- integration tests for actual downloads, restart recovery, safe resume, redirect/content-disposition handling, and HTTP error cases

@@ -4,20 +4,41 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadSpec {
-    Http { url: String },
-    Https { url: String },
-    Ftp { url: String },
+    Http {
+        url: String,
+    },
+    Https {
+        url: String,
+    },
+    Ftp {
+        url: String,
+    },
+    TorrentFile {
+        path: String,
+    },
+    Magnet {
+        uri: String,
+    },
+    Metadata {
+        display_name: Option<String>,
+        info_hash: Option<String>,
+    },
 }
 
 impl DownloadSpec {
     pub fn parse(locator: impl Into<String>) -> Result<Self, Error> {
         let locator = locator.into();
+        if locator.ends_with(".torrent") {
+            return Ok(Self::TorrentFile { path: locator });
+        }
+
         let parsed = url::Url::parse(&locator)?;
 
         match parsed.scheme() {
             "http" => Ok(Self::Http { url: locator }),
             "https" => Ok(Self::Https { url: locator }),
             "ftp" => Ok(Self::Ftp { url: locator }),
+            "magnet" => Ok(Self::Magnet { uri: locator }),
             other => Err(Error::UnsupportedProtocol(other.to_string())),
         }
     }
@@ -25,6 +46,15 @@ impl DownloadSpec {
     pub fn locator(&self) -> &str {
         match self {
             Self::Http { url } | Self::Https { url } | Self::Ftp { url } => url,
+            Self::TorrentFile { path } => path,
+            Self::Magnet { uri } => uri,
+            Self::Metadata {
+                display_name,
+                info_hash,
+            } => info_hash
+                .as_deref()
+                .or(display_name.as_deref())
+                .unwrap_or("metadata"),
         }
     }
 
@@ -33,15 +63,33 @@ impl DownloadSpec {
             Self::Http { .. } => "http",
             Self::Https { .. } => "https",
             Self::Ftp { .. } => "ftp",
+            Self::TorrentFile { .. } => "torrent",
+            Self::Magnet { .. } => "magnet",
+            Self::Metadata { .. } => "metadata",
         }
     }
 
     pub fn file_name_hint(&self) -> Option<String> {
-        file_name_hint_from_locator(self.locator())
+        match self {
+            Self::Http { .. } | Self::Https { .. } | Self::Ftp { .. } | Self::Magnet { .. } => {
+                file_name_hint_from_locator(self.locator())
+            }
+            Self::TorrentFile { path } => std::path::Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string()),
+            Self::Metadata { display_name, .. } => display_name.clone(),
+        }
     }
 
     pub fn supports_origin_discovery(&self) -> bool {
         matches!(self, Self::Http { .. } | Self::Https { .. })
+    }
+
+    pub fn supports_swarm_discovery(&self) -> bool {
+        matches!(
+            self,
+            Self::TorrentFile { .. } | Self::Magnet { .. } | Self::Metadata { .. }
+        )
     }
 }
 
@@ -79,7 +127,6 @@ impl TryFrom<String> for DownloadSpec {
 #[cfg(test)]
 mod tests {
     use super::DownloadSpec;
-    use crate::error::Error;
 
     #[test]
     fn parses_http_locator() {
@@ -97,7 +144,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_protocols() {
-        let err = DownloadSpec::parse("magnet:?xt=urn:btih:deadbeef").unwrap_err();
-        assert!(matches!(err, Error::UnsupportedProtocol(_)));
+        let spec = DownloadSpec::parse("magnet:?xt=urn:btih:deadbeef").unwrap();
+        assert!(matches!(spec, DownloadSpec::Magnet { .. }));
     }
 }

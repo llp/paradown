@@ -57,7 +57,7 @@ impl PayloadStore {
 #[cfg(test)]
 mod tests {
     use super::PayloadStore;
-    use crate::domain::{DownloadSpec, FileManifest, SessionManifest};
+    use crate::domain::{DownloadSpec, FileManifest, SessionManifest, SourceSet};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -68,6 +68,10 @@ mod tests {
 
         let mut manifest = SessionManifest::for_single_file(
             DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+                None,
+            ),
             "archive.bin".into(),
             left.clone(),
             8,

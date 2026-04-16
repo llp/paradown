@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::events::Event;
 use crate::status::Status;
-use crate::transfer::driver::driver_for_spec;
+use crate::transfer::driver::driver_for_source;
 use crate::worker::Worker;
 use crate::worker::retry::next_retry_delay;
 use crate::worker::transfer::ProgressReporter;
@@ -45,7 +45,7 @@ impl Worker {
 
         let mut retry_count = 0;
         let mut progress = ProgressReporter::new(self, downloaded_size);
-        let driver = driver_for_spec(&self.spec);
+        let driver = driver_for_source(&self.source);
 
         loop {
             if self.should_stop_gracefully() {

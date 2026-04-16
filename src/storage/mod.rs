@@ -1,13 +1,15 @@
 pub(crate) mod mapping;
 
-use self::mapping::{checksum_to_db, piece_states_to_db, task_to_db, worker_to_db};
+use self::mapping::{
+    block_states_to_db, checksum_to_db, piece_states_to_db, task_to_db, worker_to_db,
+};
 use crate::checksum::Checksum;
 use crate::config::Config;
-use crate::domain::PieceState;
+use crate::domain::{BlockState, PieceState};
 use crate::error::Error;
 use crate::job::Task;
 use crate::repository::models::{
-    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
 use crate::repository::{MemoryRepository, Repository, SqliteRepository};
 use crate::worker::Worker;
@@ -32,6 +34,7 @@ pub struct StoredBundle {
     pub task: DBDownloadTask,
     pub workers: Vec<DBDownloadWorker>,
     pub pieces: Vec<DBDownloadPiece>,
+    pub blocks: Vec<DBDownloadBlock>,
     pub checksums: Vec<DBDownloadChecksum>,
 }
 
@@ -59,7 +62,9 @@ impl Store {
         let db_task = task_to_db(task).await;
         self.repository.save_task(&db_task).await?;
         let piece_states = task.piece_states_snapshot().await;
-        self.save_piece_states(task.id, &piece_states).await
+        self.save_piece_states(task.id, &piece_states).await?;
+        let block_states = task.block_states_snapshot().await;
+        self.save_block_states(task.id, &block_states).await
     }
 
     pub async fn save_tasks(&self, tasks: &[Arc<Task>]) -> Result<(), Error> {
@@ -85,11 +90,13 @@ impl Store {
             let task_id = task.id;
             let workers = self.load_workers(task_id).await?;
             let pieces = self.load_pieces(task_id).await?;
+            let blocks = self.load_blocks(task_id).await?;
             let checksums = self.load_checksums(task_id).await?;
             bundles.push(StoredBundle {
                 task,
                 workers,
                 pieces,
+                blocks,
                 checksums,
             });
         }
@@ -99,7 +106,8 @@ impl Store {
 
     pub async fn delete_task(&self, task_id: u32) -> Result<(), Error> {
         self.repository.delete_task(task_id).await?;
-        self.repository.delete_pieces(task_id).await
+        self.repository.delete_pieces(task_id).await?;
+        self.repository.delete_blocks(task_id).await
     }
 
     pub async fn save_worker(&self, worker: &Arc<Worker>) -> Result<(), Error> {
@@ -141,6 +149,23 @@ impl Store {
 
     pub async fn delete_pieces(&self, task_id: u32) -> Result<(), Error> {
         self.repository.delete_pieces(task_id).await
+    }
+
+    pub async fn load_blocks(&self, task_id: u32) -> Result<Vec<DBDownloadBlock>, Error> {
+        self.repository.load_blocks(task_id).await
+    }
+
+    pub async fn save_block_states(
+        &self,
+        task_id: u32,
+        block_states: &[BlockState],
+    ) -> Result<(), Error> {
+        let db_blocks = block_states_to_db(task_id, block_states);
+        self.repository.save_blocks(task_id, &db_blocks).await
+    }
+
+    pub async fn delete_blocks(&self, task_id: u32) -> Result<(), Error> {
+        self.repository.delete_blocks(task_id).await
     }
 
     pub async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error> {

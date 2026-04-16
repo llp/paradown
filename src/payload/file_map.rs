@@ -100,13 +100,17 @@ impl FileMap {
 #[cfg(test)]
 mod tests {
     use super::FileMap;
-    use crate::domain::{DownloadSpec, SessionManifest};
+    use crate::domain::{DownloadSpec, SessionManifest, SourceSet};
     use std::path::PathBuf;
 
     #[test]
     fn resolves_cross_file_writes() {
         let mut manifest = SessionManifest::for_single_file(
             DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+                None,
+            ),
             "file.bin".into(),
             PathBuf::from("/tmp/a.bin"),
             8,

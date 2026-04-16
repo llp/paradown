@@ -1,4 +1,4 @@
-use crate::domain::DownloadSpec;
+use crate::domain::{SourceDescriptor, SourceKind};
 use crate::error::Error;
 use crate::transfer::ftp::FtpTransferDriver;
 use crate::transfer::http::HttpTransferDriver;
@@ -45,9 +45,12 @@ pub(crate) trait TransferDriver: Send + Sync {
 static HTTP_TRANSFER_DRIVER: HttpTransferDriver = HttpTransferDriver;
 static FTP_TRANSFER_DRIVER: FtpTransferDriver = FtpTransferDriver;
 
-pub(crate) fn driver_for_spec(spec: &DownloadSpec) -> &'static dyn TransferDriver {
-    match spec {
-        DownloadSpec::Http { .. } | DownloadSpec::Https { .. } => &HTTP_TRANSFER_DRIVER,
-        DownloadSpec::Ftp { .. } => &FTP_TRANSFER_DRIVER,
+pub(crate) fn driver_for_source(source: &SourceDescriptor) -> &'static dyn TransferDriver {
+    match source.kind {
+        SourceKind::Http | SourceKind::Https | SourceKind::WebSeed | SourceKind::Mirror => {
+            &HTTP_TRANSFER_DRIVER
+        }
+        SourceKind::Ftp => &FTP_TRANSFER_DRIVER,
+        _ => &FTP_TRANSFER_DRIVER,
     }
 }

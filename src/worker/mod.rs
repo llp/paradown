@@ -3,10 +3,11 @@ pub(crate) mod runtime;
 pub(crate) mod transfer;
 
 use crate::config::Config;
-use crate::domain::DownloadSpec;
+use crate::domain::{DownloadSpec, SourceDescriptor};
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
+use crate::scheduler::planner::ExecutionLaneAssignment;
 use crate::stats::Stats;
 use crate::status::Status;
 use chrono::{DateTime, Utc};
@@ -27,6 +28,8 @@ pub struct Worker {
     pub client: Arc<Client>,
     pub id: u32,
     pub spec: DownloadSpec,
+    pub source: SourceDescriptor,
+    pub(crate) lane: ExecutionLaneAssignment,
     pub start: u64,
     pub end: u64,
     pub downloaded_size: AtomicU64,
@@ -43,14 +46,14 @@ pub struct Worker {
 
 impl Worker {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         id: u32,
         config: Arc<Config>,
         task: Weak<Task>,
         client: Arc<Client>,
         spec: DownloadSpec,
-        start: u64,
-        end: u64,
+        source: SourceDescriptor,
+        lane: ExecutionLaneAssignment,
         downloaded_size: Option<u64>,
         file_path: Arc<PathBuf>,
         status: Option<Status>,
@@ -59,10 +62,7 @@ impl Worker {
     ) -> Self {
         debug!(
             "[Worker {}] Created for locator: {}, range: {}-{}",
-            id,
-            spec.locator(),
-            start,
-            end
+            id, source.locator, lane.start, lane.end
         );
 
         let (paused, canceled, deleted) = match status {
@@ -79,11 +79,13 @@ impl Worker {
             client,
             id,
             spec,
-            start,
-            end,
+            source,
+            lane: lane.clone(),
+            start: lane.start,
+            end: lane.end,
             file_path,
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
-            total_size: AtomicU64::new(end - start + 1),
+            total_size: AtomicU64::new(lane.end.saturating_sub(lane.start).saturating_add(1)),
             paused: Arc::new(AtomicBool::new(paused)),
             canceled: Arc::new(AtomicBool::new(canceled)),
             deleted: Arc::new(AtomicBool::new(deleted)),
@@ -215,6 +217,8 @@ impl fmt::Debug for Worker {
         f.debug_struct("Worker")
             .field("id", &self.id)
             .field("spec", &self.spec)
+            .field("source", &self.source)
+            .field("lane", &self.lane)
             .field("start", &self.start)
             .field("end", &self.end)
             .field("downloaded_size", &self.downloaded_size)
@@ -230,7 +234,8 @@ impl fmt::Debug for Worker {
 mod tests {
     use super::Worker;
     use crate::config::Config;
-    use crate::domain::DownloadSpec;
+    use crate::domain::{DownloadSpec, SourceSet};
+    use crate::scheduler::planner::ExecutionLaneAssignment;
     use crate::stats::Stats;
     use crate::status::Status;
     use std::path::PathBuf;
@@ -245,8 +250,23 @@ mod tests {
             Weak::new(),
             Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
             DownloadSpec::parse("https://example.com/file").unwrap(),
-            0,
-            0,
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/file").unwrap(),
+                None,
+            )
+            .primary()
+            .unwrap()
+            .clone(),
+            ExecutionLaneAssignment {
+                lane_id: 1,
+                source_id: "https::https://example.com/file".into(),
+                piece_start: 0,
+                piece_end: 0,
+                block_start: 0,
+                block_end: 0,
+                start: 0,
+                end: 0,
+            },
             Some(1),
             Arc::new(PathBuf::from("/tmp/paradown-unused-worker-test")),
             Some(Status::Paused),

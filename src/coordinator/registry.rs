@@ -79,7 +79,9 @@ pub(crate) async fn add_task_with_workers(
             .http
             .request
             .merged(&task_request.http_request.clone().unwrap_or_default()),
+        task_request.sources.clone(),
         task_request.piece_states.clone(),
+        task_request.block_states.clone(),
         task_request.status,
         task_request.downloaded_size,
         task_request.total_size,
@@ -93,7 +95,7 @@ pub(crate) async fn add_task_with_workers(
     )?;
 
     if let Some(worker_requests) = workers {
-        let restored_workers = build_restored_workers(manager, &task, worker_requests);
+        let restored_workers = build_restored_workers(manager, &task, worker_requests).await;
         *task.workers.write().await = restored_workers;
     }
 
@@ -113,12 +115,17 @@ fn next_task_id(manager: &Manager, requested_id: Option<u32>) -> u32 {
     })
 }
 
-fn build_restored_workers(
+async fn build_restored_workers(
     manager: &Arc<Manager>,
     task: &Arc<Task>,
     worker_requests: Vec<SegmentRequest>,
 ) -> Vec<Arc<Worker>> {
     let file_path = task.file_path.get().cloned().unwrap_or_else(PathBuf::new);
+    let source_set = task.source_set_snapshot().await;
+    let primary_source = source_set
+        .primary()
+        .cloned()
+        .unwrap_or_else(|| crate::domain::SourceDescriptor::from_spec(&task.spec, None));
 
     worker_requests
         .into_iter()
@@ -129,8 +136,17 @@ fn build_restored_workers(
                 Arc::downgrade(task),
                 task.client.clone(),
                 task.spec.clone(),
-                worker_request.start,
-                worker_request.end,
+                primary_source.clone(),
+                crate::scheduler::planner::ExecutionLaneAssignment {
+                    lane_id: worker_request.index,
+                    source_id: primary_source.id.clone(),
+                    piece_start: 0,
+                    piece_end: 0,
+                    block_start: 0,
+                    block_end: 0,
+                    start: worker_request.start,
+                    end: worker_request.end,
+                },
                 worker_request.downloaded,
                 Arc::new(file_path.clone()),
                 worker_request

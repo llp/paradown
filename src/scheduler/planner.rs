@@ -2,11 +2,23 @@ use crate::domain::SessionManifest;
 
 const MAX_HTTP_PIECE_SIZE: u32 = 1024 * 1024;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PieceAssignment {
-    pub index: u32,
+pub(crate) enum SourceSelectionPolicy {
+    PrimaryOnly,
+    AvailabilityAware,
+    RarestFirst,
+    Endgame,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutionLaneAssignment {
+    pub lane_id: u32,
+    pub source_id: String,
     pub piece_start: u32,
     pub piece_end: u32,
+    pub block_start: u32,
+    pub block_end: u32,
     pub start: u64,
     pub end: u64,
 }
@@ -21,17 +33,37 @@ pub(crate) fn suggested_http_piece_size(total_size: u64, requested_workers: usiz
     ideal_piece_size.min(MAX_HTTP_PIECE_SIZE as u64).max(1) as u32
 }
 
-pub(crate) fn plan_piece_assignments(
+pub(crate) fn plan_execution_lanes(
     manifest: &SessionManifest,
     requested_workers: usize,
     allow_parallel: bool,
-) -> Vec<PieceAssignment> {
+) -> Vec<ExecutionLaneAssignment> {
     if manifest.pieces.is_empty() {
         return Vec::new();
     }
 
-    if !allow_parallel {
-        return vec![assignment_from_piece_slice(0, &manifest.pieces).expect("non-empty pieces")];
+    let primary_source = manifest.sources.primary().or_else(|| {
+        manifest
+            .sources
+            .active_transfer_sources()
+            .into_iter()
+            .next()
+    });
+    let Some(primary_source) = primary_source else {
+        return Vec::new();
+    };
+
+    let policy = if allow_parallel {
+        SourceSelectionPolicy::AvailabilityAware
+    } else {
+        SourceSelectionPolicy::PrimaryOnly
+    };
+
+    if matches!(policy, SourceSelectionPolicy::PrimaryOnly) {
+        return vec![
+            assignment_from_piece_slice(0, &primary_source.id, &manifest.pieces, &manifest.blocks)
+                .expect("non-empty pieces"),
+        ];
     }
 
     let worker_count = requested_workers.max(1).min(manifest.pieces.len());
@@ -45,7 +77,9 @@ pub(crate) fn plan_piece_assignments(
         }
 
         let slice = &manifest.pieces[piece_start..piece_end];
-        if let Some(assignment) = assignment_from_piece_slice(index as u32, slice) {
+        if let Some(assignment) =
+            assignment_from_piece_slice(index as u32, &primary_source.id, slice, &manifest.blocks)
+        {
             assignments.push(assignment);
         }
     }
@@ -54,16 +88,32 @@ pub(crate) fn plan_piece_assignments(
 }
 
 fn assignment_from_piece_slice(
-    index: u32,
+    lane_id: u32,
+    source_id: &str,
     pieces: &[crate::domain::PieceLayout],
-) -> Option<PieceAssignment> {
+    blocks: &[crate::domain::PieceBlock],
+) -> Option<ExecutionLaneAssignment> {
     let first = pieces.first()?;
     let last = pieces.last()?;
+    let block_start = blocks
+        .iter()
+        .find(|block| block.piece_index == first.piece_index)
+        .map(|block| block.block_index)
+        .unwrap_or(0);
+    let block_end = blocks
+        .iter()
+        .rev()
+        .find(|block| block.piece_index == last.piece_index)
+        .map(|block| block.block_index)
+        .unwrap_or(0);
 
-    Some(PieceAssignment {
-        index,
+    Some(ExecutionLaneAssignment {
+        lane_id,
+        source_id: source_id.to_string(),
         piece_start: first.piece_index,
         piece_end: last.piece_index,
+        block_start,
+        block_end,
         start: first.offset,
         end: last
             .offset
@@ -74,8 +124,8 @@ fn assignment_from_piece_slice(
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_piece_assignments, suggested_http_piece_size};
-    use crate::domain::{DownloadSpec, SessionManifest};
+    use super::{plan_execution_lanes, suggested_http_piece_size};
+    use crate::domain::{DownloadSpec, SessionManifest, SourceSet};
     use std::path::PathBuf;
 
     #[test]
@@ -93,14 +143,19 @@ mod tests {
     fn plans_piece_aligned_assignments_for_parallel_downloads() {
         let manifest = SessionManifest::for_single_file_with_piece_size(
             DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+                None,
+            ),
             "archive.bin".into(),
             PathBuf::from("/tmp/archive.bin"),
             10,
             2,
+            2,
             Vec::new(),
         );
 
-        let assignments = plan_piece_assignments(&manifest, 2, true);
+        let assignments = plan_execution_lanes(&manifest, 2, true);
         assert_eq!(assignments.len(), 2);
         assert_eq!((assignments[0].start, assignments[0].end), (0, 3));
         assert_eq!((assignments[1].start, assignments[1].end), (4, 9));
@@ -118,14 +173,19 @@ mod tests {
     fn falls_back_to_single_assignment_without_parallel_range_support() {
         let manifest = SessionManifest::for_single_file_with_piece_size(
             DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+                None,
+            ),
             "file.bin".into(),
             PathBuf::from("/tmp/file.bin"),
             10,
             3,
+            3,
             Vec::new(),
         );
 
-        let assignments = plan_piece_assignments(&manifest, 4, false);
+        let assignments = plan_execution_lanes(&manifest, 4, false);
         assert_eq!(assignments.len(), 1);
         assert_eq!((assignments[0].start, assignments[0].end), (0, 9));
         assert_eq!(

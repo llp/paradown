@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
 use crate::job::finalize::finalize_download;
-use crate::scheduler::planner::{PieceAssignment, plan_piece_assignments};
+use crate::scheduler::planner::{ExecutionLaneAssignment, plan_execution_lanes};
 use crate::status::Status;
 use crate::worker::Worker;
 use chrono::Utc;
@@ -79,21 +79,31 @@ impl Task {
             self.manifest.read().await.clone().ok_or_else(|| {
                 Error::Other(format!("Task {} manifest not initialized", self.id))
             })?;
-        let piece_states = self.piece_states.read().await.clone();
-        let assignments = self.plan_worker_assignments().await?;
+        let block_states = self.block_states.read().await.clone();
+        let assignments = self.plan_execution_lanes().await?;
+        let source_set = self.source_set_snapshot().await;
 
         let mut workers = Vec::with_capacity(assignments.len());
         for assignment in assignments {
+            let source = source_set
+                .get(&assignment.source_id)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "Task {} source {} not found while building execution lanes",
+                        self.id, assignment.source_id
+                    ))
+                })?;
             let seeded_downloaded =
-                seeded_downloaded_from_piece_states(&manifest, &piece_states, &assignment);
+                seeded_downloaded_from_block_states(&manifest, &block_states, &assignment);
             let worker = Arc::new(Worker::new(
-                assignment.index,
+                assignment.lane_id,
                 Arc::clone(&self.config),
                 Arc::downgrade(self),
                 Arc::clone(&self.client),
                 self.spec.clone(),
-                assignment.start,
-                assignment.end,
+                source,
+                assignment,
                 Some(seeded_downloaded),
                 Arc::clone(file_path),
                 Some(Status::Pending),
@@ -117,7 +127,7 @@ impl Task {
         Ok(workers)
     }
 
-    async fn plan_worker_assignments(&self) -> Result<Vec<PieceAssignment>, Error> {
+    async fn plan_execution_lanes(&self) -> Result<Vec<ExecutionLaneAssignment>, Error> {
         let manifest =
             self.manifest.read().await.clone().ok_or_else(|| {
                 Error::Other(format!("Task {} manifest not initialized", self.id))
@@ -128,7 +138,7 @@ impl Task {
             1
         };
 
-        Ok(plan_piece_assignments(
+        Ok(plan_execution_lanes(
             &manifest,
             requested_workers,
             self.supports_range_requests(),
@@ -136,7 +146,7 @@ impl Task {
     }
 
     async fn can_reuse_existing_workers(&self, workers: &[Arc<Worker>]) -> bool {
-        let Ok(assignments) = self.plan_worker_assignments().await else {
+        let Ok(assignments) = self.plan_execution_lanes().await else {
             debug!(
                 "[Task {}] Manifest-backed assignment planning unavailable, recreating workers",
                 self.id
@@ -160,9 +170,10 @@ impl Task {
                 .end
                 .saturating_sub(assignment.start)
                 .saturating_add(1);
-            let matches_assignment = worker.id == assignment.index
+            let matches_assignment = worker.id == assignment.lane_id
                 && worker.start == assignment.start
                 && worker.end == assignment.end
+                && worker.source.id == assignment.source_id
                 && downloaded <= expected_length;
 
             if !matches_assignment {
@@ -321,28 +332,36 @@ impl Task {
     }
 }
 
-fn seeded_downloaded_from_piece_states(
+fn seeded_downloaded_from_block_states(
     manifest: &crate::domain::SessionManifest,
-    piece_states: &[crate::domain::PieceState],
-    assignment: &PieceAssignment,
+    block_states: &[crate::domain::BlockState],
+    assignment: &ExecutionLaneAssignment,
 ) -> u64 {
     let mut downloaded = 0u64;
 
-    for piece in manifest
-        .pieces
+    for block in manifest
+        .blocks
         .iter()
-        .filter(|piece| piece.piece_index >= assignment.piece_start)
-        .filter(|piece| piece.piece_index <= assignment.piece_end)
+        .filter(|block| block.offset >= assignment.start)
+        .filter(|block| {
+            block
+                .offset
+                .saturating_add(block.length as u64)
+                .saturating_sub(1)
+                <= assignment.end
+        })
     {
-        let completed = piece_states
+        let completed = block_states
             .iter()
-            .find(|state| state.piece_index == piece.piece_index)
+            .find(|state| {
+                state.piece_index == block.piece_index && state.block_index == block.block_index
+            })
             .map(|state| state.completed)
             .unwrap_or(false);
         if !completed {
             break;
         }
-        downloaded = downloaded.saturating_add(piece.length as u64);
+        downloaded = downloaded.saturating_add(block.length as u64);
     }
 
     downloaded.min(
@@ -355,43 +374,69 @@ fn seeded_downloaded_from_piece_states(
 
 #[cfg(test)]
 mod tests {
-    use super::seeded_downloaded_from_piece_states;
-    use crate::domain::{DownloadSpec, PieceState, SessionManifest};
-    use crate::scheduler::planner::PieceAssignment;
+    use super::seeded_downloaded_from_block_states;
+    use crate::domain::{BlockState, DownloadSpec, SessionManifest, SourceSet};
+    use crate::scheduler::planner::ExecutionLaneAssignment;
     use std::path::PathBuf;
 
     #[test]
-    fn seeds_worker_progress_from_contiguous_completed_pieces() {
+    fn seeds_worker_progress_from_contiguous_completed_blocks() {
         let manifest = SessionManifest::for_single_file_with_piece_size(
             DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+            SourceSet::for_spec(
+                &DownloadSpec::parse("https://example.com/archive.bin").unwrap(),
+                None,
+            ),
             "archive.bin".into(),
             PathBuf::from("/tmp/archive.bin"),
             12,
             4,
+            2,
             Vec::new(),
         );
-        let piece_states = vec![
-            PieceState {
+        let block_states = vec![
+            BlockState {
                 piece_index: 0,
+                block_index: 0,
                 completed: true,
             },
-            PieceState {
+            BlockState {
+                piece_index: 0,
+                block_index: 1,
+                completed: true,
+            },
+            BlockState {
                 piece_index: 1,
+                block_index: 0,
                 completed: true,
             },
-            PieceState {
+            BlockState {
+                piece_index: 1,
+                block_index: 1,
+                completed: true,
+            },
+            BlockState {
                 piece_index: 2,
+                block_index: 0,
+                completed: false,
+            },
+            BlockState {
+                piece_index: 2,
+                block_index: 1,
                 completed: false,
             },
         ];
 
-        let downloaded = seeded_downloaded_from_piece_states(
+        let downloaded = seeded_downloaded_from_block_states(
             &manifest,
-            &piece_states,
-            &PieceAssignment {
-                index: 0,
+            &block_states,
+            &ExecutionLaneAssignment {
+                lane_id: 0,
+                source_id: "https::https://example.com/archive.bin".into(),
                 piece_start: 0,
                 piece_end: 2,
+                block_start: 0,
+                block_end: 1,
                 start: 0,
                 end: 11,
             },

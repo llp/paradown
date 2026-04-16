@@ -35,6 +35,14 @@ pub(crate) async fn discover_origin(
     let driver: &dyn DiscoveryDriver = match spec {
         DownloadSpec::Http { .. } | DownloadSpec::Https { .. } => &HTTP_DISCOVERY_DRIVER,
         DownloadSpec::Ftp { .. } => &FTP_DISCOVERY_DRIVER,
+        DownloadSpec::TorrentFile { .. }
+        | DownloadSpec::Magnet { .. }
+        | DownloadSpec::Metadata { .. } => {
+            return Err(Error::UnsupportedProtocol(format!(
+                "{} discovery belongs to metadata/swarm pipeline",
+                spec.scheme()
+            )));
+        }
     };
 
     driver.discover(client, spec, request).await

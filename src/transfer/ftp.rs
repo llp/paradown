@@ -10,13 +10,14 @@ pub(crate) struct FtpTransferDriver;
 impl TransferDriver for FtpTransferDriver {
     async fn build_request(
         &self,
-        _worker: &Worker,
+        worker: &Worker,
         _range_start: u64,
         _use_range_requests: bool,
     ) -> Result<reqwest::RequestBuilder, Error> {
-        Err(Error::UnsupportedProtocol(
-            "ftp transfer is not implemented yet".into(),
-        ))
+        Err(Error::UnsupportedProtocol(format!(
+            "{} transfer is not implemented yet",
+            worker.source.locator.as_str()
+        )))
     }
 
     fn resolve_content_length(

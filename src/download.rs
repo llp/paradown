@@ -1,7 +1,8 @@
 pub use crate::coordinator::Manager;
 pub use crate::domain::{
-    DownloadSpec, FileManifest, HttpResourceIdentity, PieceBlock, PieceLayout, PieceState,
-    SessionManifest,
+    BlockState, DownloadSpec, FileManifest, HttpResourceIdentity, PieceBlock, PieceLayout,
+    PieceState, SessionDescriptor, SessionManifest, SessionMode, SourceCapabilities,
+    SourceDescriptor, SourceKind, SourceSet,
 };
 pub use crate::events::Event;
 pub use crate::job::{Task, TaskSnapshot};
@@ -11,3 +12,4 @@ pub use crate::worker::Worker;
 
 pub type Session = Task;
 pub type SessionSnapshot = TaskSnapshot;
+pub type SessionRequest = TaskRequest;

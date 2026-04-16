@@ -1,5 +1,7 @@
 use crate::checksum::Checksum;
-use crate::domain::{DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState};
+use crate::domain::{
+    BlockState, DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState, SourceSet,
+};
 use crate::error::Error;
 use crate::status::Status;
 use chrono::{DateTime, Utc};
@@ -13,7 +15,9 @@ pub struct TaskRequest {
     pub file_path: Option<String>,
     pub resource_identity: Option<HttpResourceIdentity>,
     pub http_request: Option<HttpRequestOptions>,
+    pub sources: Option<SourceSet>,
     pub piece_states: Option<Vec<PieceState>>,
+    pub block_states: Option<Vec<BlockState>>,
     pub checksums: Option<Vec<Checksum>>,
     pub status: Option<Status>,
     pub downloaded_size: Option<u64>,
@@ -31,7 +35,9 @@ impl TaskRequest {
             file_path: None,
             resource_identity: None,
             http_request: None,
+            sources: None,
             piece_states: None,
+            block_states: None,
             checksums: Some(Vec::new()),
             status: None,
             downloaded_size: None,
@@ -57,7 +63,9 @@ pub struct TaskRequestBuilder {
     file_path: Option<String>,
     resource_identity: Option<HttpResourceIdentity>,
     http_request: Option<HttpRequestOptions>,
+    sources: Option<SourceSet>,
     piece_states: Option<Vec<PieceState>>,
+    block_states: Option<Vec<BlockState>>,
     checksums: Option<Vec<Checksum>>,
     status: Option<Status>,
     downloaded_size: Option<u64>,
@@ -87,8 +95,18 @@ impl TaskRequestBuilder {
         self
     }
 
+    pub fn sources(mut self, sources: SourceSet) -> Self {
+        self.sources = Some(sources);
+        self
+    }
+
     pub fn piece_states(mut self, piece_states: Vec<PieceState>) -> Self {
         self.piece_states = Some(piece_states);
+        self
+    }
+
+    pub fn block_states(mut self, block_states: Vec<BlockState>) -> Self {
+        self.block_states = Some(block_states);
         self
     }
 
@@ -135,7 +153,9 @@ impl TaskRequestBuilder {
             file_path: self.file_path,
             resource_identity: self.resource_identity,
             http_request: self.http_request,
+            sources: self.sources,
             piece_states: self.piece_states,
+            block_states: self.block_states,
             checksums: self.checksums,
             status: self.status,
             downloaded_size: self.downloaded_size,

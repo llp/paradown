@@ -10,9 +10,10 @@ use crate::checksum::Checksum;
 use crate::config::Config;
 use crate::coordinator::Manager;
 use crate::domain::{
-    DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState, SessionManifest,
-    completed_piece_count, file_name_hint_from_locator, initialize_piece_states,
-    mark_completed_pieces,
+    BlockState, DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState,
+    SessionManifest, SourceSet, completed_block_count, completed_piece_count,
+    derive_piece_states_from_blocks, file_name_hint_from_locator, initialize_block_states,
+    initialize_piece_states, mark_completed_blocks,
 };
 use crate::error::Error;
 use crate::events::Event;
@@ -39,9 +40,11 @@ pub struct Task {
     pub file_path: Arc<OnceCell<PathBuf>>,
     http_resource_identity: RwLock<HttpResourceIdentity>,
     http_request: HttpRequestOptions,
+    sources: RwLock<SourceSet>,
     pub checksums: Mutex<Vec<Checksum>>,
     manifest: RwLock<Option<SessionManifest>>,
     piece_states: RwLock<Vec<PieceState>>,
+    block_states: RwLock<Vec<BlockState>>,
     payload_store: RwLock<Option<Arc<PayloadStore>>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
@@ -71,8 +74,11 @@ pub struct TaskSnapshot {
     pub status: String,
     pub downloaded_size: u64,
     pub total_size: u64,
+    pub source_count: usize,
     pub completed_pieces: u32,
     pub piece_count: u32,
+    pub completed_blocks: u32,
+    pub block_count: u32,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub checksums: Vec<Checksum>,
@@ -93,7 +99,9 @@ impl Task {
         file_path: Option<String>,
         resource_identity: Option<HttpResourceIdentity>,
         http_request: HttpRequestOptions,
+        sources: Option<SourceSet>,
         piece_states: Option<Vec<PieceState>>,
+        block_states: Option<Vec<BlockState>>,
         status: Option<Status>,
         downloaded_size: Option<u64>,
         total_size: Option<u64>,
@@ -119,6 +127,8 @@ impl Task {
 
         let initial_status = status.unwrap_or(Status::Pending);
         let now = Utc::now();
+        let initial_sources =
+            sources.unwrap_or_else(|| SourceSet::for_spec(&spec, Some(http_request.clone())));
 
         Ok(Arc::new(Self {
             id,
@@ -128,9 +138,11 @@ impl Task {
             file_path: file_path_cell,
             http_resource_identity: RwLock::new(resource_identity.unwrap_or_default()),
             http_request,
+            sources: RwLock::new(initial_sources),
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
             piece_states: RwLock::new(piece_states.unwrap_or_default()),
+            block_states: RwLock::new(block_states.unwrap_or_default()),
             payload_store: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
@@ -161,6 +173,9 @@ impl Task {
         let piece_states = self.piece_states.read().await;
         let completed_pieces = completed_piece_count(&piece_states);
         let piece_count = piece_states.len() as u32;
+        let block_states = self.block_states.read().await;
+        let completed_blocks = completed_block_count(&block_states);
+        let block_count = block_states.len() as u32;
         let stats = self.stats.snapshot().await;
         TaskSnapshot {
             id: self.id,
@@ -171,8 +186,11 @@ impl Task {
             status: status_str,
             downloaded_size: self.downloaded_size.load(Ordering::Relaxed),
             total_size: self.total_size.load(Ordering::Relaxed),
+            source_count: self.sources.read().await.len(),
             completed_pieces,
             piece_count,
+            completed_blocks,
+            block_count,
             created_at: self.created_at,
             updated_at: *updated_at_guard,
             checksums: self.checksums.lock().await.clone(),
@@ -299,15 +317,27 @@ impl Task {
         manifest: SessionManifest,
     ) -> Arc<PayloadStore> {
         let payload_store = Arc::new(PayloadStore::new(&manifest));
+        let manifest_sources = manifest.sources.clone();
         let existing_piece_states = self.piece_states.read().await.clone();
+        let existing_block_states = self.block_states.read().await.clone();
         let mut piece_states = initialize_piece_states(&manifest.pieces);
+        let mut block_states = initialize_block_states(&manifest.blocks);
         if piece_state_layout_matches(&piece_states, &existing_piece_states) {
             for (next, restored) in piece_states.iter_mut().zip(existing_piece_states.iter()) {
                 next.completed = restored.completed;
             }
         }
+        if block_state_layout_matches(&block_states, &existing_block_states) {
+            for (next, restored) in block_states.iter_mut().zip(existing_block_states.iter()) {
+                next.completed = restored.completed;
+            }
+            piece_states =
+                derive_piece_states_from_blocks(&manifest.pieces, &manifest.blocks, &block_states);
+        }
         *self.manifest.write().await = Some(manifest);
+        *self.sources.write().await = manifest_sources;
         *self.piece_states.write().await = piece_states;
+        *self.block_states.write().await = block_states;
         *self.payload_store.write().await = Some(Arc::clone(&payload_store));
         payload_store
     }
@@ -323,6 +353,7 @@ impl Task {
     pub(crate) async fn clear_manifest_state(&self) {
         *self.manifest.write().await = None;
         self.piece_states.write().await.clear();
+        self.block_states.write().await.clear();
         *self.payload_store.write().await = None;
     }
 
@@ -346,10 +377,29 @@ impl Task {
         self.piece_states.read().await.clone()
     }
 
+    pub(crate) async fn block_states_snapshot(&self) -> Vec<BlockState> {
+        self.block_states.read().await.clone()
+    }
+
+    pub(crate) async fn source_set_snapshot(&self) -> SourceSet {
+        self.sources.read().await.clone()
+    }
+
+    pub(crate) async fn set_source_set(&self, source_set: SourceSet) {
+        *self.sources.write().await = source_set;
+    }
+
     pub(crate) async fn reset_piece_progress(&self) {
         let mut piece_states = self.piece_states.write().await;
         for piece in piece_states.iter_mut() {
             piece.completed = false;
+        }
+    }
+
+    pub(crate) async fn reset_block_progress(&self) {
+        let mut block_states = self.block_states.write().await;
+        for block in block_states.iter_mut() {
+            block.completed = false;
         }
     }
 
@@ -370,14 +420,14 @@ impl Task {
             })?;
         let workers = self.workers.read().await.clone();
 
-        let existing_piece_states = self.piece_states.read().await.clone();
-        let mut piece_states = if piece_state_layout_matches(
-            &initialize_piece_states(&manifest.pieces),
-            &existing_piece_states,
+        let existing_block_states = self.block_states.read().await.clone();
+        let mut block_states = if block_state_layout_matches(
+            &initialize_block_states(&manifest.blocks),
+            &existing_block_states,
         ) {
-            existing_piece_states
+            existing_block_states
         } else {
-            initialize_piece_states(&manifest.pieces)
+            initialize_block_states(&manifest.blocks)
         };
         let mut downloaded = 0u64;
 
@@ -396,15 +446,18 @@ impl Task {
                 .start
                 .saturating_add(worker_downloaded)
                 .saturating_sub(1);
-            mark_completed_pieces(
-                &mut piece_states,
-                &manifest.pieces,
+            mark_completed_blocks(
+                &mut block_states,
+                &manifest.blocks,
                 worker.start,
                 covered_end,
             );
         }
 
+        let piece_states =
+            derive_piece_states_from_blocks(&manifest.pieces, &manifest.blocks, &block_states);
         let downloaded = downloaded.min(manifest.total_size);
+        *self.block_states.write().await = block_states;
         *self.piece_states.write().await = piece_states;
         self.downloaded_size.store(downloaded, Ordering::Relaxed);
 
@@ -415,11 +468,18 @@ impl Task {
         let manifest = self.manifest.read().await.clone();
         if let Some(manifest) = manifest {
             let mut piece_states = self.piece_states.write().await;
+            let mut block_states = self.block_states.write().await;
             if piece_states.len() != manifest.pieces.len() {
                 *piece_states = initialize_piece_states(&manifest.pieces);
             }
             for piece_state in piece_states.iter_mut() {
                 piece_state.completed = true;
+            }
+            if block_states.len() != manifest.blocks.len() {
+                *block_states = initialize_block_states(&manifest.blocks);
+            }
+            for block_state in block_states.iter_mut() {
+                block_state.completed = true;
             }
             self.downloaded_size
                 .store(manifest.total_size, Ordering::Relaxed);
@@ -433,6 +493,17 @@ fn piece_state_layout_matches(expected: &[PieceState], restored: &[PieceState]) 
             .iter()
             .zip(restored.iter())
             .all(|(expected, restored)| expected.piece_index == restored.piece_index)
+}
+
+fn block_state_layout_matches(expected: &[BlockState], restored: &[BlockState]) -> bool {
+    expected.len() == restored.len()
+        && expected
+            .iter()
+            .zip(restored.iter())
+            .all(|(expected, restored)| {
+                expected.piece_index == restored.piece_index
+                    && expected.block_index == restored.block_index
+            })
 }
 
 impl fmt::Debug for Task {

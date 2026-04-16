@@ -118,6 +118,7 @@ async fn seed_paused_resume_task(
         .save_task(&DBDownloadTask {
             id: 1,
             url: locator.to_string(),
+            source_set_json: "".into(),
             resolved_url: locator.to_string(),
             entity_tag: entity_tag.into(),
             last_modified: "".into(),

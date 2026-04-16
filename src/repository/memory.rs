@@ -1,18 +1,21 @@
 use super::contract::Repository;
 use crate::Error;
 use crate::repository::models::{
-    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+type BlockKey = (u32, u32, u32);
+
 #[derive(Default)]
 pub struct MemoryRepository {
     tasks: Arc<RwLock<HashMap<u32, DBDownloadTask>>>,
     workers: Arc<RwLock<HashMap<(u32, u32), DBDownloadWorker>>>,
     pieces: Arc<RwLock<HashMap<(u32, u32), DBDownloadPiece>>>,
+    blocks: Arc<RwLock<HashMap<BlockKey, DBDownloadBlock>>>,
     checksums: Arc<RwLock<HashMap<(u32, String), DBDownloadChecksum>>>,
 }
 
@@ -22,6 +25,7 @@ impl MemoryRepository {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             workers: Arc::new(RwLock::new(HashMap::new())),
             pieces: Arc::new(RwLock::new(HashMap::new())),
+            blocks: Arc::new(RwLock::new(HashMap::new())),
             checksums: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -54,6 +58,9 @@ impl Repository for MemoryRepository {
 
         let mut pieces = self.pieces.write().await;
         pieces.retain(|_, piece| piece.task_id != task_id);
+
+        let mut blocks = self.blocks.write().await;
+        blocks.retain(|_, block| block.task_id != task_id);
 
         // 删除关联 checksums
         let mut checksums = self.checksums.write().await;
@@ -127,6 +134,37 @@ impl Repository for MemoryRepository {
     async fn delete_pieces(&self, task_id: u32) -> Result<(), Error> {
         let mut pieces = self.pieces.write().await;
         pieces.retain(|_, piece| piece.task_id != task_id);
+        Ok(())
+    }
+
+    async fn load_blocks(&self, task_id: u32) -> Result<Vec<DBDownloadBlock>, Error> {
+        let mut blocks: Vec<_> = self
+            .blocks
+            .read()
+            .await
+            .values()
+            .filter(|block| block.task_id == task_id)
+            .cloned()
+            .collect();
+        blocks.sort_by_key(|block| (block.piece_index, block.block_index));
+        Ok(blocks)
+    }
+
+    async fn save_blocks(&self, task_id: u32, blocks: &[DBDownloadBlock]) -> Result<(), Error> {
+        let mut storage = self.blocks.write().await;
+        storage.retain(|(stored_task_id, _, _), _| *stored_task_id != task_id);
+        for block in blocks {
+            storage.insert(
+                (task_id, block.piece_index, block.block_index),
+                block.clone(),
+            );
+        }
+        Ok(())
+    }
+
+    async fn delete_blocks(&self, task_id: u32) -> Result<(), Error> {
+        let mut blocks = self.blocks.write().await;
+        blocks.retain(|_, block| block.task_id != task_id);
         Ok(())
     }
 

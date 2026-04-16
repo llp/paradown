@@ -5,6 +5,7 @@ use sqlx::types::chrono::{DateTime, Utc};
 pub struct DBDownloadTask {
     pub id: u32,
     pub url: String,
+    pub source_set_json: String,
     pub resolved_url: String,
     pub entity_tag: String,
     pub last_modified: String,
@@ -33,6 +34,15 @@ pub struct DBDownloadWorker {
 pub struct DBDownloadPiece {
     pub task_id: u32,
     pub piece_index: u32,
+    pub completed: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DBDownloadBlock {
+    pub task_id: u32,
+    pub piece_index: u32,
+    pub block_index: u32,
     pub completed: bool,
     pub updated_at: Option<DateTime<Utc>>,
 }

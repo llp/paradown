@@ -1,6 +1,6 @@
 # paradown 重构计划
 
-更新时间：2026-04-15
+更新时间：2026-04-16
 
 仓库路径：`/Users/liulipeng/workspace/rust/paradown`
 
@@ -62,6 +62,59 @@
   - HTTP client 构建
 
 ## 3. 已完成的重构
+
+### 3.0 最新一轮：升级为会话 + 多源 + piece/block 执行骨架
+
+提交：
+
+- 待本轮提交
+
+已完成内容：
+
+- 领域模型从“单 URL + 连续区间”进一步升级到“会话 + 多源 + piece/block”
+  - 新增 `domain/source.rs`
+  - 新增 `domain/session.rs`
+  - `DownloadSpec` 现在除了 `HTTP/HTTPS/FTP`，还可以表达：
+    - `TorrentFile`
+    - `Magnet`
+    - `Metadata`
+- `SessionManifest` 升级为真正的执行清单
+  - 除了 `pieces`，新增：
+    - `sources`
+    - `block_size`
+    - `blocks`
+  - 当前 HTTP 仍然跑在这个统一清单上
+- `TaskRequest` 升级为会话请求壳层
+  - 新增 `sources`
+  - 新增 `block_states`
+- `Task` 现在真正持有：
+  - `SourceSet`
+  - `PieceState`
+  - `BlockState`
+  - `SessionManifest`
+- worker 执行模型从“固定 URL 区间下载”升级为“执行 lane + source”
+  - 新增 `ExecutionLaneAssignment`
+  - `Worker` 现在除了 `start/end`，还持有：
+    - `source`
+    - `lane`
+- scheduler 从“piece 切段”升级为“source-aware lane 规划”
+  - 当前 HTTP 阶段仍默认把 lane 绑定到 primary source
+  - 但主路径已经不再假设只有一个固定下载源
+- 存储与恢复也一起跟上了新模型
+  - `download_tasks` 新增 `source_set_json`
+  - 新增 `download_blocks` 表
+  - 恢复时会恢复 `block_states`
+  - `TaskSnapshot` 现在能展示：
+    - `source_count`
+    - `completed_blocks`
+    - `block_count`
+
+这一轮解决的主要问题：
+
+- `Session` 仍然只是 `Task` 的公开别名，内部还没有真正承载多源模型
+- `Worker` 之前仍然只知道 `spec + start + end`，不适合作为未来 swarm 执行单元的过渡形态
+- 存储层只落 `piece`，运行时已经开始进入 `block` 真相，二者不一致
+- 架构虽然有多协议方向，但还没有真正升级到“会话 + 多源 + piece/block 调度”主线
 
 ### 3.1 第一轮：命名和运行时边界收拢
 

@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::repository::models::{
-    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
 use async_trait::async_trait;
 
@@ -22,6 +22,10 @@ pub trait Repository: Send + Sync {
     async fn load_pieces(&self, task_id: u32) -> Result<Vec<DBDownloadPiece>, Error>;
     async fn save_pieces(&self, task_id: u32, pieces: &[DBDownloadPiece]) -> Result<(), Error>;
     async fn delete_pieces(&self, task_id: u32) -> Result<(), Error>;
+
+    async fn load_blocks(&self, task_id: u32) -> Result<Vec<DBDownloadBlock>, Error>;
+    async fn save_blocks(&self, task_id: u32, blocks: &[DBDownloadBlock]) -> Result<(), Error>;
+    async fn delete_blocks(&self, task_id: u32) -> Result<(), Error>;
 
     //
     async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error>;

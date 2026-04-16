@@ -61,8 +61,11 @@ flowchart LR
 - `P1` 已完成：`DownloadSpec` 已经进入主路径
 - `P2` 已完成：`discovery / transfer` trait 边界已经立住
 - `P3` 已完成第一阶段：`SessionManifest / PieceLayout / PayloadStore` 已经接入 HTTP 单文件下载主路径
-- `P4` 已完成：HTTP 已经跑在 `manifest + scheduler + piece state` 这条调度主线上
-- `piece state` 已经持久化到存储层，恢复时不再只依赖旧 worker bytes
+- `P4` 已完成并继续收口：HTTP 已经跑在 `manifest + scheduler + piece/block state` 这条调度主线上
+- 当前主干已经升级成：
+  - `SessionManifest + SourceSet + ExecutionLane + PieceState + BlockState`
+  - worker 不再只是假设“单 URL + 连续区间”的执行器
+- `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
   - 重定向后的最终 URL 持久化
   - `Content-Disposition` 文件名

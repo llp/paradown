@@ -23,9 +23,10 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
         task,
         workers,
         pieces,
+        blocks,
         checksums,
     } = bundle;
-    let mut task_request = db_task_to_request(&task, &pieces, &checksums);
+    let mut task_request = db_task_to_request(&task, &pieces, &blocks, &checksums);
     let worker_requests = db_workers_to_requests(&workers);
 
     let mut restored_status =
@@ -101,6 +102,10 @@ fn has_restorable_piece_state(task_request: &TaskRequest) -> bool {
         .piece_states
         .as_ref()
         .is_some_and(|pieces| pieces.iter().any(|piece| piece.completed))
+        || task_request
+            .block_states
+            .as_ref()
+            .is_some_and(|blocks| blocks.iter().any(|block| block.completed))
 }
 
 fn normalize_restored_status(status: Status) -> Status {
@@ -259,6 +264,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 1,
                 url: "https://example.com/file.bin".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
                 last_modified: "".into(),
@@ -281,6 +287,7 @@ mod tests {
                 updated_at: None,
             }],
             pieces: vec![],
+            blocks: vec![],
             checksums: vec![],
         });
 
@@ -299,6 +306,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 2,
                 url: "https://example.com/archive.iso".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
                 last_modified: "".into(),
@@ -333,6 +341,7 @@ mod tests {
                 },
             ],
             pieces: vec![],
+            blocks: vec![],
             checksums: vec![DBDownloadChecksum {
                 id: 0,
                 task_id: 2,
@@ -362,6 +371,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 3,
                 url: "https://example.com/video.mp4".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
                 last_modified: "".into(),
@@ -396,6 +406,7 @@ mod tests {
                 },
             ],
             pieces: vec![],
+            blocks: vec![],
             checksums: vec![],
         });
 
@@ -414,6 +425,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 4,
                 url: "https://example.com/release.tar".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
                 last_modified: "".into(),
@@ -427,6 +439,7 @@ mod tests {
             },
             workers: vec![],
             pieces: vec![],
+            blocks: vec![],
             checksums: vec![],
         });
 
@@ -445,6 +458,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 5,
                 url: "https://example.com/pieces.bin".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "\"etag-a\"".into(),
                 last_modified: "".into(),
@@ -463,6 +477,7 @@ mod tests {
                 completed: true,
                 updated_at: None,
             }],
+            blocks: vec![],
             checksums: vec![],
         });
 

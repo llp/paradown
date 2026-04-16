@@ -1,6 +1,6 @@
 use crate::config::FileConflictStrategy;
 use crate::discovery::origin::{OriginMetadata, discover_origin};
-use crate::domain::{HttpResourceIdentity, SessionManifest};
+use crate::domain::{HttpResourceIdentity, SessionManifest, SourceSet};
 use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
@@ -58,7 +58,8 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     );
     debug!("[Task {}] Download file path: {:?}", job.id, file_path);
 
-    let manifest = build_single_file_manifest(job, &file_path, &protocol_probe).await;
+    let source_set = build_runtime_source_set(job, &protocol_probe.resource_identity).await;
+    let manifest = build_single_file_manifest(job, source_set, &file_path, &protocol_probe).await;
     let payload_store = job.install_manifest(manifest).await;
 
     if handle_existing_file(
@@ -91,6 +92,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
 
 async fn build_single_file_manifest(
     job: &Arc<Task>,
+    source_set: SourceSet,
     file_path: &Arc<PathBuf>,
     probe: &OriginMetadata,
 ) -> SessionManifest {
@@ -104,12 +106,34 @@ async fn build_single_file_manifest(
 
     SessionManifest::for_single_file_with_piece_size(
         job.spec.clone(),
+        source_set,
         job.resolve_or_init_file_name(),
         file_path.as_ref().clone(),
         probe.total_size,
         piece_size,
+        piece_size.min(256 * 1024),
         checksums,
     )
+}
+
+async fn build_runtime_source_set(
+    job: &Arc<Task>,
+    resource_identity: &HttpResourceIdentity,
+) -> SourceSet {
+    let mut source_set = job.source_set_snapshot().await;
+    if source_set.is_empty() {
+        source_set = SourceSet::for_spec(&job.spec, Some(job.http_request_options().clone()));
+    }
+
+    if let Some(primary) = source_set.primary_mut() {
+        primary.resource_identity = Some(resource_identity.clone());
+        if primary.request.is_none() && !job.http_request_options().is_empty() {
+            primary.request = Some(job.http_request_options().clone());
+        }
+    }
+
+    job.set_source_set(source_set.clone()).await;
+    source_set
 }
 
 async fn handle_existing_file(
@@ -280,6 +304,7 @@ async fn reset_missing_file_state(job: &Arc<Task>) -> Result<(), Error> {
 async fn reset_resume_state(job: &Arc<Task>) -> Result<(), Error> {
     job.downloaded_size.store(0, Ordering::Relaxed);
     job.reset_piece_progress().await;
+    job.reset_block_progress().await;
     job.clear_task_workers().await?;
     job.purge_task_workers().await?;
     Ok(())

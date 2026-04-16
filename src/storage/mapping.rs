@@ -1,8 +1,8 @@
 use crate::checksum::{Checksum, ChecksumAlgorithm};
-use crate::domain::{DownloadSpec, HttpResourceIdentity, PieceState};
+use crate::domain::{BlockState, DownloadSpec, HttpResourceIdentity, PieceState, SourceSet};
 use crate::job::Task;
 use crate::repository::models::{
-    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
 use crate::request::{SegmentRequest, TaskRequest};
 use crate::status::Status;
@@ -24,6 +24,8 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
     DBDownloadTask {
         id: task.id,
         url: task.spec.locator().to_string(),
+        source_set_json: serde_json::to_string(&task.source_set_snapshot().await)
+            .unwrap_or_default(),
         resolved_url: resource_identity.resolved_url.unwrap_or_default(),
         entity_tag: resource_identity.entity_tag.unwrap_or_default(),
         last_modified: resource_identity.last_modified.unwrap_or_default(),
@@ -89,6 +91,7 @@ pub(crate) fn db_to_checksum(model: &DBDownloadChecksum) -> Checksum {
 pub(crate) fn db_task_to_request(
     task: &DBDownloadTask,
     pieces: &[DBDownloadPiece],
+    blocks: &[DBDownloadBlock],
     checksums: &[DBDownloadChecksum],
 ) -> TaskRequest {
     TaskRequest {
@@ -104,7 +107,9 @@ pub(crate) fn db_task_to_request(
             last_modified: normalized_text_field(&task.last_modified),
         }),
         http_request: None,
+        sources: serde_json::from_str::<SourceSet>(&task.source_set_json).ok(),
         piece_states: Some(db_pieces_to_piece_states(pieces)),
+        block_states: Some(db_blocks_to_block_states(blocks)),
         checksums: Some(checksums.iter().map(db_to_checksum).collect()),
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
@@ -141,6 +146,35 @@ pub(crate) fn db_pieces_to_piece_states(pieces: &[DBDownloadPiece]) -> Vec<Piece
         .collect()
 }
 
+pub(crate) fn block_states_to_db(
+    task_id: u32,
+    block_states: &[BlockState],
+) -> Vec<DBDownloadBlock> {
+    block_states
+        .iter()
+        .map(|block| DBDownloadBlock {
+            task_id,
+            piece_index: block.piece_index,
+            block_index: block.block_index,
+            completed: block.completed,
+            updated_at: None,
+        })
+        .collect()
+}
+
+pub(crate) fn db_blocks_to_block_states(blocks: &[DBDownloadBlock]) -> Vec<BlockState> {
+    let mut blocks = blocks.to_vec();
+    blocks.sort_by_key(|block| (block.piece_index, block.block_index));
+    blocks
+        .into_iter()
+        .map(|block| BlockState {
+            piece_index: block.piece_index,
+            block_index: block.block_index,
+            completed: block.completed,
+        })
+        .collect()
+}
+
 pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<SegmentRequest> {
     workers
         .iter()
@@ -168,9 +202,12 @@ fn normalized_text_field(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_pieces_to_piece_states, db_task_to_request, db_workers_to_requests};
+    use super::{
+        db_blocks_to_block_states, db_pieces_to_piece_states, db_task_to_request,
+        db_workers_to_requests,
+    };
     use crate::repository::models::{
-        DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+        DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
     };
     use crate::status::Status;
 
@@ -180,6 +217,7 @@ mod tests {
             &DBDownloadTask {
                 id: 7,
                 url: "https://example.com/file.bin".into(),
+                source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
                 last_modified: "".into(),
@@ -194,6 +232,13 @@ mod tests {
             &[DBDownloadPiece {
                 task_id: 7,
                 piece_index: 0,
+                completed: true,
+                updated_at: None,
+            }],
+            &[DBDownloadBlock {
+                task_id: 7,
+                piece_index: 0,
+                block_index: 0,
                 completed: true,
                 updated_at: None,
             }],
@@ -219,6 +264,7 @@ mod tests {
         assert!(matches!(request.status, Some(Status::Pending)));
         assert_eq!(request.checksums.as_ref().map(Vec::len), Some(1));
         assert_eq!(request.piece_states.as_ref().map(Vec::len), Some(1));
+        assert_eq!(request.block_states.as_ref().map(Vec::len), Some(1));
     }
 
     #[test]
@@ -262,5 +308,29 @@ mod tests {
         assert_eq!(pieces[0].piece_index, 1);
         assert!(pieces[0].completed);
         assert_eq!(pieces[1].piece_index, 2);
+    }
+
+    #[test]
+    fn normalizes_block_states_from_storage_order() {
+        let blocks = db_blocks_to_block_states(&[
+            DBDownloadBlock {
+                task_id: 1,
+                piece_index: 1,
+                block_index: 1,
+                completed: false,
+                updated_at: None,
+            },
+            DBDownloadBlock {
+                task_id: 1,
+                piece_index: 1,
+                block_index: 0,
+                completed: true,
+                updated_at: None,
+            },
+        ]);
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].block_index, 0);
+        assert!(blocks[0].completed);
     }
 }

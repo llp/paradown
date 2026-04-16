@@ -41,6 +41,7 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
         .save_task(&DBDownloadTask {
             id: 7,
             url: "https://example.com/archive.bin".into(),
+            source_set_json: "".into(),
             resolved_url: "https://example.com/archive.bin".into(),
             entity_tag: "\"etag-a\"".into(),
             last_modified: "Tue, 15 Apr 2026 12:00:00 GMT".into(),

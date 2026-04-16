@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::repository::contract::Repository;
 use crate::repository::models::{
-    DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
+    DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -48,6 +48,7 @@ impl SqliteRepository {
             CREATE TABLE IF NOT EXISTS download_tasks (
                 id INTEGER PRIMARY KEY,
                 url TEXT UNIQUE NOT NULL,
+                source_set_json TEXT,
                 resolved_url TEXT,
                 entity_tag TEXT,
                 last_modified TEXT,
@@ -99,6 +100,21 @@ impl SqliteRepository {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS download_blocks (
+                task_id INTEGER NOT NULL,
+                piece_index INTEGER NOT NULL,
+                block_index INTEGER NOT NULL,
+                completed BOOLEAN DEFAULT 0,
+                updated_at TEXT DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(task_id, piece_index, block_index)
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            r#"
                 CREATE TABLE IF NOT EXISTS download_checksums (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id INTEGER NOT NULL,
@@ -132,6 +148,7 @@ impl Repository for SqliteRepository {
             .map(|row| DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                source_set_json: row.try_get("source_set_json").unwrap_or_default(),
                 resolved_url: row.try_get("resolved_url").unwrap_or_default(),
                 entity_tag: row.try_get("entity_tag").unwrap_or_default(),
                 last_modified: row.try_get("last_modified").unwrap_or_default(),
@@ -164,6 +181,7 @@ impl Repository for SqliteRepository {
             Ok(Some(DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                source_set_json: row.try_get("source_set_json").unwrap_or_default(),
                 resolved_url: row.try_get("resolved_url").unwrap_or_default(),
                 entity_tag: row.try_get("entity_tag").unwrap_or_default(),
                 last_modified: row.try_get("last_modified").unwrap_or_default(),
@@ -190,11 +208,12 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
-                (id, url, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+                (id, url, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
             ON CONFLICT(id) DO UPDATE SET
                 url=excluded.url,
+                source_set_json=excluded.source_set_json,
                 resolved_url=excluded.resolved_url,
                 entity_tag=excluded.entity_tag,
                 last_modified=excluded.last_modified,
@@ -208,6 +227,7 @@ impl Repository for SqliteRepository {
         )
             .bind(task.id)
             .bind(&task.url)
+            .bind(&task.source_set_json)
             .bind(&task.resolved_url)
             .bind(&task.entity_tag)
             .bind(&task.last_modified)
@@ -226,6 +246,10 @@ impl Repository for SqliteRepository {
 
     async fn delete_task(&self, task_id: u32) -> Result<(), Error> {
         sqlx::query("DELETE FROM download_tasks WHERE id = ?1")
+            .bind(task_id)
+            .execute(&*self.pool)
+            .await?;
+        sqlx::query("DELETE FROM download_blocks WHERE task_id = ?1")
             .bind(task_id)
             .execute(&*self.pool)
             .await?;
@@ -372,6 +396,62 @@ impl Repository for SqliteRepository {
         Ok(())
     }
 
+    async fn load_blocks(&self, task_id: u32) -> Result<Vec<DBDownloadBlock>, Error> {
+        let rows = sqlx::query(
+            "SELECT * FROM download_blocks WHERE task_id = ?1 ORDER BY piece_index, block_index",
+        )
+        .bind(task_id)
+        .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| DBDownloadBlock {
+                task_id: r.get("task_id"),
+                piece_index: r.get::<i64, _>("piece_index") as u32,
+                block_index: r.get::<i64, _>("block_index") as u32,
+                completed: r.get::<i64, _>("completed") != 0,
+                updated_at: r
+                    .try_get::<String, _>("updated_at")
+                    .ok()
+                    .and_then(|s| parse_db_datetime(&s)),
+            })
+            .collect())
+    }
+
+    async fn save_blocks(&self, task_id: u32, blocks: &[DBDownloadBlock]) -> Result<(), Error> {
+        sqlx::query("DELETE FROM download_blocks WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&*self.pool)
+            .await?;
+
+        for block in blocks {
+            sqlx::query(
+                r#"
+                INSERT INTO download_blocks (task_id, piece_index, block_index, completed, updated_at)
+                VALUES (?1, ?2, ?3, ?4, COALESCE(?5, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                "#,
+            )
+            .bind(block.task_id)
+            .bind(block.piece_index)
+            .bind(block.block_index)
+            .bind(if block.completed { 1 } else { 0 })
+            .bind(block.updated_at.map(|dt| dt.to_rfc3339()))
+            .execute(&*self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_blocks(&self, task_id: u32) -> Result<(), Error> {
+        sqlx::query("DELETE FROM download_blocks WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&*self.pool)
+            .await?;
+        Ok(())
+    }
+
     // ---------------- Checksum ----------------
     async fn load_checksums(&self, task_id: u32) -> Result<Vec<DBDownloadChecksum>, Error> {
         let rows = sqlx::query("SELECT * FROM download_checksums WHERE task_id = ?1")
@@ -468,6 +548,7 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
         .collect();
 
     for (column, definition) in [
+        ("source_set_json", "TEXT"),
         ("resolved_url", "TEXT"),
         ("entity_tag", "TEXT"),
         ("last_modified", "TEXT"),
@@ -490,7 +571,7 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
 mod tests {
     use super::SqliteRepository;
     use crate::repository::contract::Repository;
-    use crate::repository::models::{DBDownloadPiece, DBDownloadTask};
+    use crate::repository::models::{DBDownloadBlock, DBDownloadPiece, DBDownloadTask};
     use chrono::{TimeZone, Utc};
     use tempfile::tempdir;
 
@@ -505,6 +586,7 @@ mod tests {
         let task = DBDownloadTask {
             id: 42,
             url: "https://example.com/file.bin".into(),
+            source_set_json: "{\"sources\":[]}".into(),
             resolved_url: "https://cdn.example.com/file.bin".into(),
             entity_tag: "\"etag-42\"".into(),
             last_modified: "Tue, 15 Apr 2026 12:00:00 GMT".into(),
@@ -522,6 +604,7 @@ mod tests {
         let loaded = repository.load_task(42).await.unwrap().unwrap();
         assert_eq!(loaded.id, 42);
         assert_eq!(loaded.url, task.url);
+        assert_eq!(loaded.source_set_json, task.source_set_json);
         assert_eq!(loaded.resolved_url, task.resolved_url);
         assert_eq!(loaded.entity_tag, task.entity_tag);
         assert_eq!(loaded.last_modified, task.last_modified);
@@ -543,6 +626,7 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                source_set_json: "{\"sources\":[]}".into(),
                 resolved_url: "https://example.com/archive.tar".into(),
                 entity_tag: "\"etag-a\"".into(),
                 last_modified: "Tue, 15 Apr 2026 10:00:00 GMT".into(),
@@ -562,6 +646,7 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                source_set_json: "{\"sources\":[{\"id\":\"source-1\"}]}".into(),
                 resolved_url: "https://cdn.example.com/archive.tar".into(),
                 entity_tag: "\"etag-b\"".into(),
                 last_modified: "Tue, 15 Apr 2026 11:00:00 GMT".into(),
@@ -578,6 +663,10 @@ mod tests {
 
         let loaded = repository.load_task(7).await.unwrap().unwrap();
         assert_eq!(loaded.id, 7);
+        assert_eq!(
+            loaded.source_set_json,
+            "{\"sources\":[{\"id\":\"source-1\"}]}"
+        );
         assert_eq!(loaded.resolved_url, "https://cdn.example.com/archive.tar");
         assert_eq!(loaded.entity_tag, "\"etag-b\"");
         assert_eq!(loaded.status, "Running");
@@ -619,5 +708,42 @@ mod tests {
         assert!(pieces[0].completed);
         assert_eq!(pieces[1].piece_index, 2);
         assert!(!pieces[1].completed);
+    }
+
+    #[tokio::test]
+    async fn round_trips_block_state_snapshots() {
+        let tempdir = tempdir().unwrap();
+        let db_path = tempdir.path().join("paradown-blocks.db");
+        let repository = SqliteRepository::new(&db_path).await.unwrap();
+
+        repository
+            .save_blocks(
+                9,
+                &[
+                    DBDownloadBlock {
+                        task_id: 9,
+                        piece_index: 1,
+                        block_index: 0,
+                        completed: true,
+                        updated_at: None,
+                    },
+                    DBDownloadBlock {
+                        task_id: 9,
+                        piece_index: 1,
+                        block_index: 1,
+                        completed: false,
+                        updated_at: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let blocks = repository.load_blocks(9).await.unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].block_index, 0);
+        assert!(blocks[0].completed);
+        assert_eq!(blocks[1].block_index, 1);
+        assert!(!blocks[1].completed);
     }
 }

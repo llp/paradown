@@ -27,12 +27,14 @@ pub use config::{
     Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
 };
 pub use domain::{
-    FileManifest, HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions,
-    HttpResourceIdentity, PieceBlock, PieceLayout, PieceState, ProxyOptions, SessionManifest,
+    BlockState, FileManifest, HttpAuth, HttpClientOptions, HttpConfig, HttpHeader,
+    HttpRequestOptions, HttpResourceIdentity, PieceBlock, PieceLayout, PieceState, ProxyOptions,
+    SessionDescriptor, SessionManifest, SessionMode, SourceCapabilities, SourceDescriptor,
+    SourceKind, SourceSet,
 };
 pub use download::{
-    DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionSnapshot,
-    Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
+    DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionRequest,
+    SessionSnapshot, Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
 };
 pub use error::Error;
 pub use runtime::{init_logger, init_logger_with_level};

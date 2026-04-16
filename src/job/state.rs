@@ -211,15 +211,30 @@ impl Task {
         for worker in workers {
             let _ = worker.delete().await;
         }
+        if let Err(err) = self.delete_task_file().await {
+            self.release_permit().await;
+            self.fail_with_error(err.clone()).await;
+            return Err(err);
+        }
+        if let Err(err) = self.purge_task_workers().await {
+            self.release_permit().await;
+            self.fail_with_error(err.clone()).await;
+            return Err(err);
+        }
+        if let Err(err) = self.purge_task_checksums().await {
+            self.release_permit().await;
+            self.fail_with_error(err.clone()).await;
+            return Err(err);
+        }
+        if let Err(err) = self.purge_task().await {
+            self.release_permit().await;
+            self.fail_with_error(err.clone()).await;
+            return Err(err);
+        }
+
         self.release_permit().await;
         self.clear_task_workers().await?;
         self.clear_manifest_state().await;
-
-        self.delete_task_file().await?;
-        self.purge_task_workers().await?;
-        self.purge_task_checksums().await?;
-        self.purge_task().await?;
-
         self.set_status(Status::Deleted).await;
         self.emit_manager_event(Event::Delete(self.id));
         Ok(())
@@ -306,5 +321,45 @@ mod tests {
             .await
             .expect_err("removing a directory path should surface an error");
         assert!(matches!(err, Error::Io(_)), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn delete_failure_marks_task_as_failed_without_marking_it_deleted() {
+        let sandbox = TempDir::new().unwrap();
+        let directory_path = sandbox.path().join("payload-dir");
+        tokio::fs::create_dir_all(&directory_path).await.unwrap();
+
+        let task = Task::new(
+            2,
+            DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+            Some("file.bin".into()),
+            Some(directory_path.to_string_lossy().to_string()),
+            None,
+            HttpRequestOptions::default(),
+            None,
+            None,
+            None,
+            Some(crate::status::Status::Running),
+            None,
+            None,
+            Vec::new(),
+            std::sync::Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
+            std::sync::Arc::new(Config::default()),
+            None,
+            std::sync::Weak::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = task
+            .delete()
+            .await
+            .expect_err("delete should fail when payload path is a directory");
+        assert!(matches!(err, Error::Io(_)), "unexpected error: {err}");
+        assert!(matches!(
+            &*task.status.lock().await,
+            crate::status::Status::Failed(_)
+        ));
     }
 }

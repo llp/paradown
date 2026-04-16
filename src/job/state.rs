@@ -4,6 +4,7 @@ use crate::events::Event;
 use crate::job::Task;
 use crate::status::Status;
 use log::{debug, warn};
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -83,6 +84,28 @@ impl Task {
         }
         debug!("[Task {}] Marked as failed: {:?}", self.id, err);
         self.emit_manager_event(Event::Error(self.id, err));
+    }
+
+    pub(crate) async fn stop_workers_and_fail(self: &Arc<Self>, err: Error) {
+        self.set_status(Status::Failed(err.clone())).await;
+
+        let workers = { self.workers.read().await.clone() };
+        for worker in workers {
+            let _ = worker.cancel().await;
+        }
+
+        debug!(
+            "[Task {}] Stopped workers before surfacing failure: {:?}",
+            self.id, err
+        );
+        self.fail_with_error(err).await;
+    }
+
+    pub(crate) async fn release_permit(&self) {
+        let mut permit = self.permit.lock().await;
+        if permit.take().is_some() {
+            debug!("[Task {}] Released semaphore permit", self.id);
+        }
     }
 
     pub async fn pause(self: &Arc<Self>) -> Result<(), Error> {
@@ -188,6 +211,7 @@ impl Task {
         for worker in workers {
             let _ = worker.delete().await;
         }
+        self.release_permit().await;
         self.clear_task_workers().await?;
         self.clear_manifest_state().await;
 
@@ -196,6 +220,7 @@ impl Task {
         self.purge_task_checksums().await?;
         self.purge_task().await?;
 
+        self.set_status(Status::Deleted).await;
         self.emit_manager_event(Event::Delete(self.id));
         Ok(())
     }
@@ -219,16 +244,14 @@ impl Task {
 
     pub(crate) async fn delete_task_file(&self) -> Result<(), Error> {
         if let Some(file_path) = self.file_path.get() {
-            if file_path.exists() {
-                match tokio::fs::remove_file(file_path).await {
-                    Ok(_) => debug!("[Task {}] Removed file: {:?}", self.id, file_path),
-                    Err(err) => debug!(
-                        "[Task {}] Failed to remove file {:?}: {}",
-                        self.id, file_path, err
-                    ),
+            match tokio::fs::remove_file(file_path).await {
+                Ok(_) => debug!("[Task {}] Removed file: {:?}", self.id, file_path),
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    debug!("[Task {}] File not found: {:?}", self.id, file_path);
                 }
-            } else {
-                debug!("[Task {}] File not found: {:?}", self.id, file_path);
+                Err(err) => {
+                    return Err(err.into());
+                }
             }
         }
         Ok(())
@@ -238,5 +261,50 @@ impl Task {
         let mut workers = self.workers.write().await;
         workers.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Task;
+    use crate::config::Config;
+    use crate::domain::{DownloadSpec, HttpRequestOptions};
+    use crate::error::Error;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn delete_task_file_surfaces_non_file_errors() {
+        let sandbox = TempDir::new().unwrap();
+        let directory_path = sandbox.path().join("payload-dir");
+        tokio::fs::create_dir_all(&directory_path).await.unwrap();
+
+        let task = Task::new(
+            1,
+            DownloadSpec::parse("https://example.com/file.bin").unwrap(),
+            Some("file.bin".into()),
+            Some(directory_path.to_string_lossy().to_string()),
+            None,
+            HttpRequestOptions::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            std::sync::Arc::new(reqwest::Client::builder().no_proxy().build().unwrap()),
+            std::sync::Arc::new(Config::default()),
+            None,
+            std::sync::Weak::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = task
+            .delete_task_file()
+            .await
+            .expect_err("removing a directory path should surface an error");
+        assert!(matches!(err, Error::Io(_)), "unexpected error: {err}");
     }
 }

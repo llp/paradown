@@ -250,13 +250,7 @@ impl Task {
         debug!("[Task {}] Worker error: {:?}", self.id, err);
         self.persist_task_worker_later(worker_id);
         self.stats.snapshot().await;
-
-        let workers = { self.workers.read().await.clone() };
-        for worker in workers {
-            let _ = worker.cancel().await;
-        }
-
-        self.fail_with_error(err).await;
+        self.stop_workers_and_fail(err).await;
     }
 
     async fn handle_worker_pause(self: &Arc<Self>, worker_id: u32) {
@@ -295,12 +289,12 @@ impl Task {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
                     debug!("[Task {}] Worker failed: {:?}", self.id, err);
-                    self.fail_with_error(err).await;
+                    self.stop_workers_and_fail(err).await;
                 }
                 Err(err) => {
                     let join_error = Error::Other(format!("{:?}", err));
                     debug!("[Task {}] Worker panicked: {:?}", self.id, err);
-                    self.fail_with_error(join_error).await;
+                    self.stop_workers_and_fail(join_error).await;
                 }
             }
         }

@@ -61,7 +61,7 @@ impl Task {
                     "[Task {}] Failed to persist worker {} asynchronously: {:?}",
                     task.id, worker_id, err
                 );
-                task.fail_with_error(err).await;
+                task.stop_workers_and_fail(err).await;
             }
         });
     }

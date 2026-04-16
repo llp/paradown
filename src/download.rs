@@ -54,7 +54,12 @@ impl Session {
     }
 
     pub async fn delete(&self) -> Result<(), Error> {
-        self.inner.delete().await
+        if let Some(manager) = self.inner.manager.upgrade() {
+            manager.delete_task(self.inner.id).await?;
+            Ok(())
+        } else {
+            self.inner.delete().await
+        }
     }
 }
 

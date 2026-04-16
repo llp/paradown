@@ -34,6 +34,7 @@ async fn handle_task_event(manager: &Arc<Manager>, event: Event) -> Result<(), E
     match event {
         Event::Complete(task_id) => handle_terminal_task_event(manager, task_id).await,
         Event::Cancel(task_id) => handle_terminal_task_event(manager, task_id).await,
+        Event::Delete(task_id) => handle_deleted_task_event(manager, task_id).await,
         Event::Error(task_id, err) => {
             if let Some(task) = manager.get_task_by_id(task_id)
                 && let Err(diag_err) = write_failure_diagnostic(task.as_ref(), &err).await
@@ -66,5 +67,12 @@ async fn handle_terminal_task_event(manager: &Arc<Manager>, task_id: u32) -> Res
     manager.clear_progress_persist_state(task_id);
     remove_from_queue(manager, task_id).await?;
     release_task_permit(manager, task_id).await;
+    spawn_next_task(manager).await
+}
+
+async fn handle_deleted_task_event(manager: &Arc<Manager>, task_id: u32) -> Result<(), Error> {
+    manager.persist_http_session_state()?;
+    manager.clear_progress_persist_state(task_id);
+    remove_from_queue(manager, task_id).await?;
     spawn_next_task(manager).await
 }

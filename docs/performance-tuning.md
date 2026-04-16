@@ -51,8 +51,13 @@ Use the soak helper to run repeated real downloads for a fixed duration:
 
 ## Benchmarking
 
-Run the Criterion benchmark for the local HTTP download path:
+Run the Criterion benchmarks for the local HTTP download path:
 
 ```bash
 cargo bench --bench download_bench
 ```
+
+The current bench suite covers:
+
+- single-asset HTTP download on the in-memory backend
+- multi-task HTTP download with SQLite persistence enabled

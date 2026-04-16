@@ -123,6 +123,10 @@ Release automation:
 - `--basic-auth <USER[:PASS]>`: send HTTP basic auth
 - `--bearer-token <TOKEN>`: send bearer auth
 - `--http-proxy <URL>` / `--https-proxy <URL>` / `--no-proxy <PATTERN>` / `--no-env-proxy`
+- `--cookie-store`: enable reqwest's in-memory cookie jar for session-style HTTP flows
+- `--insecure-tls`: skip server certificate verification
+- `--ca-cert <PEM_FILE>`: trust an additional PEM-encoded CA certificate
+- `--client-identity <PEM_FILE>`: load a PEM-encoded client certificate + key
 - `--on-complete <COMMAND>`: run a shell hook after the session finishes
 - `-u, --urls <URL>...`: one or more URLs to download
 
@@ -189,7 +193,7 @@ threshold_bytes = 1048576
 Important notes:
 
 - `schema_version = 1` is the current config format
-- `Backend::JsonFile(...)` is defined but not implemented
+- `Backend::JsonFile(...)` is now supported for lightweight single-file persistence
 - if `rate_limit_kbps` is omitted, rate limiting is disabled
 - `connection_timeout` uses TOML struct form: `connection_timeout = { secs = 30, nanos = 0 }`
 - `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` are enabled by default unless `--no-env-proxy` is used
@@ -215,6 +219,7 @@ Current HTTP/HTTPS rules are intentionally explicit:
 
 - Redirects are followed and the final resolved URL is persisted
 - `Content-Disposition` filename is preferred over the URL path when naming files
+- `filename*=` / RFC 5987 encoded filenames are supported and preferred when present
 - Resume safety depends on remote validators:
   - `ETag` and `Last-Modified` are persisted when available
   - resumed range requests send `If-Range`
@@ -223,7 +228,11 @@ Current HTTP/HTTPS rules are intentionally explicit:
   - checksum wins when present
   - without checksum, a file is only trusted if the stored validator still matches the remote origin
   - if no validator exists, the file is redownloaded instead of being blindly accepted
-- HTTP targets without `Content-Length` are currently rejected
+- HTTP targets without `Content-Length` fall back to single-stream downloads:
+  - segmented range scheduling is disabled
+  - safe resume is disabled
+  - the final size is learned only after the stream completes
+- multi-source HTTP sessions can distribute piece-aligned lanes across mirror/CDN origins when multiple transfer sources are configured
 - MIME-based filename/extension inference is intentionally not implemented yet; the downloader prefers explicit server metadata over guessing
 
 ## Testing
@@ -241,8 +250,8 @@ The suite currently includes:
 - repository tests
 - recovery rule tests
 - worker runtime tests
-- integration tests for actual downloads, restart recovery, safe resume, redirect/content-disposition handling, and HTTP error cases
-- resilience tests for dropped connections and failure diagnostic export
+- integration tests for actual downloads, restart recovery, safe resume, unknown-length streams, redirect/content-disposition handling, multi-source HTTP scheduling, and HTTP error cases
+- resilience tests for dropped connections, `Retry-After`, non-retryable status handling, and failure diagnostic export
 
 ## Release process
 

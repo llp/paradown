@@ -13,6 +13,8 @@ segments_per_task = 4
 rate_limit_kbps = 512
 connection_timeout = { secs = 30, nanos = 0 }
 storage_backend = { Sqlite = "./downloads.db" }
+# Alternative lightweight state file:
+# storage_backend = { JsonFile = "./downloads.json" }
 file_conflict_strategy = "Resume"
 debug = false
 on_complete = "echo paradown finished: completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"
@@ -26,6 +28,14 @@ backoff_factor = 2.0
 [progress_throttle]
 interval_ms = 200
 threshold_bytes = 1048576
+
+[http.client]
+cookie_store = false
+
+[http.client.tls]
+insecure_skip_verify = false
+# ca_certificate_pem = "./certs/internal-root.pem"
+# client_identity_pem = "./certs/client-identity.pem"
 
 [http.client.proxy]
 use_env_proxy = true

@@ -74,7 +74,7 @@ Important config notes:
 - `connection_timeout` uses TOML struct form, for example `connection_timeout = { secs = 30, nanos = 0 }`
 - `rate_limit_kbps` is optional; omit it to disable throttling
 - `storage_backend = { Sqlite = "./downloads.db" }` is the recommended production path today
-- `storage_backend = { JsonFile = ... }` is defined in code but not implemented
+- `storage_backend = { JsonFile = "./downloads.json" }` is supported when you prefer a single portable state file
 - `http.client.proxy.use_env_proxy = true` keeps `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` enabled
 - `on_complete` runs once after the session finishes and receives summary env vars
 
@@ -116,6 +116,16 @@ paradown \
   --cookie "session=demo" \
   --basic-auth user:password \
   --urls https://example.com/private.iso
+```
+
+Enable cookie-jar and TLS overrides when the origin behaves like a browser session or requires private PKI:
+
+```bash
+paradown \
+  --cookie-store \
+  --ca-cert ./certs/internal-root.pem \
+  --client-identity ./certs/client-identity.pem \
+  --urls https://internal.example.com/artifact.pkg
 ```
 
 ### Run A Completion Hook
@@ -195,16 +205,22 @@ The current HTTP implementation is intentionally conservative:
 
 - redirects are followed and the resolved URL is persisted
 - `Content-Disposition` filename wins over URL path when present
+- `filename*=` / RFC 5987 encoded filenames are supported
 - resume requests use stored validators via `If-Range`
 - if the remote validator changes, the task restarts from scratch
 - files without reliable validation are redownloaded instead of being blindly trusted
-- origins without `Content-Length` are rejected
+- origins without `Content-Length` are downloaded as single streams without segmented resume support
+- if you configure multiple HTTP transfer sources for the same session, `paradown` can spread piece-aligned lanes across those origins
 
 ## Troubleshooting
 
-### The downloader rejects a URL because of `Content-Length`
+### The origin does not send `Content-Length`
 
-That origin is currently outside the supported HTTP behavior. The current release requires a stable total size to support safe persistence and segmented downloads.
+`paradown` can still download it, but it intentionally falls back to a single streaming worker. That means:
+
+- no segmented range scheduling
+- no safe resume after interruption
+- total size is reported as `unknown` until the transfer completes
 
 ### Resume did not continue from the previous partial file
 

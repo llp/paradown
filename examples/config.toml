@@ -31,6 +31,7 @@ threshold_bytes = 1048576
 
 [http.client]
 cookie_store = false
+# cookie_jar_path = "./cookies/session.json"
 
 [http.client.tls]
 insecure_skip_verify = false

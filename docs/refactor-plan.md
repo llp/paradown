@@ -6,6 +6,12 @@
 
 本文档用于记录当前已经完成的重构、尚未完成的重构，以及接下来的重构路线。目标不是“为了拆而拆”，而是逐步把项目从原型式结构收敛成更稳定、职责更清晰、可继续演进的下载器架构。
 
+说明：
+
+- `3.x` 小节里较早的阶段性描述是历史记录，保留当时的判断与缺口，不代表当前代码现状
+- 当前现状应以“最新一轮”记录和 README 为准
+- 例如“无 `Content-Length` 明确失败”“JsonFile 未实现”这类表述，仅表示当时阶段的问题，现已不再成立
+
 ## 1. 重构目标
 
 本轮和后续几轮重构的目标主要有四个：
@@ -63,11 +69,48 @@
 
 ## 3. 已完成的重构
 
-### 3.0 最新一轮：升级为会话 + 多源 + piece/block 执行骨架
+### 3.0 最新一轮：收口 Session API、持久化 cookie jar，并补齐多源 HTTP 失败回退
 
 提交：
 
 - 待本轮提交
+
+已完成内容：
+
+- 对外 API 正式收口到 `Session` 语义：
+  - `download::Session`
+  - `download::SessionRequest`
+  - `download::SessionSnapshot`
+  - `Manager::add_session / get_session / get_all_sessions`
+- `Task = Session` / `TaskRequest = SessionRequest` 这种公开别名已移除
+- CLI、集成测试和公开导出已切到 Session 视角
+- HTTP 会话能力增强：
+  - `http.client.cookie_jar_path`
+  - `--cookie-jar <FILE>`
+  - 启用 `cookie_store` 时可跨运行持久化 cookie jar
+- 多源 HTTP 执行增强：
+  - worker source 从固定字段升级成可切换执行上下文
+  - retry 时会记录 source 健康度
+  - 主源失败后可切换到镜像/CDN source 继续传输
+- 存储一致性继续收紧：
+  - `persist_task_worker_later()` 不再只写 `debug`
+  - `purge_task*()` 删除失败不再静默吞掉
+- 新增回归：
+  - 持久化 cookie jar 跨 manager 重启继续访问受保护资源
+  - 主源返回可重试错误后切换镜像源完成下载
+
+这一轮解决的主要问题：
+
+- 对外契约仍然暴露 `Task / TaskRequest / TaskSnapshot`
+- “浏览器会话型” HTTP 流程只有内存 cookie jar，没有跨运行状态
+- 多 HTTP source 虽然能静态分 lane，但主源失败时还不能动态回退
+- 部分持久化和清理路径仍然吞错，问题只会停留在日志里
+
+### 3.1 上一轮：升级为会话 + 多源 + piece/block 执行骨架
+
+提交：
+
+- `98dff01` `升级为会话多源与 piece-block 执行架构`
 
 已完成内容：
 

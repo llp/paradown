@@ -123,7 +123,8 @@ Release automation:
 - `--basic-auth <USER[:PASS]>`: send HTTP basic auth
 - `--bearer-token <TOKEN>`: send bearer auth
 - `--http-proxy <URL>` / `--https-proxy <URL>` / `--no-proxy <PATTERN>` / `--no-env-proxy`
-- `--cookie-store`: enable reqwest's in-memory cookie jar for session-style HTTP flows
+- `--cookie-store`: enable an HTTP cookie jar for session-style flows
+- `--cookie-jar <FILE>`: persist the cookie jar and reload it on the next run
 - `--insecure-tls`: skip server certificate verification
 - `--ca-cert <PEM_FILE>`: trust an additional PEM-encoded CA certificate
 - `--client-identity <PEM_FILE>`: load a PEM-encoded client certificate + key
@@ -202,7 +203,7 @@ Important notes:
 
 The current internal structure is roughly:
 
-- `download`: curated public API for `Manager`, `Task`, `Worker`, `TaskRequest`, `Event`, and `Status`
+- `download`: curated public API for `Manager`, `Session`, `SessionRequest`, `SessionSnapshot`, `Worker`, `Event`, and `Status`
 - `src/main.rs` + `src/cli_app/`: official CLI binary, dashboard renderer, and command handling
 - `coordinator/`: queueing, event fan-in, and task registration
 - `job/`: per-download lifecycle, preparation, persistence helpers, finalization
@@ -233,6 +234,8 @@ Current HTTP/HTTPS rules are intentionally explicit:
   - safe resume is disabled
   - the final size is learned only after the stream completes
 - multi-source HTTP sessions can distribute piece-aligned lanes across mirror/CDN origins when multiple transfer sources are configured
+- retryable primary-source failures can fall back onto mirror/CDN origins within the same session
+- cookie jar state can be persisted and reused across runs with `--cookie-store --cookie-jar <FILE>`
 - MIME-based filename/extension inference is intentionally not implemented yet; the downloader prefers explicit server metadata over guessing
 
 ## Testing

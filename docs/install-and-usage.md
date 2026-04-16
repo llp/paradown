@@ -123,6 +123,7 @@ Enable cookie-jar and TLS overrides when the origin behaves like a browser sessi
 ```bash
 paradown \
   --cookie-store \
+  --cookie-jar ./cookies/session.json \
   --ca-cert ./certs/internal-root.pem \
   --client-identity ./certs/client-identity.pem \
   --urls https://internal.example.com/artifact.pkg

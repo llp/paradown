@@ -302,7 +302,7 @@ mod tests {
     #[tokio::test]
     async fn detects_range_support_from_partial_response() {
         let server = TestHttpServer::spawn(TestServerMode::RangeSupported).await;
-        let client = Client::new();
+        let client = Client::builder().no_proxy().build().unwrap();
 
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn falls_back_to_single_stream_when_range_is_ignored() {
         let server = TestHttpServer::spawn(TestServerMode::RangeIgnored).await;
-        let client = Client::new();
+        let client = Client::builder().no_proxy().build().unwrap();
 
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
@@ -326,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn handles_head_rejection_with_range_probe() {
         let server = TestHttpServer::spawn(TestServerMode::HeadRejected).await;
-        let client = Client::new();
+        let client = Client::builder().no_proxy().build().unwrap();
 
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
@@ -338,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_targets_without_content_length() {
         let server = TestHttpServer::spawn(TestServerMode::NoContentLength).await;
-        let client = Client::new();
+        let client = Client::builder().no_proxy().build().unwrap();
 
         let err = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await

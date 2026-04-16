@@ -47,6 +47,11 @@ async fn cli_process_handles_multi_task_downloads_end_to_end() {
     let status = tokio::task::spawn_blocking(move || {
         Command::new(binary)
             .current_dir(sandbox_dir)
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("NO_PROXY")
+            .env_remove("ALL_PROXY")
+            .arg("--no-env-proxy")
             .arg("--download-dir")
             .arg(download_dir_for_cmd)
             .arg("--verbose")

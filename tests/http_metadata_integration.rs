@@ -107,14 +107,16 @@ async fn redownloads_existing_file_when_no_validator_can_prove_it_is_valid() {
 }
 
 fn build_config(download_dir: &Path, db_path: &Path, strategy: FileConflictStrategy) -> Config {
-    ConfigBuilder::new()
+    let mut config = ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
         .segments_per_task(2)
         .concurrent_tasks(1)
         .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(strategy)
         .build()
-        .unwrap()
+        .unwrap();
+    config.http.client.proxy.use_env_proxy = false;
+    config
 }
 
 async fn wait_for_task_completion(

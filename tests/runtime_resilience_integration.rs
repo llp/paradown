@@ -20,6 +20,7 @@ async fn retries_download_when_origin_drops_connection() {
     config.segments_per_task = 1;
     config.concurrent_tasks = 1;
     config.retry.max_retries = 4;
+    config.http.client.proxy.use_env_proxy = false;
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
@@ -54,6 +55,7 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
     config.segments_per_task = 1;
     config.concurrent_tasks = 1;
     config.retry.max_retries = 1;
+    config.http.client.proxy.use_env_proxy = false;
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();

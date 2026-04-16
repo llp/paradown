@@ -23,7 +23,8 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
 
     DBDownloadTask {
         id: task.id,
-        url: task.spec.locator().to_string(),
+        url: task.spec.identity_key(),
+        spec_json: serde_json::to_string(&task.spec).unwrap_or_default(),
         source_set_json: serde_json::to_string(&task.source_set_snapshot().await)
             .unwrap_or_default(),
         resolved_url: resource_identity.resolved_url.unwrap_or_default(),
@@ -50,6 +51,11 @@ pub(crate) async fn worker_to_db(worker: &Arc<Worker>) -> DBDownloadWorker {
             .map(|task| task.id)
             .unwrap_or_default(),
         index: worker.id,
+        source_id: Some(worker.source.id.clone()),
+        piece_start: Some(worker.lane.piece_start),
+        piece_end: Some(worker.lane.piece_end),
+        block_start: Some(worker.lane.block_start),
+        block_end: Some(worker.lane.block_end),
         start: worker.start,
         end: worker.end,
         downloaded: worker.downloaded_size.load(Ordering::Relaxed),
@@ -96,9 +102,11 @@ pub(crate) fn db_task_to_request(
 ) -> TaskRequest {
     TaskRequest {
         id: Some(task.id),
-        spec: DownloadSpec::parse(task.url.clone()).unwrap_or(DownloadSpec::Https {
-            url: task.url.clone(),
-        }),
+        spec: serde_json::from_str::<DownloadSpec>(&task.spec_json)
+            .or_else(|_| DownloadSpec::parse(task.url.clone()))
+            .unwrap_or(DownloadSpec::Https {
+                url: task.url.clone(),
+            }),
         file_name: normalized_text_field(&task.file_name),
         file_path: normalized_text_field(&task.file_path),
         resource_identity: Some(HttpResourceIdentity {
@@ -182,6 +190,11 @@ pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<Segmen
             id: Some(worker.id),
             task_id: worker.task_id,
             index: worker.index,
+            source_id: worker.source_id.clone(),
+            piece_start: worker.piece_start,
+            piece_end: worker.piece_end,
+            block_start: worker.block_start,
+            block_end: worker.block_end,
             start: worker.start,
             end: worker.end,
             downloaded: Some(worker.downloaded),
@@ -217,6 +230,7 @@ mod tests {
             &DBDownloadTask {
                 id: 7,
                 url: "https://example.com/file.bin".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
@@ -273,6 +287,11 @@ mod tests {
             id: 9,
             task_id: 2,
             index: 1,
+            source_id: Some("source-1".into()),
+            piece_start: Some(1),
+            piece_end: Some(2),
+            block_start: Some(3),
+            block_end: Some(5),
             start: 50,
             end: 99,
             downloaded: 25,
@@ -283,6 +302,11 @@ mod tests {
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].task_id, 2);
         assert_eq!(workers[0].index, 1);
+        assert_eq!(workers[0].source_id.as_deref(), Some("source-1"));
+        assert_eq!(workers[0].piece_start, Some(1));
+        assert_eq!(workers[0].piece_end, Some(2));
+        assert_eq!(workers[0].block_start, Some(3));
+        assert_eq!(workers[0].block_end, Some(5));
         assert_eq!(workers[0].downloaded, Some(25));
         assert_eq!(workers[0].status.as_deref(), Some("Paused"));
     }

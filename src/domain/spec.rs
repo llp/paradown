@@ -28,18 +28,18 @@ pub enum DownloadSpec {
 impl DownloadSpec {
     pub fn parse(locator: impl Into<String>) -> Result<Self, Error> {
         let locator = locator.into();
-        if locator.ends_with(".torrent") {
-            return Ok(Self::TorrentFile { path: locator });
-        }
-
-        let parsed = url::Url::parse(&locator)?;
-
-        match parsed.scheme() {
-            "http" => Ok(Self::Http { url: locator }),
-            "https" => Ok(Self::Https { url: locator }),
-            "ftp" => Ok(Self::Ftp { url: locator }),
-            "magnet" => Ok(Self::Magnet { uri: locator }),
-            other => Err(Error::UnsupportedProtocol(other.to_string())),
+        match url::Url::parse(&locator) {
+            Ok(parsed) => match parsed.scheme() {
+                "http" => Ok(Self::Http { url: locator }),
+                "https" => Ok(Self::Https { url: locator }),
+                "ftp" => Ok(Self::Ftp { url: locator }),
+                "magnet" => Ok(Self::Magnet { uri: locator }),
+                other => Err(Error::UnsupportedProtocol(other.to_string())),
+            },
+            Err(url::ParseError::RelativeUrlWithoutBase) if locator.ends_with(".torrent") => {
+                Ok(Self::TorrentFile { path: locator })
+            }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -90,6 +90,22 @@ impl DownloadSpec {
             self,
             Self::TorrentFile { .. } | Self::Magnet { .. } | Self::Metadata { .. }
         )
+    }
+
+    pub fn identity_key(&self) -> String {
+        match self {
+            Self::Http { url } | Self::Https { url } | Self::Ftp { url } => url.clone(),
+            Self::TorrentFile { path } => format!("torrent-file:{path}"),
+            Self::Magnet { uri } => uri.clone(),
+            Self::Metadata {
+                display_name,
+                info_hash,
+            } => format!(
+                "metadata:{}:{}",
+                info_hash.as_deref().unwrap_or(""),
+                display_name.as_deref().unwrap_or("")
+            ),
+        }
     }
 }
 
@@ -146,5 +162,17 @@ mod tests {
     fn rejects_unsupported_protocols() {
         let spec = DownloadSpec::parse("magnet:?xt=urn:btih:deadbeef").unwrap();
         assert!(matches!(spec, DownloadSpec::Magnet { .. }));
+    }
+
+    #[test]
+    fn keeps_http_torrent_links_as_http_specs() {
+        let spec = DownloadSpec::parse("https://example.com/file.torrent").unwrap();
+        assert!(matches!(spec, DownloadSpec::Https { .. }));
+    }
+
+    #[test]
+    fn parses_local_torrent_files_as_torrent_specs() {
+        let spec = DownloadSpec::parse("/tmp/archive.torrent").unwrap();
+        assert!(matches!(spec, DownloadSpec::TorrentFile { .. }));
     }
 }

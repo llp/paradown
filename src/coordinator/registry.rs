@@ -35,20 +35,20 @@ pub(crate) async fn add_task_with_workers(
     task_request: TaskRequest,
     workers: Option<Vec<SegmentRequest>>,
 ) -> Result<u32, Error> {
-    let locator = task_request.locator().to_string();
+    let spec_identity = task_request.spec.identity_key();
     if let Some(existing) = manager
         .tasks
         .iter()
-        .find(|entry| entry.value().spec.locator() == locator)
+        .find(|entry| entry.value().spec.identity_key() == spec_identity)
     {
         warn!(
-            "[Manager] Task with locator '{}' already exists, returning existing task_id {}",
-            locator,
+            "[Manager] Task with spec '{}' already exists, returning existing task_id {}",
+            spec_identity,
             *existing.key()
         );
         return Err(Error::Other(format!(
-            "Locator '{}' already exists!",
-            locator
+            "Spec '{}' already exists!",
+            spec_identity
         )));
     }
 
@@ -122,7 +122,7 @@ async fn build_restored_workers(
 ) -> Vec<Arc<Worker>> {
     let file_path = task.file_path.get().cloned().unwrap_or_else(PathBuf::new);
     let source_set = task.source_set_snapshot().await;
-    let primary_source = source_set
+    let fallback_source = source_set
         .primary()
         .cloned()
         .unwrap_or_else(|| crate::domain::SourceDescriptor::from_spec(&task.spec, None));
@@ -130,20 +130,25 @@ async fn build_restored_workers(
     worker_requests
         .into_iter()
         .map(|worker_request| {
+            let source = worker_request
+                .source_id
+                .as_deref()
+                .and_then(|source_id| source_set.get(source_id).cloned())
+                .unwrap_or_else(|| fallback_source.clone());
             Arc::new(Worker::new(
                 worker_request.index,
                 manager.config.clone(),
                 Arc::downgrade(task),
                 task.client.clone(),
                 task.spec.clone(),
-                primary_source.clone(),
+                source.clone(),
                 crate::scheduler::planner::ExecutionLaneAssignment {
                     lane_id: worker_request.index,
-                    source_id: primary_source.id.clone(),
-                    piece_start: 0,
-                    piece_end: 0,
-                    block_start: 0,
-                    block_end: 0,
+                    source_id: source.id.clone(),
+                    piece_start: worker_request.piece_start.unwrap_or(0),
+                    piece_end: worker_request.piece_end.unwrap_or(0),
+                    block_start: worker_request.block_start.unwrap_or(0),
+                    block_end: worker_request.block_end.unwrap_or(0),
                     start: worker_request.start,
                     end: worker_request.end,
                 },

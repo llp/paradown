@@ -118,6 +118,7 @@ async fn seed_paused_resume_task(
         .save_task(&DBDownloadTask {
             id: 1,
             url: locator.to_string(),
+            spec_json: "".into(),
             source_set_json: "".into(),
             resolved_url: locator.to_string(),
             entity_tag: entity_tag.into(),
@@ -137,6 +138,11 @@ async fn seed_paused_resume_task(
             id: 1,
             task_id: 1,
             index: 0,
+            source_id: Some(format!("https::{locator}")),
+            piece_start: None,
+            piece_end: None,
+            block_start: None,
+            block_end: None,
             start: 0,
             end: total_size.saturating_sub(1),
             downloaded,
@@ -148,14 +154,16 @@ async fn seed_paused_resume_task(
 }
 
 fn build_config(download_dir: &Path, db_path: &Path) -> Config {
-    ConfigBuilder::new()
+    let mut config = ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
         .segments_per_task(1)
         .concurrent_tasks(1)
         .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(FileConflictStrategy::Resume)
         .build()
-        .unwrap()
+        .unwrap();
+    config.http.client.proxy.use_env_proxy = false;
+    config
 }
 
 async fn wait_for_task_completion(

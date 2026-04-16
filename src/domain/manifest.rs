@@ -77,7 +77,7 @@ impl SessionManifest {
         }];
 
         Self {
-            id: format!("{}::{}", spec.scheme(), spec.locator()),
+            id: spec.identity_key(),
             spec,
             sources,
             total_size,

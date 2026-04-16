@@ -45,7 +45,12 @@ pub(crate) fn build_restore_plan(bundle: StoredBundle) -> RestorePlan {
     }
 
     let sanitized_workers = if matches!(restored_status, Status::Paused) && file_state.exists {
-        sanitize_worker_requests(task.id, task_request.total_size, worker_requests)
+        sanitize_worker_requests(
+            task.id,
+            task_request.total_size,
+            task_request.sources.as_ref(),
+            worker_requests,
+        )
     } else {
         Vec::new()
     };
@@ -118,6 +123,7 @@ fn normalize_restored_status(status: Status) -> Status {
 fn sanitize_worker_requests(
     task_id: u32,
     total_size: Option<u64>,
+    source_set: Option<&crate::domain::SourceSet>,
     mut workers: Vec<SegmentRequest>,
 ) -> Vec<SegmentRequest> {
     workers.sort_by_key(|worker| worker.index);
@@ -125,6 +131,20 @@ fn sanitize_worker_requests(
     let mut sanitized = Vec::with_capacity(workers.len());
     let mut seen_indexes = HashSet::new();
     let mut expected_start = 0;
+    let known_sources: HashSet<String> = source_set
+        .map(|source_set| {
+            source_set
+                .sources
+                .iter()
+                .map(|source| source.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let single_source = if known_sources.len() == 1 {
+        known_sources.iter().next().cloned()
+    } else {
+        None
+    };
 
     for mut worker in workers {
         if worker.task_id != task_id {
@@ -176,6 +196,56 @@ fn sanitize_worker_requests(
             warn!(
                 "[Restore Task {}] Rejecting worker layout because worker {} starts at {}, expected {}",
                 task_id, worker.index, worker.start, expected_start
+            );
+            return Vec::new();
+        }
+
+        match worker.source_id.clone().or_else(|| single_source.clone()) {
+            Some(source_id) => {
+                if !known_sources.is_empty() && !known_sources.contains(&source_id) {
+                    warn!(
+                        "[Restore Task {}] Rejecting worker layout because worker {} source {} is unknown",
+                        task_id, worker.index, source_id
+                    );
+                    return Vec::new();
+                }
+                worker.source_id = Some(source_id);
+            }
+            None => {
+                warn!(
+                    "[Restore Task {}] Rejecting worker layout because worker {} is missing source identity",
+                    task_id, worker.index
+                );
+                return Vec::new();
+            }
+        }
+
+        let lane_metadata_count = [
+            worker.piece_start.is_some(),
+            worker.piece_end.is_some(),
+            worker.block_start.is_some(),
+            worker.block_end.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if lane_metadata_count != 0 && lane_metadata_count != 4 {
+            warn!(
+                "[Restore Task {}] Rejecting worker layout because worker {} has partial lane metadata",
+                task_id, worker.index
+            );
+            return Vec::new();
+        }
+        if let (Some(piece_start), Some(piece_end), Some(block_start), Some(block_end)) = (
+            worker.piece_start,
+            worker.piece_end,
+            worker.block_start,
+            worker.block_end,
+        ) && (piece_start > piece_end || block_start > block_end)
+        {
+            warn!(
+                "[Restore Task {}] Rejecting worker layout because worker {} has invalid lane metadata",
+                task_id, worker.index
             );
             return Vec::new();
         }
@@ -264,6 +334,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 1,
                 url: "https://example.com/file.bin".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
@@ -280,6 +351,11 @@ mod tests {
                 id: 1,
                 task_id: 1,
                 index: 0,
+                source_id: Some("https::https://example.com/file.bin".into()),
+                piece_start: None,
+                piece_end: None,
+                block_start: None,
+                block_end: None,
                 start: 0,
                 end: 99,
                 downloaded: 50,
@@ -306,6 +382,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 2,
                 url: "https://example.com/archive.iso".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
@@ -323,6 +400,11 @@ mod tests {
                     id: 1,
                     task_id: 2,
                     index: 0,
+                    source_id: Some("https::https://example.com/archive.iso".into()),
+                    piece_start: None,
+                    piece_end: None,
+                    block_start: None,
+                    block_end: None,
                     start: 0,
                     end: 49,
                     downloaded: 50,
@@ -333,6 +415,11 @@ mod tests {
                     id: 2,
                     task_id: 2,
                     index: 1,
+                    source_id: Some("https::https://example.com/archive.iso".into()),
+                    piece_start: None,
+                    piece_end: None,
+                    block_start: None,
+                    block_end: None,
                     start: 50,
                     end: 99,
                     downloaded: 10,
@@ -371,6 +458,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 3,
                 url: "https://example.com/video.mp4".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
@@ -388,6 +476,11 @@ mod tests {
                     id: 1,
                     task_id: 3,
                     index: 0,
+                    source_id: Some("https::https://example.com/video.mp4".into()),
+                    piece_start: None,
+                    piece_end: None,
+                    block_start: None,
+                    block_end: None,
                     start: 0,
                     end: 59,
                     downloaded: 60,
@@ -398,6 +491,11 @@ mod tests {
                     id: 2,
                     task_id: 3,
                     index: 1,
+                    source_id: Some("https::https://example.com/video.mp4".into()),
+                    piece_start: None,
+                    piece_end: None,
+                    block_start: None,
+                    block_end: None,
                     start: 40,
                     end: 99,
                     downloaded: 20,
@@ -425,6 +523,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 4,
                 url: "https://example.com/release.tar".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "".into(),
@@ -458,6 +557,7 @@ mod tests {
             task: DBDownloadTask {
                 id: 5,
                 url: "https://example.com/pieces.bin".into(),
+                spec_json: "".into(),
                 source_set_json: "".into(),
                 resolved_url: "".into(),
                 entity_tag: "\"etag-a\"".into(),

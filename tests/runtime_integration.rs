@@ -41,6 +41,7 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
         .save_task(&DBDownloadTask {
             id: 7,
             url: "https://example.com/archive.bin".into(),
+            spec_json: "".into(),
             source_set_json: "".into(),
             resolved_url: "https://example.com/archive.bin".into(),
             entity_tag: "\"etag-a\"".into(),
@@ -60,6 +61,11 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
             id: 1,
             task_id: 7,
             index: 0,
+            source_id: Some("https::https://example.com/archive.bin".into()),
+            piece_start: None,
+            piece_end: None,
+            block_start: None,
+            block_end: None,
             start: 0,
             end: 49,
             downloaded: 50,
@@ -73,6 +79,11 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
             id: 2,
             task_id: 7,
             index: 1,
+            source_id: Some("https::https://example.com/archive.bin".into()),
+            piece_start: None,
+            piece_end: None,
+            block_start: None,
+            block_end: None,
             start: 50,
             end: 99,
             downloaded: 10,
@@ -315,7 +326,7 @@ fn build_config_with_concurrency(
     rate_limit_kbps: Option<NonZeroU64>,
     file_conflict_strategy: FileConflictStrategy,
 ) -> Config {
-    ConfigBuilder::new()
+    let mut config = ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
         .segments_per_task(workers)
         .concurrent_tasks(concurrent_tasks)
@@ -323,7 +334,9 @@ fn build_config_with_concurrency(
         .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(file_conflict_strategy)
         .build()
-        .unwrap()
+        .unwrap();
+    config.http.client.proxy.use_env_proxy = false;
+    config
 }
 
 async fn wait_for_task_completion(

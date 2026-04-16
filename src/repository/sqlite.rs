@@ -48,6 +48,7 @@ impl SqliteRepository {
             CREATE TABLE IF NOT EXISTS download_tasks (
                 id INTEGER PRIMARY KEY,
                 url TEXT UNIQUE NOT NULL,
+                spec_json TEXT,
                 source_set_json TEXT,
                 resolved_url TEXT,
                 entity_tag TEXT,
@@ -72,6 +73,11 @@ impl SqliteRepository {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,       -- 保留自增 id 方便管理
                 task_id INTEGER NOT NULL,
                 "index" INTEGER NOT NULL,                   -- 任务内部 worker 索引
+                source_id TEXT,
+                piece_start INTEGER,
+                piece_end INTEGER,
+                block_start INTEGER,
+                block_end INTEGER,
                 start INTEGER NOT NULL,
                 "end" INTEGER NOT NULL,
                 downloaded INTEGER DEFAULT 0,
@@ -83,6 +89,7 @@ impl SqliteRepository {
         )
         .execute(&pool)
         .await?;
+        ensure_download_worker_columns(&pool).await?;
 
         sqlx::query(
             r#"
@@ -148,6 +155,7 @@ impl Repository for SqliteRepository {
             .map(|row| DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                spec_json: row.try_get("spec_json").unwrap_or_default(),
                 source_set_json: row.try_get("source_set_json").unwrap_or_default(),
                 resolved_url: row.try_get("resolved_url").unwrap_or_default(),
                 entity_tag: row.try_get("entity_tag").unwrap_or_default(),
@@ -181,6 +189,7 @@ impl Repository for SqliteRepository {
             Ok(Some(DBDownloadTask {
                 id: row.get("id"),
                 url: row.get("url"),
+                spec_json: row.try_get("spec_json").unwrap_or_default(),
                 source_set_json: row.try_get("source_set_json").unwrap_or_default(),
                 resolved_url: row.try_get("resolved_url").unwrap_or_default(),
                 entity_tag: row.try_get("entity_tag").unwrap_or_default(),
@@ -208,11 +217,12 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
-                (id, url, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
             ON CONFLICT(id) DO UPDATE SET
                 url=excluded.url,
+                spec_json=excluded.spec_json,
                 source_set_json=excluded.source_set_json,
                 resolved_url=excluded.resolved_url,
                 entity_tag=excluded.entity_tag,
@@ -227,6 +237,7 @@ impl Repository for SqliteRepository {
         )
             .bind(task.id)
             .bind(&task.url)
+            .bind(&task.spec_json)
             .bind(&task.source_set_json)
             .bind(&task.resolved_url)
             .bind(&task.entity_tag)
@@ -270,6 +281,11 @@ impl Repository for SqliteRepository {
                 id: r.get("id"),
                 task_id: r.get("task_id"),
                 index: r.get::<i64, _>("index") as u32,
+                source_id: r.try_get("source_id").ok(),
+                piece_start: r.try_get::<i64, _>("piece_start").ok().map(|v| v as u32),
+                piece_end: r.try_get::<i64, _>("piece_end").ok().map(|v| v as u32),
+                block_start: r.try_get::<i64, _>("block_start").ok().map(|v| v as u32),
+                block_end: r.try_get::<i64, _>("block_end").ok().map(|v| v as u32),
                 start: r.get::<i64, _>("start") as u64,
                 end: r.get::<i64, _>("end") as u64,
                 downloaded: r.get::<i64, _>("downloaded") as u64,
@@ -293,6 +309,11 @@ impl Repository for SqliteRepository {
                 id: r.get("id"),
                 task_id: r.get("task_id"),
                 index: r.get::<i64, _>("index") as u32,
+                source_id: r.try_get("source_id").ok(),
+                piece_start: r.try_get::<i64, _>("piece_start").ok().map(|v| v as u32),
+                piece_end: r.try_get::<i64, _>("piece_end").ok().map(|v| v as u32),
+                block_start: r.try_get::<i64, _>("block_start").ok().map(|v| v as u32),
+                block_end: r.try_get::<i64, _>("block_end").ok().map(|v| v as u32),
                 start: r.get::<i64, _>("start") as u64,
                 end: r.get::<i64, _>("end") as u64,
                 downloaded: r.get::<i64, _>("downloaded") as u64,
@@ -312,10 +333,15 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
         INSERT INTO download_workers
-            (task_id, "index", start, "end", downloaded, status, updated_at)
+            (task_id, "index", source_id, piece_start, piece_end, block_start, block_end, start, "end", downloaded, status, updated_at)
         VALUES
-            (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+            (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
         ON CONFLICT(task_id, "index") DO UPDATE SET
+            source_id=excluded.source_id,
+            piece_start=excluded.piece_start,
+            piece_end=excluded.piece_end,
+            block_start=excluded.block_start,
+            block_end=excluded.block_end,
             start=excluded.start,
             "end"=excluded."end",
             downloaded=excluded.downloaded,
@@ -325,6 +351,11 @@ impl Repository for SqliteRepository {
         )
         .bind(worker.task_id)
         .bind(worker.index)
+        .bind(worker.source_id.as_deref())
+        .bind(worker.piece_start.map(i64::from))
+        .bind(worker.piece_end.map(i64::from))
+        .bind(worker.block_start.map(i64::from))
+        .bind(worker.block_end.map(i64::from))
         .bind(worker.start as i64)
         .bind(worker.end as i64)
         .bind(worker.downloaded as i64)
@@ -548,6 +579,7 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
         .collect();
 
     for (column, definition) in [
+        ("spec_json", "TEXT"),
         ("source_set_json", "TEXT"),
         ("resolved_url", "TEXT"),
         ("entity_tag", "TEXT"),
@@ -559,6 +591,35 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
 
         sqlx::query(&format!(
             "ALTER TABLE download_tasks ADD COLUMN {column} {definition}"
+        ))
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_download_worker_columns(pool: &SqlitePool) -> Result<(), Error> {
+    let existing_columns: Vec<String> = sqlx::query("PRAGMA table_info(download_workers)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+
+    for (column, definition) in [
+        ("source_id", "TEXT"),
+        ("piece_start", "INTEGER"),
+        ("piece_end", "INTEGER"),
+        ("block_start", "INTEGER"),
+        ("block_end", "INTEGER"),
+    ] {
+        if existing_columns.iter().any(|name| name == column) {
+            continue;
+        }
+
+        sqlx::query(&format!(
+            "ALTER TABLE download_workers ADD COLUMN {column} {definition}"
         ))
         .execute(pool)
         .await?;
@@ -586,6 +647,7 @@ mod tests {
         let task = DBDownloadTask {
             id: 42,
             url: "https://example.com/file.bin".into(),
+            spec_json: "{\"Https\":{\"url\":\"https://example.com/file.bin\"}}".into(),
             source_set_json: "{\"sources\":[]}".into(),
             resolved_url: "https://cdn.example.com/file.bin".into(),
             entity_tag: "\"etag-42\"".into(),
@@ -604,6 +666,7 @@ mod tests {
         let loaded = repository.load_task(42).await.unwrap().unwrap();
         assert_eq!(loaded.id, 42);
         assert_eq!(loaded.url, task.url);
+        assert_eq!(loaded.spec_json, task.spec_json);
         assert_eq!(loaded.source_set_json, task.source_set_json);
         assert_eq!(loaded.resolved_url, task.resolved_url);
         assert_eq!(loaded.entity_tag, task.entity_tag);
@@ -626,6 +689,7 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                spec_json: "{\"Https\":{\"url\":\"https://example.com/archive.tar\"}}".into(),
                 source_set_json: "{\"sources\":[]}".into(),
                 resolved_url: "https://example.com/archive.tar".into(),
                 entity_tag: "\"etag-a\"".into(),
@@ -646,6 +710,7 @@ mod tests {
             .save_task(&DBDownloadTask {
                 id: 7,
                 url: "https://example.com/archive.tar".into(),
+                spec_json: "{\"Https\":{\"url\":\"https://example.com/archive.tar\"}}".into(),
                 source_set_json: "{\"sources\":[{\"id\":\"source-1\"}]}".into(),
                 resolved_url: "https://cdn.example.com/archive.tar".into(),
                 entity_tag: "\"etag-b\"".into(),
@@ -663,6 +728,10 @@ mod tests {
 
         let loaded = repository.load_task(7).await.unwrap().unwrap();
         assert_eq!(loaded.id, 7);
+        assert_eq!(
+            loaded.spec_json,
+            "{\"Https\":{\"url\":\"https://example.com/archive.tar\"}}"
+        );
         assert_eq!(
             loaded.source_set_json,
             "{\"sources\":[{\"id\":\"source-1\"}]}"

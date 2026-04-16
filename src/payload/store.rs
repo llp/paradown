@@ -60,6 +60,23 @@ impl PayloadStore {
         Ok(())
     }
 
+    pub(crate) async fn sync_data(&self) -> Result<(), Error> {
+        let handles = self
+            .file_handles
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            let file = handle.lock().await;
+            file.sync_data().await?;
+        }
+
+        Ok(())
+    }
+
     async fn file_handle(&self, path: &PathBuf) -> Result<Arc<Mutex<File>>, Error> {
         if let Some(handle) = self.file_handles.read().await.get(path).cloned() {
             return Ok(handle);

@@ -24,6 +24,16 @@ pub(crate) async fn finalize_download(job: &Arc<Task>) -> Result<(), Error> {
 }
 
 pub(crate) async fn finish_job(job: &Arc<Task>, outcome: Result<(), Error>) -> Result<(), Error> {
+    let outcome = match outcome {
+        Ok(()) => {
+            if let Ok(payload_store) = job.payload_store().await {
+                payload_store.sync_data().await?;
+            }
+            Ok(())
+        }
+        Err(err) => Err(err),
+    };
+
     match outcome {
         Ok(()) => {
             job.mark_all_pieces_completed().await;

@@ -292,7 +292,8 @@ impl RestoreFileState {
 
         match (self.size, total_size) {
             (Some(size), Some(total)) if total > 0 => size == total,
-            (Some(_), _) => true,
+            (Some(_), None) => false,
+            (Some(_), Some(_)) => false,
             _ => false,
         }
     }
@@ -533,6 +534,40 @@ mod tests {
                 status: "Completed".into(),
                 downloaded_size: 128,
                 total_size: Some(128),
+                created_at: None,
+                updated_at: None,
+            },
+            workers: vec![],
+            pieces: vec![],
+            blocks: vec![],
+            checksums: vec![],
+        });
+
+        let (task_request, workers) = plan.into_parts();
+        assert!(workers.is_none());
+        assert!(matches!(task_request.status, Some(Status::Pending)));
+        assert_eq!(task_request.downloaded_size, Some(0));
+    }
+
+    #[test]
+    fn downgrades_completed_restore_when_total_size_is_unknown() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"stream-body").unwrap();
+
+        let plan = build_restore_plan(StoredBundle {
+            task: DBDownloadTask {
+                id: 5,
+                url: "https://example.com/stream".into(),
+                spec_json: "".into(),
+                source_set_json: "".into(),
+                resolved_url: "".into(),
+                entity_tag: "".into(),
+                last_modified: "".into(),
+                file_name: "stream.bin".into(),
+                file_path: file.path().to_string_lossy().to_string(),
+                status: "Completed".into(),
+                downloaded_size: 11,
+                total_size: None,
                 created_at: None,
                 updated_at: None,
             },

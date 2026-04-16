@@ -131,6 +131,8 @@ Release automation:
 - `--completion-hook <COMMAND>`: run a shell hook after the session finishes
 - `-u, --urls <URL>...`: one or more URLs to download
 
+`--rate-limit-kib` and interactive `limit` both apply a single global cap shared by all active tasks and workers.
+
 Config precedence is: `CLI > environment > config file > defaults`.
 
 ## Interactive mode

@@ -7,7 +7,7 @@
 - `concurrent_tasks = 2-4` for desktop usage
 - `segments_per_task = 4-8` for large artifacts on range-capable origins
 - `progress_throttle.interval_ms = 200-500` and `progress_throttle.threshold_bytes = 1-8 MiB` when SQLite persistence is enabled
-- `rate_limit_kib_per_sec` unset unless the downloader is sharing bandwidth with other production traffic
+- `rate_limit_kib_per_sec` unset unless the downloader is sharing bandwidth with other production traffic; the cap is global, not per task
 
 ## Concurrency guidance
 

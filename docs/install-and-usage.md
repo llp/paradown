@@ -73,6 +73,7 @@ Important config notes:
 - config files now carry `schema_version`; missing versions are treated as schema `1`
 - `connect_timeout_secs` is an integer number of seconds and only controls TCP connect timeout
 - `rate_limit_kib_per_sec` is optional; omit it to disable throttling
+  It is a single global cap shared by all tasks and workers in the current process.
 - `storage_backend = { Sqlite = "./downloads.db" }` is the recommended production path today
 - `storage_backend = { JsonFile = "./downloads.json" }` is supported when you prefer a single portable state file
 - `http.client.proxy.use_env_proxy = true` keeps `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` enabled
@@ -160,6 +161,8 @@ Interactive commands:
 - `cancel [all|id ...]`
 - `delete [all|id ...]`
 - `limit <kib|off>`
+
+`limit` updates the global cap immediately for all active workers.
 
 ## Output Modes
 

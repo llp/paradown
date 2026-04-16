@@ -498,7 +498,7 @@ fn build_config(
     download_dir: &Path,
     db_path: &Path,
     workers: usize,
-    rate_limit_kbps: Option<NonZeroU64>,
+    rate_limit_kib_per_sec: Option<NonZeroU64>,
     file_conflict_strategy: FileConflictStrategy,
 ) -> Config {
     build_config_with_concurrency(
@@ -506,7 +506,7 @@ fn build_config(
         db_path,
         workers,
         1,
-        rate_limit_kbps,
+        rate_limit_kib_per_sec,
         file_conflict_strategy,
     )
 }
@@ -516,14 +516,14 @@ fn build_config_with_concurrency(
     db_path: &Path,
     workers: usize,
     concurrent_tasks: usize,
-    rate_limit_kbps: Option<NonZeroU64>,
+    rate_limit_kib_per_sec: Option<NonZeroU64>,
     file_conflict_strategy: FileConflictStrategy,
 ) -> Config {
     let mut config = ConfigBuilder::new()
         .download_dir(download_dir.to_path_buf())
         .segments_per_task(workers)
         .concurrent_tasks(concurrent_tasks)
-        .rate_limit_kbps(rate_limit_kbps)
+        .rate_limit_kib_per_sec(rate_limit_kib_per_sec)
         .storage_backend(Backend::Sqlite(db_path.to_path_buf()))
         .file_conflict_strategy(file_conflict_strategy)
         .build()

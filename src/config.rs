@@ -1,11 +1,11 @@
 use crate::domain::{HttpAuth, HttpConfig, HttpHeader};
 use crate::storage::Backend;
+use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::Duration;
 use thiserror::Error;
 
 pub const CURRENT_CONFIG_SCHEMA: u32 = 1;
@@ -34,6 +34,28 @@ impl FromStr for FileConflictStrategy {
                 value: other.to_string(),
                 message: "expected overwrite, skip_if_valid, or resume".into(),
             }),
+        }
+    }
+}
+
+/// 日志级别
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+}
+
+impl LogLevel {
+    pub fn as_level_filter(self) -> LevelFilter {
+        match self {
+            Self::Error => LevelFilter::Error,
+            Self::Warn => LevelFilter::Warn,
+            Self::Info => LevelFilter::Info,
+            Self::Debug => LevelFilter::Debug,
         }
     }
 }
@@ -81,8 +103,8 @@ impl Default for RetryConfig {
 pub struct Config {
     #[serde(default = "default_download_dir")]
     pub download_dir: PathBuf,
-    #[serde(default)]
-    pub shuffle: bool,
+    #[serde(default, alias = "shuffle")]
+    pub shuffle_tasks: bool,
     #[serde(
         default = "default_concurrent_tasks",
         alias = "max_concurrent_downloads"
@@ -92,20 +114,20 @@ pub struct Config {
     pub segments_per_task: usize,
     #[serde(default)]
     pub retry: RetryConfig,
-    #[serde(default)]
-    pub rate_limit_kbps: Option<NonZeroU64>,
-    #[serde(default = "default_connection_timeout")]
-    pub connection_timeout: Duration,
+    #[serde(default, alias = "rate_limit_kbps")]
+    pub rate_limit_kib_per_sec: Option<NonZeroU64>,
+    #[serde(default = "default_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
     #[serde(default = "default_storage_backend", alias = "persistence_type")]
     pub storage_backend: Backend,
     #[serde(default)]
     pub progress_throttle: ProgressThrottleConfig,
     #[serde(default = "default_file_conflict_strategy")]
     pub file_conflict_strategy: FileConflictStrategy,
-    #[serde(default = "default_debug")]
-    pub debug: bool,
     #[serde(default)]
-    pub on_complete: Option<String>,
+    pub log_level: LogLevel,
+    #[serde(default, alias = "on_complete")]
+    pub completion_hook: Option<String>,
     #[serde(default)]
     pub http: HttpConfig,
 }
@@ -128,17 +150,17 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             download_dir: default_download_dir(),
-            shuffle: false,
+            shuffle_tasks: false,
             concurrent_tasks: default_concurrent_tasks(),
             segments_per_task: default_segments_per_task(),
             retry: RetryConfig::default(),
-            rate_limit_kbps: None,
-            connection_timeout: default_connection_timeout(),
+            rate_limit_kib_per_sec: None,
+            connect_timeout_secs: default_connect_timeout_secs(),
             storage_backend: default_storage_backend(),
             progress_throttle: ProgressThrottleConfig::default(),
             file_conflict_strategy: default_file_conflict_strategy(),
-            debug: default_debug(),
-            on_complete: None,
+            log_level: LogLevel::default(),
+            completion_hook: None,
             http: HttpConfig::default(),
         }
     }
@@ -157,8 +179,8 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn shuffle(mut self, enable: bool) -> Self {
-        self.inner.shuffle = enable;
+    pub fn shuffle_tasks(mut self, enable: bool) -> Self {
+        self.inner.shuffle_tasks = enable;
         self
     }
 
@@ -177,13 +199,13 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn rate_limit_kbps(mut self, kbps: Option<NonZeroU64>) -> Self {
-        self.inner.rate_limit_kbps = kbps;
+    pub fn rate_limit_kib_per_sec(mut self, kib_per_sec: Option<NonZeroU64>) -> Self {
+        self.inner.rate_limit_kib_per_sec = kib_per_sec;
         self
     }
 
-    pub fn connection_timeout(mut self, secs: u64) -> Self {
-        self.inner.connection_timeout = Duration::from_secs(secs);
+    pub fn connect_timeout_secs(mut self, secs: u64) -> Self {
+        self.inner.connect_timeout_secs = secs;
         self
     }
 
@@ -202,13 +224,13 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn debug(mut self, debug: bool) -> Self {
-        self.inner.debug = debug;
+    pub fn log_level(mut self, log_level: LogLevel) -> Self {
+        self.inner.log_level = log_level;
         self
     }
 
-    pub fn on_complete(mut self, command: impl Into<String>) -> Self {
-        self.inner.on_complete = Some(command.into());
+    pub fn completion_hook(mut self, command: impl Into<String>) -> Self {
+        self.inner.completion_hook = Some(command.into());
         self
     }
 
@@ -234,12 +256,16 @@ impl Default for ConfigBuilder {
 pub enum ConfigError {
     #[error("Invalid download directory: {0}")]
     InvalidDownloadDir(String),
+    #[error("Invalid concurrent tasks: {0}")]
+    InvalidConcurrentTasks(usize),
     #[error("Invalid segments per task: {0}")]
     InvalidSegmentsPerTask(usize),
-    #[error("No download URLs provided")]
-    NoUrls,
-    #[error("Invalid URL format: {0}")]
-    InvalidUrl(String),
+    #[error("Invalid progress throttle interval: {0}")]
+    InvalidProgressThrottleInterval(u64),
+    #[error("Invalid retry config: {0}")]
+    InvalidRetryConfig(String),
+    #[error("Completion hook cannot be blank")]
+    InvalidCompletionHook,
     #[error("Unsupported config schema version {found}, current supported version is {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("Invalid env value for {key}: '{value}' ({message})")]
@@ -250,44 +276,90 @@ pub enum ConfigError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum ConfigLoadError {
+    #[error("Failed to read config file '{path}': {source}")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Failed to parse config file '{path}': {source}")]
+    ParseFile {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("Failed to parse config: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+}
+
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !self.download_dir.exists()
-            && let Err(e) = std::fs::create_dir_all(&self.download_dir)
-        {
-            return Err(ConfigError::InvalidDownloadDir(format!(
-                "Cannot create directory '{}': {}",
-                self.download_dir.display(),
-                e
-            )));
+        if self.download_dir.as_os_str().is_empty() {
+            return Err(ConfigError::InvalidDownloadDir(
+                "path cannot be empty".into(),
+            ));
+        }
+
+        if self.concurrent_tasks == 0 {
+            return Err(ConfigError::InvalidConcurrentTasks(self.concurrent_tasks));
         }
 
         if self.segments_per_task == 0 || self.segments_per_task > 100 {
             return Err(ConfigError::InvalidSegmentsPerTask(self.segments_per_task));
         }
+
+        if self.progress_throttle.interval_ms == 0 {
+            return Err(ConfigError::InvalidProgressThrottleInterval(
+                self.progress_throttle.interval_ms,
+            ));
+        }
+
+        validate_retry_config(&self.retry)?;
+
+        if self
+            .completion_hook
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(ConfigError::InvalidCompletionHook);
+        }
+
         Ok(())
     }
 
     /// 从 TOML 文件加载配置
-    pub fn from_file(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = std::fs::read_to_string(path)?;
-        let file: ConfigFile = toml::from_str(&content)?;
-        if file.schema_version > CURRENT_CONFIG_SCHEMA {
-            return Err(Box::new(ConfigError::UnsupportedSchemaVersion {
-                found: file.schema_version,
-                supported: CURRENT_CONFIG_SCHEMA,
-            }));
-        }
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigLoadError> {
+        let path = path.as_ref();
+        let content =
+            std::fs::read_to_string(path).map_err(|source| ConfigLoadError::ReadFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Self::parse_toml_document(&content)
+            .map_err(|source| ConfigLoadError::ParseFile {
+                path: path.into(),
+                source,
+            })?
+            .into_config()
+    }
 
-        Ok(file.config)
+    pub fn from_toml_str(content: &str) -> Result<Self, ConfigLoadError> {
+        Self::parse_toml_document(content)?.into_config()
     }
 
     pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
         if let Some(value) = read_env("PARADOWN_DOWNLOAD_DIR") {
             self.download_dir = PathBuf::from(value);
         }
+        if let Some(value) = parse_env_bool("PARADOWN_SHUFFLE_TASKS")? {
+            self.shuffle_tasks = value;
+        }
         if let Some(value) = parse_env_bool("PARADOWN_SHUFFLE")? {
-            self.shuffle = value;
+            self.shuffle_tasks = value;
         }
         if let Some(value) = parse_env_usize("PARADOWN_CONCURRENT_TASKS")? {
             self.concurrent_tasks = value;
@@ -301,11 +373,17 @@ impl Config {
         if let Some(value) = parse_env_usize("PARADOWN_WORKERS")? {
             self.segments_per_task = value;
         }
+        if let Some(value) = parse_env_u64("PARADOWN_RATE_LIMIT_KIB_PER_SEC")? {
+            self.rate_limit_kib_per_sec = NonZeroU64::new(value);
+        }
         if let Some(value) = parse_env_u64("PARADOWN_RATE_LIMIT_KBPS")? {
-            self.rate_limit_kbps = NonZeroU64::new(value);
+            self.rate_limit_kib_per_sec = NonZeroU64::new(value);
+        }
+        if let Some(value) = parse_env_u64("PARADOWN_CONNECT_TIMEOUT_SECS")? {
+            self.connect_timeout_secs = value;
         }
         if let Some(value) = parse_env_u64("PARADOWN_CONNECTION_TIMEOUT_SECS")? {
-            self.connection_timeout = Duration::from_secs(value);
+            self.connect_timeout_secs = value;
         }
         if let Some(value) = read_env("PARADOWN_STORAGE_BACKEND") {
             self.storage_backend = parse_storage_backend_env(&value)?;
@@ -313,11 +391,14 @@ impl Config {
         if let Some(value) = read_env("PARADOWN_FILE_CONFLICT_STRATEGY") {
             self.file_conflict_strategy = FileConflictStrategy::from_str(&value)?;
         }
-        if let Some(value) = parse_env_bool("PARADOWN_DEBUG")? {
-            self.debug = value;
+        if let Some(value) = read_env("PARADOWN_LOG_LEVEL") {
+            self.log_level = parse_log_level("PARADOWN_LOG_LEVEL", &value)?;
+        }
+        if let Some(value) = read_env("PARADOWN_COMPLETION_HOOK") {
+            self.completion_hook = Some(value);
         }
         if let Some(value) = read_env("PARADOWN_ON_COMPLETE") {
-            self.on_complete = Some(value);
+            self.completion_hook = Some(value);
         }
 
         if let Some(value) = parse_env_bool("PARADOWN_USE_ENV_PROXY")? {
@@ -327,6 +408,7 @@ impl Config {
             self.http.client.cookie_store = value;
         }
         if let Some(value) = read_env("PARADOWN_COOKIE_JAR") {
+            self.http.client.cookie_store = true;
             self.http.client.cookie_jar_path = Some(value.into());
         }
         if let Some(value) = read_env("PARADOWN_HTTP_PROXY") {
@@ -366,15 +448,59 @@ impl Config {
 
         Ok(())
     }
+
+    fn parse_toml_document(content: &str) -> Result<ConfigFile, toml::de::Error> {
+        toml::from_str(content)
+    }
 }
 
 impl FromStr for Config {
-    type Err = toml::de::Error;
+    type Err = ConfigLoadError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let file: ConfigFile = toml::from_str(s)?;
-        Ok(file.config)
+        Self::from_toml_str(s)
     }
+}
+
+impl ConfigFile {
+    fn into_config(self) -> Result<Config, ConfigLoadError> {
+        validate_schema_version(self.schema_version)?;
+        self.config.validate()?;
+        Ok(self.config)
+    }
+}
+
+fn validate_schema_version(schema_version: u32) -> Result<(), ConfigError> {
+    if schema_version > CURRENT_CONFIG_SCHEMA {
+        return Err(ConfigError::UnsupportedSchemaVersion {
+            found: schema_version,
+            supported: CURRENT_CONFIG_SCHEMA,
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_retry_config(retry: &RetryConfig) -> Result<(), ConfigError> {
+    if retry.max_retries > 0 && retry.initial_delay == 0 {
+        return Err(ConfigError::InvalidRetryConfig(
+            "initial_delay must be greater than 0 when retries are enabled".into(),
+        ));
+    }
+
+    if retry.max_delay < retry.initial_delay {
+        return Err(ConfigError::InvalidRetryConfig(
+            "max_delay must be greater than or equal to initial_delay".into(),
+        ));
+    }
+
+    if retry.backoff_factor < 1.0 {
+        return Err(ConfigError::InvalidRetryConfig(
+            "backoff_factor must be greater than or equal to 1.0".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn default_schema_version() -> u32 {
@@ -393,8 +519,8 @@ fn default_segments_per_task() -> usize {
     4
 }
 
-fn default_connection_timeout() -> Duration {
-    Duration::from_secs(30)
+fn default_connect_timeout_secs() -> u64 {
+    30
 }
 
 fn default_storage_backend() -> Backend {
@@ -403,10 +529,6 @@ fn default_storage_backend() -> Backend {
 
 fn default_file_conflict_strategy() -> FileConflictStrategy {
     FileConflictStrategy::Resume
-}
-
-fn default_debug() -> bool {
-    true
 }
 
 fn read_env(key: &str) -> Option<String> {
@@ -481,6 +603,20 @@ fn parse_storage_backend_env(value: &str) -> Result<Backend, ConfigError> {
     })
 }
 
+fn parse_log_level(key: &str, value: &str) -> Result<LogLevel, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "error" => Ok(LogLevel::Error),
+        "warn" | "warning" => Ok(LogLevel::Warn),
+        "info" => Ok(LogLevel::Info),
+        "debug" => Ok(LogLevel::Debug),
+        _ => Err(ConfigError::InvalidEnvValue {
+            key: key.to_string(),
+            value: value.to_string(),
+            message: "expected error, warn, info, or debug".into(),
+        }),
+    }
+}
+
 fn parse_headers_env(key: &str, value: &str) -> Result<Vec<HttpHeader>, ConfigError> {
     let mut headers = Vec::new();
 
@@ -529,19 +665,29 @@ fn parse_basic_auth_env(value: &str) -> Result<HttpAuth, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_CONFIG_SCHEMA, Config, FileConflictStrategy};
+    use super::{
+        CURRENT_CONFIG_SCHEMA, Config, ConfigBuilder, ConfigLoadError, FileConflictStrategy,
+        LogLevel,
+    };
+    use tempfile::tempdir;
 
     #[test]
     fn parses_legacy_field_aliases() {
         let config = r#"
+            shuffle = true
             worker_threads = 8
             max_concurrent_downloads = 6
+            rate_limit_kbps = 512
             persistence_type = { Memory = {} }
+            on_complete = "echo done"
         "#;
 
         let parsed = config.parse::<Config>().unwrap();
+        assert!(parsed.shuffle_tasks);
         assert_eq!(parsed.segments_per_task, 8);
         assert_eq!(parsed.concurrent_tasks, 6);
+        assert_eq!(parsed.rate_limit_kib_per_sec.unwrap().get(), 512);
+        assert_eq!(parsed.completion_hook.as_deref(), Some("echo done"));
         assert!(matches!(
             parsed.storage_backend,
             crate::storage::Backend::Memory
@@ -554,7 +700,12 @@ mod tests {
             r#"
             schema_version = {CURRENT_CONFIG_SCHEMA}
             download_dir = "./custom-downloads"
+            shuffle_tasks = true
+            rate_limit_kib_per_sec = 1024
+            connect_timeout_secs = 45
             file_conflict_strategy = "Overwrite"
+            log_level = "debug"
+            completion_hook = "echo finished"
             "#
         );
 
@@ -563,9 +714,39 @@ mod tests {
             parsed.download_dir,
             std::path::PathBuf::from("./custom-downloads")
         );
+        assert!(parsed.shuffle_tasks);
+        assert_eq!(parsed.rate_limit_kib_per_sec.unwrap().get(), 1024);
+        assert_eq!(parsed.connect_timeout_secs, 45);
+        assert_eq!(parsed.log_level, LogLevel::Debug);
+        assert_eq!(parsed.completion_hook.as_deref(), Some("echo finished"));
         assert!(matches!(
             parsed.file_conflict_strategy,
             FileConflictStrategy::Overwrite
         ));
+    }
+
+    #[test]
+    fn from_str_rejects_unsupported_schema_version() {
+        let config = format!("schema_version = {}", CURRENT_CONFIG_SCHEMA + 1);
+        let err = config.parse::<Config>().unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConfigLoadError::Config(super::ConfigError::UnsupportedSchemaVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_is_pure_and_does_not_create_directories() {
+        let temp = tempdir().unwrap();
+        let download_dir = temp.path().join("not-created-yet");
+        let config = ConfigBuilder::new()
+            .download_dir(download_dir.clone())
+            .build()
+            .unwrap();
+
+        assert!(!download_dir.exists());
+        config.validate().unwrap();
+        assert!(!download_dir.exists());
     }
 }

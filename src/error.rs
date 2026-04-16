@@ -1,4 +1,4 @@
-use crate::config::ConfigError;
+use crate::config::{ConfigError, ConfigLoadError};
 use reqwest::header::ToStrError;
 use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
@@ -101,6 +101,12 @@ impl From<AcquireError> for Error {
 
 impl From<ConfigError> for Error {
     fn from(err: ConfigError) -> Self {
+        Error::ConfigError(err.to_string())
+    }
+}
+
+impl From<ConfigLoadError> for Error {
+    fn from(err: ConfigLoadError) -> Self {
         Error::ConfigError(err.to_string())
     }
 }

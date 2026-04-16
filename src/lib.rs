@@ -24,7 +24,8 @@ mod worker;
 
 pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
-    Config, ConfigBuilder, ConfigError, FileConflictStrategy, ProgressThrottleConfig, RetryConfig,
+    Config, ConfigBuilder, ConfigError, ConfigLoadError, FileConflictStrategy, LogLevel,
+    ProgressThrottleConfig, RetryConfig,
 };
 pub use domain::{
     BlockState, FileManifest, HttpAuth, HttpClientOptions, HttpConfig, HttpHeader,

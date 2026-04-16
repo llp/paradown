@@ -57,11 +57,12 @@ pub(crate) struct ProgressPersistState {
 
 impl Manager {
     pub fn new(config: Config) -> Result<Arc<Self>, Error> {
+        config.validate()?;
         let (task_event_tx, _) = broadcast::channel(100);
         let max_concurrent = config.concurrent_tasks;
         let built_http_client = build_http_client(&config)?;
         let http_client = Arc::new(built_http_client.client);
-        let rate_limiter = Arc::new(DownloadRateLimiter::new(config.rate_limit_kbps));
+        let rate_limiter = Arc::new(DownloadRateLimiter::new(config.rate_limit_kib_per_sec));
 
         let manager = Arc::new(Self {
             config: Arc::new(config),
@@ -403,12 +404,14 @@ impl Manager {
         self.progress_persist_state.remove(&task_id);
     }
 
-    pub async fn set_rate_limit_kbps(&self, limit_kbps: Option<NonZeroU64>) {
-        self.rate_limiter.set_limit_kbps(limit_kbps).await;
+    pub async fn set_rate_limit_kib_per_sec(&self, limit_kib_per_sec: Option<NonZeroU64>) {
+        self.rate_limiter
+            .set_limit_kib_per_sec(limit_kib_per_sec)
+            .await;
     }
 
-    pub fn current_rate_limit_kbps(&self) -> Option<u64> {
-        self.rate_limiter.current_limit_kbps()
+    pub fn current_rate_limit_kib_per_sec(&self) -> Option<u64> {
+        self.rate_limiter.current_limit_kib_per_sec()
     }
 
     pub(crate) fn persist_http_session_state(&self) -> Result<(), Error> {

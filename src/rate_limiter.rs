@@ -9,20 +9,20 @@ pub(crate) struct DownloadRateLimiter {
 }
 
 impl DownloadRateLimiter {
-    pub(crate) fn new(limit_kbps: Option<NonZeroU64>) -> Self {
+    pub(crate) fn new(limit_kib_per_sec: Option<NonZeroU64>) -> Self {
         Self {
-            bytes_per_second: AtomicU64::new(kbps_to_bytes(limit_kbps)),
+            bytes_per_second: AtomicU64::new(kib_to_bytes(limit_kib_per_sec)),
             next_available_at: Mutex::new(Instant::now()),
         }
     }
 
-    pub(crate) async fn set_limit_kbps(&self, limit_kbps: Option<NonZeroU64>) {
+    pub(crate) async fn set_limit_kib_per_sec(&self, limit_kib_per_sec: Option<NonZeroU64>) {
         self.bytes_per_second
-            .store(kbps_to_bytes(limit_kbps), Ordering::Relaxed);
+            .store(kib_to_bytes(limit_kib_per_sec), Ordering::Relaxed);
         *self.next_available_at.lock().await = Instant::now();
     }
 
-    pub(crate) fn current_limit_kbps(&self) -> Option<u64> {
+    pub(crate) fn current_limit_kib_per_sec(&self) -> Option<u64> {
         let bytes_per_second = self.bytes_per_second.load(Ordering::Relaxed);
         if bytes_per_second == 0 {
             None
@@ -50,8 +50,8 @@ impl DownloadRateLimiter {
     }
 }
 
-fn kbps_to_bytes(limit_kbps: Option<NonZeroU64>) -> u64 {
-    limit_kbps
+fn kib_to_bytes(limit_kib_per_sec: Option<NonZeroU64>) -> u64 {
+    limit_kib_per_sec
         .map(|value| value.get().saturating_mul(1024))
         .unwrap_or(0)
 }
@@ -68,9 +68,9 @@ mod tests {
     #[tokio::test]
     async fn reports_current_limit_in_kilobytes() {
         let limiter = DownloadRateLimiter::new(NonZeroU64::new(64));
-        assert_eq!(limiter.current_limit_kbps(), Some(64));
+        assert_eq!(limiter.current_limit_kib_per_sec(), Some(64));
 
-        limiter.set_limit_kbps(None).await;
-        assert_eq!(limiter.current_limit_kbps(), None);
+        limiter.set_limit_kib_per_sec(None).await;
+        assert_eq!(limiter.current_limit_kib_per_sec(), None);
     }
 }

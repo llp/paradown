@@ -75,7 +75,7 @@ pub fn init_logger_with_level(log_level: LevelFilter) {
 
 pub(crate) fn build_http_client(config: &Config) -> Result<BuiltHttpClient, Error> {
     let mut builder = reqwest::Client::builder()
-        .connect_timeout(config.connection_timeout)
+        .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
         .pool_max_idle_per_host(50)
         .pool_idle_timeout(Duration::from_secs(60))
         .gzip(true);

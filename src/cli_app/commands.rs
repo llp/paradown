@@ -83,7 +83,7 @@ pub fn help_lines() -> Vec<String> {
         "  retry [all|id ...]           Restart failed, canceled, or pending tasks".into(),
         "  cancel [all|id ...]          Cancel all tasks or selected task ids".into(),
         "  delete [all|id ...]          Delete tasks and remove their local files".into(),
-        "  limit <kbps|off>             Set global rate limit, or disable it".into(),
+        "  limit <kib|off>              Set global rate limit, or disable it".into(),
     ]
 }
 
@@ -150,7 +150,7 @@ fn parse_task_id(arguments: &[&str]) -> Result<u32, String> {
 fn parse_limit_command(arguments: &[&str]) -> Result<Command, String> {
     let value = arguments
         .first()
-        .ok_or_else(|| "Usage: limit <kbps|off>".to_string())?;
+        .ok_or_else(|| "Usage: limit <kib|off>".to_string())?;
     let limit = match *value {
         "off" | "none" | "unlimited" | "0" => None,
         _ => NonZeroU64::new(

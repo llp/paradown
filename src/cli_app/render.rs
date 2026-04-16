@@ -207,7 +207,7 @@ impl DashboardRunner {
             &snapshots,
             &render_state,
             &self.messages,
-            self.manager.current_rate_limit_kbps(),
+            self.manager.current_rate_limit_kib_per_sec(),
             self.interactive,
             final_frame,
         );
@@ -324,12 +324,12 @@ impl PlainTextRunner {
         let frame = render_plain_progress(
             &snapshots,
             &render_state,
-            self.manager.current_rate_limit_kbps(),
+            self.manager.current_rate_limit_kib_per_sec(),
             final_frame,
         );
         let signature = plain_signature(
             &snapshots,
-            self.manager.current_rate_limit_kbps(),
+            self.manager.current_rate_limit_kib_per_sec(),
             final_frame,
         );
 
@@ -443,7 +443,7 @@ impl JsonRunner {
         let render_state = self.sample_render_state(&snapshots);
         let signature = plain_signature(
             &snapshots,
-            self.manager.current_rate_limit_kbps(),
+            self.manager.current_rate_limit_kib_per_sec(),
             final_frame,
         );
 
@@ -455,7 +455,7 @@ impl JsonRunner {
         let frame = render_json_progress(
             &snapshots,
             &render_state,
-            self.manager.current_rate_limit_kbps(),
+            self.manager.current_rate_limit_kib_per_sec(),
             final_frame,
         );
         let mut stdout = std::io::stdout();
@@ -535,7 +535,7 @@ fn render_dashboard(
     snapshots: &[SessionSnapshot],
     render_state: &RenderState,
     messages: &VecDeque<String>,
-    rate_limit_kbps: Option<u64>,
+    rate_limit_kib_per_sec: Option<u64>,
     interactive: bool,
     final_frame: bool,
 ) -> String {
@@ -557,12 +557,12 @@ fn render_dashboard(
         format_bytes(totals.total_downloaded),
         format_total_label(totals.known_total_size, totals.has_unknown_total),
         format_speed(render_state.total_speed_bps),
-        format_rate_limit(rate_limit_kbps),
+        format_rate_limit(rate_limit_kib_per_sec),
     ));
 
     if interactive {
         output.push_str(
-            "Commands: help | status [all|id ...] | pause [all|id ...] | resume [all|id ...] | retry [all|id ...] | cancel [all|id ...] | delete [all|id ...] | limit <kbps|off>\n",
+            "Commands: help | status [all|id ...] | pause [all|id ...] | resume [all|id ...] | retry [all|id ...] | cancel [all|id ...] | delete [all|id ...] | limit <kib|off>\n",
         );
     } else {
         output
@@ -608,7 +608,7 @@ fn render_dashboard(
 fn render_plain_progress(
     snapshots: &[SessionSnapshot],
     render_state: &RenderState,
-    rate_limit_kbps: Option<u64>,
+    rate_limit_kib_per_sec: Option<u64>,
     final_frame: bool,
 ) -> String {
     let mut output = String::new();
@@ -627,7 +627,7 @@ fn render_plain_progress(
         format_bytes(totals.total_downloaded),
         format_total_label(totals.known_total_size, totals.has_unknown_total),
         format_speed(render_state.total_speed_bps),
-        format_rate_limit(rate_limit_kbps),
+        format_rate_limit(rate_limit_kib_per_sec),
     ));
 
     for snapshot in snapshots {
@@ -657,7 +657,7 @@ fn render_plain_progress(
 fn render_json_progress(
     snapshots: &[SessionSnapshot],
     render_state: &RenderState,
-    rate_limit_kbps: Option<u64>,
+    rate_limit_kib_per_sec: Option<u64>,
     final_frame: bool,
 ) -> String {
     #[derive(Serialize)]
@@ -670,14 +670,14 @@ fn render_json_progress(
     #[derive(Serialize)]
     struct JsonProgressFrame {
         kind: &'static str,
-        rate_limit_kbps: Option<u64>,
+        rate_limit_kib_per_sec: Option<u64>,
         total_speed_bps: u64,
         tasks: Vec<JsonTaskProgress>,
     }
 
     let frame = JsonProgressFrame {
         kind: if final_frame { "final" } else { "progress" },
-        rate_limit_kbps,
+        rate_limit_kib_per_sec,
         total_speed_bps: render_state.total_speed_bps.round() as u64,
         tasks: snapshots
             .iter()
@@ -699,10 +699,10 @@ fn render_json_progress(
 
 fn plain_signature(
     snapshots: &[SessionSnapshot],
-    rate_limit_kbps: Option<u64>,
+    rate_limit_kib_per_sec: Option<u64>,
     final_frame: bool,
 ) -> String {
-    let mut signature = format!("rate={rate_limit_kbps:?};final={final_frame};");
+    let mut signature = format!("rate={rate_limit_kib_per_sec:?};final={final_frame};");
     for snapshot in snapshots {
         signature.push_str(&format!(
             "{}:{}:{}:{}:{}:{};",
@@ -827,9 +827,9 @@ fn truncate_middle(value: &str, max_len: usize) -> String {
     format!("{prefix}...{suffix}")
 }
 
-fn format_rate_limit(rate_limit_kbps: Option<u64>) -> String {
-    rate_limit_kbps
-        .map(|value| format!("{value} KB/s"))
+fn format_rate_limit(rate_limit_kib_per_sec: Option<u64>) -> String {
+    rate_limit_kib_per_sec
+        .map(|value| format!("{value} KiB/s"))
         .unwrap_or_else(|| "unlimited".to_string())
 }
 

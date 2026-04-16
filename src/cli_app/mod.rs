@@ -30,8 +30,12 @@ pub(crate) struct Cli {
     #[arg(short, long, value_name = "DIR")]
     download_dir: Option<PathBuf>,
 
-    #[arg(long, value_name = "KBPS")]
-    rate_limit_kbps: Option<u64>,
+    #[arg(
+        long = "rate-limit-kib",
+        alias = "rate-limit-kbps",
+        value_name = "KIB_PER_SEC"
+    )]
+    rate_limit_kib_per_sec: Option<u64>,
 
     #[arg(long = "header", value_name = "NAME:VALUE")]
     headers: Vec<String>,
@@ -75,8 +79,8 @@ pub(crate) struct Cli {
     #[arg(long = "client-identity", value_name = "PEM_FILE")]
     client_identity: Option<PathBuf>,
 
-    #[arg(short, long)]
-    shuffle: bool,
+    #[arg(short, long = "shuffle-tasks", alias = "shuffle")]
+    shuffle_tasks: bool,
 
     #[arg(short, long)]
     verbose: bool,
@@ -90,8 +94,12 @@ pub(crate) struct Cli {
     #[arg(long = "urls-file", value_name = "FILE")]
     urls_file: Vec<PathBuf>,
 
-    #[arg(long = "on-complete", value_name = "COMMAND")]
-    on_complete: Option<String>,
+    #[arg(
+        long = "completion-hook",
+        alias = "on-complete",
+        value_name = "COMMAND"
+    )]
+    completion_hook: Option<String>,
 
     #[arg(short = 'u', long = "urls", value_name = "URL", num_args = 1..)]
     urls: Vec<String>,
@@ -102,7 +110,7 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
     let config = build_config(&cli)?;
     let output_mode = select_output_mode(&cli);
 
-    init_logger_with_level(select_log_level(output_mode));
+    init_logger_with_level(select_log_level(&config, output_mode));
 
     let manager = Manager::new(config.clone())?;
     manager.init().await?;
@@ -141,7 +149,7 @@ pub(crate) async fn run() -> Result<ExitCode, Error> {
         ));
     }
 
-    for url in prepare_urls(&urls, config.shuffle) {
+    for url in prepare_urls(&urls, config.shuffle_tasks) {
         let task_id = manager
             .add_download(DownloadSpec::parse(url.clone())?)
             .await?;
@@ -198,11 +206,16 @@ fn select_output_mode(cli: &Cli) -> OutputMode {
     }
 }
 
-fn select_log_level(output_mode: OutputMode) -> LevelFilter {
-    if matches!(output_mode, OutputMode::LogOnly) {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Warn
+fn select_log_level(config: &Config, output_mode: OutputMode) -> LevelFilter {
+    match output_mode {
+        OutputMode::LogOnly => config.log_level.as_level_filter(),
+        OutputMode::Dashboard | OutputMode::PlainText | OutputMode::Json => {
+            if matches!(config.log_level, paradown::LogLevel::Error) {
+                LevelFilter::Error
+            } else {
+                LevelFilter::Warn
+            }
+        }
     }
 }
 
@@ -232,14 +245,14 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     if let Some(max_concurrent) = cli.max_concurrent {
         config.concurrent_tasks = max_concurrent;
     }
-    if cli.shuffle {
-        config.shuffle = true;
+    if cli.shuffle_tasks {
+        config.shuffle_tasks = true;
     }
-    if let Some(rate_limit_kbps) = cli.rate_limit_kbps {
-        config.rate_limit_kbps = NonZeroU64::new(rate_limit_kbps);
+    if let Some(rate_limit_kib_per_sec) = cli.rate_limit_kib_per_sec {
+        config.rate_limit_kib_per_sec = NonZeroU64::new(rate_limit_kib_per_sec);
     }
-    if let Some(command) = &cli.on_complete {
-        config.on_complete = Some(command.clone());
+    if let Some(command) = &cli.completion_hook {
+        config.completion_hook = Some(command.clone());
     }
     if cli.no_env_proxy {
         config.http.client.proxy.use_env_proxy = false;
@@ -339,9 +352,9 @@ fn parse_basic_auth(value: &str) -> Result<HttpAuth, Error> {
     Ok(HttpAuth::Basic { username, password })
 }
 
-fn prepare_urls(urls: &[String], shuffle: bool) -> Vec<String> {
+fn prepare_urls(urls: &[String], shuffle_tasks: bool) -> Vec<String> {
     let mut urls = urls.to_vec();
-    if shuffle {
+    if shuffle_tasks {
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
         urls.shuffle(&mut rng);
@@ -430,12 +443,12 @@ async fn execute_command(manager: &Arc<Manager>, command: Command) -> Vec<String
         Command::Cancel(target) => apply_task_command(manager, target, TaskControl::Cancel).await,
         Command::Delete(target) => apply_task_command(manager, target, TaskControl::Delete).await,
         Command::SetRateLimit(limit_kbps) => {
-            manager.set_rate_limit_kbps(limit_kbps).await;
+            manager.set_rate_limit_kib_per_sec(limit_kbps).await;
             vec![format!(
                 "Global rate limit set to {}",
                 manager
-                    .current_rate_limit_kbps()
-                    .map(|value| format!("{value} KB/s"))
+                    .current_rate_limit_kib_per_sec()
+                    .map(|value| format!("{value} KiB/s"))
                     .unwrap_or_else(|| "unlimited".to_string())
             )]
         }
@@ -465,8 +478,8 @@ async fn status_messages(manager: &Arc<Manager>, target: CommandTarget) -> Vec<S
     let mut messages = vec![format!(
         "Rate limit: {}",
         manager
-            .current_rate_limit_kbps()
-            .map(|value| format!("{value} KB/s"))
+            .current_rate_limit_kib_per_sec()
+            .map(|value| format!("{value} KiB/s"))
             .unwrap_or_else(|| "unlimited".to_string())
     )];
     for task in tasks {
@@ -930,7 +943,7 @@ async fn collect_urls(cli: &Cli) -> Result<Vec<String>, Error> {
 }
 
 async fn run_completion_hook(config: &Config, summary: &CompletionSummary) {
-    let Some(command) = &config.on_complete else {
+    let Some(command) = &config.completion_hook else {
         return;
     };
 

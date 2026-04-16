@@ -186,6 +186,104 @@ async fn respects_global_rate_limit_during_download() {
 }
 
 #[tokio::test]
+async fn enforces_global_rate_limit_across_concurrent_tasks() {
+    let alpha = Arc::new(vec![b'a'; 64 * 1024]);
+    let beta = Arc::new(vec![b'b'; 64 * 1024]);
+    let server = MultiFileTestServer::spawn(
+        vec![
+            TestAsset::from_shared("/alpha.bin", Arc::clone(&alpha)),
+            TestAsset::from_shared("/beta.bin", Arc::clone(&beta)),
+        ],
+        MultiFileServerConfig {
+            response_chunk_size: 4 * 1024,
+            chunk_delay: Duration::from_millis(5),
+        },
+    )
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config_with_concurrency(
+        &download_dir,
+        &db_path,
+        1,
+        2,
+        NonZeroU64::new(64),
+        FileConflictStrategy::Overwrite,
+    );
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let alpha_task = manager
+        .add_download(DownloadSpec::parse(server.url("/alpha.bin")).unwrap())
+        .await
+        .unwrap();
+    let beta_task = manager
+        .add_download(DownloadSpec::parse(server.url("/beta.bin")).unwrap())
+        .await
+        .unwrap();
+
+    let started_at = Instant::now();
+    manager.start_task(alpha_task).await.unwrap();
+    manager.start_task(beta_task).await.unwrap();
+
+    wait_for_task_set_completion(&[alpha_task, beta_task], &mut rx)
+        .await
+        .unwrap();
+
+    assert!(
+        started_at.elapsed() >= Duration::from_millis(1500),
+        "global rate limit should cap aggregate throughput across concurrent tasks"
+    );
+    assert!(
+        server.max_active_transfers() >= 2,
+        "test should exercise concurrent transfers instead of serial scheduling"
+    );
+}
+
+#[tokio::test]
+async fn updates_global_rate_limit_during_active_download() {
+    let body = Arc::new(vec![b'z'; 64 * 1024]);
+    let server = TestDownloadServer::spawn(Arc::clone(&body), body.len()).await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config(
+        &download_dir,
+        &db_path,
+        1,
+        NonZeroU64::new(8),
+        FileConflictStrategy::Overwrite,
+    );
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let task_id = manager
+        .add_download(DownloadSpec::parse(server.url("/dynamic-limit.bin")).unwrap())
+        .await
+        .unwrap();
+
+    let started_at = Instant::now();
+    manager.start_task(task_id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    manager.set_rate_limit_kib_per_sec(None).await;
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    assert!(
+        started_at.elapsed() < Duration::from_millis(1500),
+        "removing the rate limit during download should wake waiting workers promptly"
+    );
+}
+
+#[tokio::test]
 async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
     let alpha = Arc::new(
         (0..(96 * 1024))

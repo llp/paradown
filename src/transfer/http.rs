@@ -11,6 +11,7 @@ use reqwest::{StatusCode, header};
 use std::sync::atomic::Ordering;
 
 pub(crate) struct HttpTransferDriver;
+const RATE_LIMIT_SLICE_BYTES: usize = 16 * 1024;
 
 #[async_trait]
 impl TransferDriver for HttpTransferDriver {
@@ -152,18 +153,28 @@ impl TransferDriver for HttpTransferDriver {
             }
 
             let chunk = chunk.map_err(|err| Error::NetworkError(worker.id, err.to_string()))?;
-            let chunk_len = chunk.len() as u64;
-            worker.acquire_rate_limit(chunk_len).await;
-            payload_store.write_at(write_offset, &chunk).await?;
-            write_offset = write_offset.saturating_add(chunk_len);
-            *downloaded_size += chunk_len;
+            for slice in chunk.chunks(RATE_LIMIT_SLICE_BYTES) {
+                if worker.should_stop_gracefully() {
+                    return Ok(());
+                }
 
-            worker.stats.update_worker(worker.id, chunk_len).await;
-            worker
-                .downloaded_size
-                .store(*downloaded_size, Ordering::Relaxed);
+                if !worker.wait_until_resumed().await {
+                    return Ok(());
+                }
 
-            reporter.maybe_emit(worker, *downloaded_size).await;
+                let slice_len = slice.len() as u64;
+                worker.acquire_rate_limit(slice_len).await;
+                payload_store.write_at(write_offset, slice).await?;
+                write_offset = write_offset.saturating_add(slice_len);
+                *downloaded_size += slice_len;
+
+                worker.stats.update_worker(worker.id, slice_len).await;
+                worker
+                    .downloaded_size
+                    .store(*downloaded_size, Ordering::Relaxed);
+
+                reporter.maybe_emit(worker, *downloaded_size).await;
+            }
         }
 
         Ok(())

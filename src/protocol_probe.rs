@@ -1,14 +1,16 @@
-use crate::domain::{HttpRequestOptions, HttpResourceIdentity};
+use crate::domain::{HttpRequestOptions, HttpResourceIdentity, file_name_hint_from_locator};
 use crate::error::Error;
 use crate::runtime::apply_http_request_options;
 use reqwest::header::{
-    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE,
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
+    LAST_MODIFIED, RANGE,
 };
 use reqwest::{Client, Response, StatusCode};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DownloadProtocolProbe {
-    pub total_size: u64,
+    pub total_size: Option<u64>,
     pub supports_range_requests: bool,
     pub resource_identity: HttpResourceIdentity,
     pub suggested_file_name: Option<String>,
@@ -40,7 +42,7 @@ pub(crate) async fn probe_download_target(
         && head.total_size == Some(0)
     {
         return Ok(DownloadProtocolProbe {
-            total_size: 0,
+            total_size: Some(0),
             supports_range_requests: head.accepts_ranges,
             resource_identity: head.resource_identity.clone(),
             suggested_file_name: head.suggested_file_name.clone(),
@@ -96,7 +98,7 @@ async fn probe_with_head(
         total_size: parse_content_length(response.headers().get(CONTENT_LENGTH))?,
         accepts_ranges: header_accepts_ranges(response.headers().get(ACCEPT_RANGES)),
         resource_identity: extract_resource_identity(&response)?,
-        suggested_file_name: extract_content_disposition_file_name(&response)?,
+        suggested_file_name: extract_suggested_file_name(&response)?,
     }))
 }
 
@@ -113,19 +115,16 @@ fn probe_with_range_response(
                 .to_str()?;
             let content_range = parse_content_range(content_range)
                 .ok_or_else(|| Error::Other("Invalid Content-Range".into()))?;
-            let total_size = content_range
-                .total_size
-                .ok_or_else(|| Error::Other("Content-Range missing total size".into()))?;
+            let total_size = content_range.total_size;
             let resource_identity = merge_resource_identity(
                 head_probe.as_ref().map(|probe| &probe.resource_identity),
                 &extract_resource_identity(&response)?,
             );
-            let suggested_file_name =
-                extract_content_disposition_file_name(&response)?.or_else(|| {
-                    head_probe
-                        .as_ref()
-                        .and_then(|probe| probe.suggested_file_name.clone())
-                });
+            let suggested_file_name = extract_suggested_file_name(&response)?.or_else(|| {
+                head_probe
+                    .as_ref()
+                    .and_then(|probe| probe.suggested_file_name.clone())
+            });
 
             Ok(DownloadProtocolProbe {
                 total_size,
@@ -136,22 +135,16 @@ fn probe_with_range_response(
         }
         StatusCode::OK => {
             let total_size = parse_content_length(response.headers().get(CONTENT_LENGTH))?
-                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size))
-                .ok_or_else(|| {
-                    Error::Other(
-                        "HTTP downloads without Content-Length are not supported yet".into(),
-                    )
-                })?;
+                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size));
             let resource_identity = merge_resource_identity(
                 head_probe.as_ref().map(|probe| &probe.resource_identity),
                 &extract_resource_identity(&response)?,
             );
-            let suggested_file_name =
-                extract_content_disposition_file_name(&response)?.or_else(|| {
-                    head_probe
-                        .as_ref()
-                        .and_then(|probe| probe.suggested_file_name.clone())
-                });
+            let suggested_file_name = extract_suggested_file_name(&response)?.or_else(|| {
+                head_probe
+                    .as_ref()
+                    .and_then(|probe| probe.suggested_file_name.clone())
+            });
 
             Ok(DownloadProtocolProbe {
                 total_size,
@@ -166,22 +159,20 @@ fn probe_with_range_response(
                 .get(CONTENT_RANGE)
                 .and_then(|value| value.to_str().ok())
                 .and_then(parse_unsatisfied_content_range)
-                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size))
-                .unwrap_or(0);
+                .or_else(|| head_probe.as_ref().and_then(|probe| probe.total_size));
             let resource_identity = merge_resource_identity(
                 head_probe.as_ref().map(|probe| &probe.resource_identity),
                 &extract_resource_identity(&response)?,
             );
-            let suggested_file_name =
-                extract_content_disposition_file_name(&response)?.or_else(|| {
-                    head_probe
-                        .as_ref()
-                        .and_then(|probe| probe.suggested_file_name.clone())
-                });
+            let suggested_file_name = extract_suggested_file_name(&response)?.or_else(|| {
+                head_probe
+                    .as_ref()
+                    .and_then(|probe| probe.suggested_file_name.clone())
+            });
 
             Ok(DownloadProtocolProbe {
                 total_size,
-                supports_range_requests: total_size > 0,
+                supports_range_requests: total_size.is_some_and(|total_size| total_size > 0),
                 resource_identity,
                 suggested_file_name,
             })
@@ -243,18 +234,46 @@ fn extract_content_disposition_file_name(response: &Response) -> Result<Option<S
     parse_content_disposition_header(value)
 }
 
+fn extract_suggested_file_name(response: &Response) -> Result<Option<String>, Error> {
+    if let Some(file_name) = extract_content_disposition_file_name(response)? {
+        return Ok(Some(file_name));
+    }
+
+    let locator_hint = file_name_hint_from_locator(response.url().as_str());
+    let extension = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(suggest_extension_from_content_type);
+
+    Ok(match (locator_hint, extension) {
+        (Some(file_name), Some(extension)) if Path::new(&file_name).extension().is_none() => {
+            Some(format!("{file_name}.{extension}"))
+        }
+        (Some(file_name), _) => Some(file_name),
+        (None, Some(extension)) => Some(format!("download.{extension}")),
+        (None, None) => None,
+    })
+}
+
 fn parse_content_disposition_header(
     value: &reqwest::header::HeaderValue,
 ) -> Result<Option<String>, Error> {
     let value = value.to_str()?;
+    let mut fallback = None;
     for segment in value.split(';').skip(1) {
         let segment = segment.trim();
+        if let Some(filename) = segment.strip_prefix("filename*=") {
+            if let Some(decoded) = decode_content_disposition_extended_filename(filename) {
+                return Ok(Some(decoded));
+            }
+            continue;
+        }
         if let Some(filename) = segment.strip_prefix("filename=") {
-            return Ok(normalize_content_disposition_filename(filename));
+            fallback = normalize_content_disposition_filename(filename);
         }
     }
 
-    Ok(None)
+    Ok(fallback)
 }
 
 fn normalize_content_disposition_filename(value: &str) -> Option<String> {
@@ -263,6 +282,59 @@ fn normalize_content_disposition_filename(value: &str) -> Option<String> {
         None
     } else {
         Some(value.to_string())
+    }
+}
+
+fn decode_content_disposition_extended_filename(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches('"');
+    let (charset, remainder) = value.split_once("''")?;
+    let encoded = remainder.split('\'').next().unwrap_or(remainder);
+    let bytes = percent_decode_bytes(encoded)?;
+
+    if charset.eq_ignore_ascii_case("utf-8") {
+        return String::from_utf8(bytes).ok();
+    }
+
+    if charset.eq_ignore_ascii_case("iso-8859-1")
+        || charset.eq_ignore_ascii_case("latin1")
+        || charset.eq_ignore_ascii_case("latin-1")
+    {
+        return Some(bytes.into_iter().map(char::from).collect());
+    }
+
+    String::from_utf8(bytes).ok()
+}
+
+fn percent_decode_bytes(value: &str) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let high = decode_hex_nibble(bytes[index + 1])?;
+                let low = decode_hex_nibble(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            b'%' => return None,
+            other => {
+                decoded.push(other);
+                index += 1;
+            }
+        }
+    }
+
+    Some(decoded)
+}
+
+fn decode_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -279,6 +351,38 @@ fn parse_content_length(
     value
         .map(|value| value.to_str()?.parse::<u64>().map_err(Error::from))
         .transpose()
+}
+
+fn suggest_extension_from_content_type(value: &reqwest::header::HeaderValue) -> Option<String> {
+    let content_type = value
+        .to_str()
+        .ok()?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+
+    let extension = match content_type.as_str() {
+        "application/json" => "json",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "application/gzip" | "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/xml" | "text/xml" => "xml",
+        "text/plain" => "txt",
+        "text/html" => "html",
+        "text/css" => "css",
+        "text/csv" => "csv",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "audio/mpeg" => "mp3",
+        "video/mp4" => "mp4",
+        _ => return None,
+    };
+
+    Some(extension.to_string())
 }
 
 #[cfg(test)]
@@ -307,7 +411,7 @@ mod tests {
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
             .unwrap();
-        assert_eq!(probe.total_size, 5);
+        assert_eq!(probe.total_size, Some(5));
         assert!(probe.supports_range_requests);
     }
 
@@ -319,7 +423,7 @@ mod tests {
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
             .unwrap();
-        assert_eq!(probe.total_size, 5);
+        assert_eq!(probe.total_size, Some(5));
         assert!(!probe.supports_range_requests);
     }
 
@@ -331,22 +435,20 @@ mod tests {
         let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
             .unwrap();
-        assert_eq!(probe.total_size, 5);
+        assert_eq!(probe.total_size, Some(5));
         assert!(probe.supports_range_requests);
     }
 
     #[tokio::test]
-    async fn rejects_targets_without_content_length() {
+    async fn supports_targets_without_content_length_as_streaming_downloads() {
         let server = TestHttpServer::spawn(TestServerMode::NoContentLength).await;
         let client = Client::builder().no_proxy().build().unwrap();
 
-        let err = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
+        let probe = probe_download_target(&client, &server.url(), &HttpRequestOptions::default())
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("HTTP downloads without Content-Length are not supported yet")
-        );
+            .unwrap();
+        assert_eq!(probe.total_size, None);
+        assert!(!probe.supports_range_requests);
     }
 
     struct TestHttpServer {

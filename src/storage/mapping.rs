@@ -34,7 +34,7 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
         file_path,
         status: task.status.lock().await.to_string(),
         downloaded_size: task.downloaded_size.load(Ordering::Relaxed),
-        total_size: Some(task.total_size.load(Ordering::Relaxed)),
+        total_size: task.total_size_option(),
         created_at: task.created_at,
         updated_at,
     }

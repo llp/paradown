@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpResourceIdentity {
@@ -103,9 +104,21 @@ impl Default for ProxyOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsOptions {
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+    pub ca_certificate_pem: Option<PathBuf>,
+    pub client_identity_pem: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpClientOptions {
     #[serde(default)]
     pub proxy: ProxyOptions,
+    #[serde(default)]
+    pub cookie_store: bool,
+    #[serde(default)]
+    pub tls: TlsOptions,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ mod spec;
 
 pub use http::{
     HttpAuth, HttpClientOptions, HttpConfig, HttpHeader, HttpRequestOptions, HttpResourceIdentity,
-    ProxyOptions,
+    ProxyOptions, TlsOptions,
 };
 pub use manifest::{FileManifest, SessionManifest};
 pub use piece::{

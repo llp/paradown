@@ -22,6 +22,7 @@ pub struct SessionManifest {
     pub spec: DownloadSpec,
     pub sources: SourceSet,
     pub total_size: u64,
+    pub total_size_known: bool,
     pub piece_size: u32,
     pub piece_count: u32,
     pub block_size: u32,
@@ -81,6 +82,7 @@ impl SessionManifest {
             spec,
             sources,
             total_size,
+            total_size_known: true,
             piece_size,
             piece_count: pieces.len() as u32,
             block_size,
@@ -88,6 +90,35 @@ impl SessionManifest {
             files,
             pieces,
             blocks,
+            checksums,
+        }
+    }
+
+    pub fn for_streaming_file(
+        spec: DownloadSpec,
+        sources: SourceSet,
+        file_name: String,
+        file_path: PathBuf,
+        checksums: Vec<Checksum>,
+    ) -> Self {
+        Self {
+            id: spec.identity_key(),
+            spec,
+            sources,
+            total_size: 0,
+            total_size_known: false,
+            piece_size: DEFAULT_PIECE_SIZE,
+            piece_count: 0,
+            block_size: DEFAULT_BLOCK_SIZE,
+            block_count: 0,
+            files: vec![FileManifest {
+                path: file_path,
+                file_name,
+                length: 0,
+                offset: 0,
+            }],
+            pieces: Vec::new(),
+            blocks: Vec::new(),
             checksums,
         }
     }

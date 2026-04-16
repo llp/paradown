@@ -60,6 +60,18 @@ pub(crate) struct Cli {
     #[arg(long = "no-env-proxy")]
     no_env_proxy: bool,
 
+    #[arg(long = "cookie-store")]
+    cookie_store: bool,
+
+    #[arg(long = "insecure-tls")]
+    insecure_tls: bool,
+
+    #[arg(long = "ca-cert", value_name = "PEM_FILE")]
+    ca_cert: Option<PathBuf>,
+
+    #[arg(long = "client-identity", value_name = "PEM_FILE")]
+    client_identity: Option<PathBuf>,
+
     #[arg(short, long)]
     shuffle: bool,
 
@@ -229,6 +241,9 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     if cli.no_env_proxy {
         config.http.client.proxy.use_env_proxy = false;
     }
+    if cli.cookie_store {
+        config.http.client.cookie_store = true;
+    }
     if let Some(proxy) = &cli.http_proxy {
         config.http.client.proxy.http_proxy = Some(proxy.clone());
     }
@@ -237,6 +252,15 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     }
     if let Some(no_proxy) = &cli.no_proxy {
         config.http.client.proxy.no_proxy = Some(no_proxy.clone());
+    }
+    if cli.insecure_tls {
+        config.http.client.tls.insecure_skip_verify = true;
+    }
+    if let Some(path) = &cli.ca_cert {
+        config.http.client.tls.ca_certificate_pem = Some(path.clone());
+    }
+    if let Some(path) = &cli.client_identity {
+        config.http.client.tls.client_identity_pem = Some(path.clone());
     }
     if !cli.headers.is_empty() {
         config.http.request.headers = parse_cli_headers(&cli.headers)?;
@@ -483,11 +507,18 @@ async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String>
         format!(
             "  progress: {} / {} (pieces {}/{})",
             format_bytes(snapshot.downloaded_size),
-            format_bytes(snapshot.total_size),
+            format_snapshot_total(snapshot.total_size_known, snapshot.total_size),
             snapshot.completed_pieces,
             snapshot.piece_count
         ),
-        format!("  source: {}", snapshot.url),
+        format!(
+            "  source: {}",
+            snapshot
+                .primary_source_locator
+                .as_deref()
+                .unwrap_or(snapshot.url.as_str())
+        ),
+        format!("  sources: {}", snapshot.source_count),
         format!(
             "  file: {}",
             snapshot
@@ -570,14 +601,11 @@ fn resolve_target_tasks(manager: &Arc<Manager>, target: CommandTarget) -> Vec<Ar
 }
 
 fn format_status_line(snapshot: &TaskSnapshot) -> String {
-    let progress = if snapshot.total_size > 0 {
-        format!(
-            "{:.1}%",
-            snapshot.downloaded_size as f64 / snapshot.total_size as f64 * 100.0
-        )
-    } else {
-        "-".into()
-    };
+    let progress = format_progress(
+        snapshot.total_size_known,
+        snapshot.downloaded_size,
+        snapshot.total_size,
+    );
     let piece_label = if snapshot.piece_count > 0 {
         format!(
             " pieces:{}/{}",
@@ -593,14 +621,32 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
         snapshot.status,
         progress,
         format_bytes(snapshot.downloaded_size),
-        format_bytes(snapshot.total_size),
+        format_snapshot_total(snapshot.total_size_known, snapshot.total_size),
         piece_label,
         snapshot.trace_id,
-        snapshot
-            .file_name
-            .as_deref()
-            .unwrap_or(snapshot.url.as_str())
+        snapshot.file_name.as_deref().unwrap_or_else(|| {
+            snapshot
+                .primary_source_locator
+                .as_deref()
+                .unwrap_or(snapshot.url.as_str())
+        })
     )
+}
+
+fn format_progress(total_size_known: bool, downloaded_size: u64, total_size: u64) -> String {
+    if !total_size_known || total_size == 0 {
+        "-".into()
+    } else {
+        format!("{:.1}%", downloaded_size as f64 / total_size as f64 * 100.0)
+    }
+}
+
+fn format_snapshot_total(total_size_known: bool, total_size: u64) -> String {
+    if total_size_known {
+        format_bytes(total_size)
+    } else {
+        "unknown".into()
+    }
 }
 
 fn matches_status_filter(snapshot: &TaskSnapshot, filter: StatusFilter) -> bool {
@@ -740,7 +786,8 @@ struct CompletionSummary {
     canceled: usize,
     deleted: usize,
     total_downloaded: u64,
-    total_size: u64,
+    known_total_size: u64,
+    has_unknown_total: bool,
     average_speed_bps: u64,
     retry_count: u64,
     resume_attempts: u64,
@@ -757,7 +804,8 @@ async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
     let mut canceled = 0usize;
     let mut deleted = 0usize;
     let mut total_downloaded = 0u64;
-    let mut total_size = 0u64;
+    let mut known_total_size = 0u64;
+    let mut has_unknown_total = false;
     let mut average_speed_bps = 0u64;
     let mut retry_count = 0u64;
     let mut resume_attempts = 0u64;
@@ -766,7 +814,11 @@ async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
     for task in tasks {
         let snapshot = task.snapshot().await;
         total_downloaded = total_downloaded.saturating_add(snapshot.downloaded_size);
-        total_size = total_size.saturating_add(snapshot.total_size);
+        if snapshot.total_size_known {
+            known_total_size = known_total_size.saturating_add(snapshot.total_size);
+        } else {
+            has_unknown_total = true;
+        }
         average_speed_bps = average_speed_bps.saturating_add(snapshot.stats.average_speed_bps);
         retry_count = retry_count.saturating_add(snapshot.stats.retry_count);
         resume_attempts = resume_attempts.saturating_add(snapshot.stats.resume_attempts);
@@ -788,7 +840,8 @@ async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
         canceled,
         deleted,
         total_downloaded,
-        total_size,
+        known_total_size,
+        has_unknown_total,
         average_speed_bps,
         retry_count,
         resume_attempts,
@@ -805,7 +858,7 @@ fn print_completion_summary(summary: &CompletionSummary) {
         summary.canceled,
         summary.deleted,
         format_bytes(summary.total_downloaded),
-        format_bytes(summary.total_size),
+        format_total_summary(summary.known_total_size, summary.has_unknown_total),
         format_bytes(summary.average_speed_bps),
         summary.retry_count,
         summary.resume_hits,
@@ -891,7 +944,11 @@ async fn run_completion_hook(config: &Config, summary: &CompletionSummary) {
             "PARADOWN_TOTAL_DOWNLOADED",
             summary.total_downloaded.to_string(),
         )
-        .env("PARADOWN_TOTAL_SIZE", summary.total_size.to_string());
+        .env("PARADOWN_TOTAL_SIZE", summary.known_total_size.to_string())
+        .env(
+            "PARADOWN_TOTAL_SIZE_KNOWN",
+            (!summary.has_unknown_total).to_string(),
+        );
 
     if let Err(err) = shell.status().await {
         eprintln!("paradown: failed to run completion hook: {err}");
@@ -927,5 +984,13 @@ fn format_bytes(bytes: u64) -> String {
         format!("{bytes} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_total_summary(known_total_size: u64, has_unknown_total: bool) -> String {
+    match (known_total_size, has_unknown_total) {
+        (0, true) => "unknown".into(),
+        (_, true) => format!("{} + unknown", format_bytes(known_total_size)),
+        (_, false) => format_bytes(known_total_size),
     }
 }

@@ -47,7 +47,7 @@ async fn follows_redirect_and_uses_content_disposition_filename() {
 }
 
 #[tokio::test]
-async fn surfaces_clear_error_when_content_length_is_missing() {
+async fn downloads_streaming_target_when_content_length_is_missing() {
     let server = MetadataTestServer::spawn(MetadataMode::MissingContentLength {
         body: Arc::new(b"stream-without-length".to_vec()),
     })
@@ -62,12 +62,97 @@ async fn surfaces_clear_error_when_content_length_is_missing() {
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
+    let mut rx = manager.subscribe_events();
     let task_id = manager
         .add_download(DownloadSpec::parse(server.url("/stream")).unwrap())
         .await
         .unwrap();
-    let err = manager.start_task(task_id).await.unwrap_err();
-    assert!(err.to_string().contains("Content-Length"));
+    manager.start_task(task_id).await.unwrap();
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    let downloaded = tokio::fs::read(download_dir.join("stream")).await.unwrap();
+    assert_eq!(downloaded, b"stream-without-length");
+
+    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    assert_eq!(snapshot.status, "Completed");
+    assert!(snapshot.total_size_known);
+    assert_eq!(snapshot.total_size, downloaded.len() as u64);
+}
+
+#[tokio::test]
+async fn prefers_rfc5987_filename_star_when_present() {
+    let body = Arc::new(b"encoded-disposition".to_vec());
+    let server = MetadataTestServer::spawn(MetadataMode::PlainHttp {
+        body: Arc::clone(&body),
+        path: "/encoded.bin",
+        content_disposition: Some("filename*=UTF-8''r%C3%A9sum%C3%A9.bin"),
+        content_type: None,
+    })
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config(&download_dir, &db_path, FileConflictStrategy::Overwrite);
+    let manager = Manager::new(config.clone()).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let task_id = manager
+        .add_download(DownloadSpec::parse(server.url("/encoded.bin")).unwrap())
+        .await
+        .unwrap();
+    manager.start_task(task_id).await.unwrap();
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    let downloaded = tokio::fs::read(download_dir.join("résumé.bin"))
+        .await
+        .unwrap();
+    assert_eq!(downloaded, *body);
+
+    let persistence = Store::new(Arc::new(config)).await.unwrap();
+    let task = persistence.load_task(task_id).await.unwrap().unwrap();
+    assert_eq!(task.file_name, "résumé.bin");
+}
+
+#[tokio::test]
+async fn infers_extension_from_content_type_when_url_has_no_suffix() {
+    let body = Arc::new(br#"{"ok":true}"#.to_vec());
+    let server = MetadataTestServer::spawn(MetadataMode::PlainHttp {
+        body: Arc::clone(&body),
+        path: "/artifact",
+        content_disposition: None,
+        content_type: Some("application/json"),
+    })
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config(&download_dir, &db_path, FileConflictStrategy::Overwrite);
+    let manager = Manager::new(config.clone()).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let task_id = manager
+        .add_download(DownloadSpec::parse(server.url("/artifact")).unwrap())
+        .await
+        .unwrap();
+    manager.start_task(task_id).await.unwrap();
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    let downloaded = tokio::fs::read(download_dir.join("artifact.json"))
+        .await
+        .unwrap();
+    assert_eq!(downloaded, *body);
+
+    let persistence = Store::new(Arc::new(config)).await.unwrap();
+    let task = persistence.load_task(task_id).await.unwrap().unwrap();
+    assert_eq!(task.file_name, "artifact.json");
 }
 
 #[tokio::test]
@@ -77,6 +162,7 @@ async fn redownloads_existing_file_when_no_validator_can_prove_it_is_valid() {
         body: Arc::clone(&body),
         path: "/payload.bin",
         content_disposition: None,
+        content_type: None,
     })
     .await;
 
@@ -155,6 +241,7 @@ enum MetadataMode {
         body: Arc<Vec<u8>>,
         path: &'static str,
         content_disposition: Option<&'static str>,
+        content_type: Option<&'static str>,
     },
 }
 
@@ -199,16 +286,19 @@ impl MetadataTestServer {
                         body,
                         path,
                         content_disposition,
+                        content_type,
                     } => {
                         let body = Arc::clone(body);
                         let path = (*path).to_string();
                         let content_disposition = content_disposition.map(str::to_string);
+                        let content_type = content_type.map(str::to_string);
                         tokio::spawn(async move {
                             handle_plain_request(
                                 &mut socket,
                                 &body,
                                 &path,
                                 content_disposition.as_deref(),
+                                content_type.as_deref(),
                             )
                             .await;
                         });
@@ -250,12 +340,14 @@ async fn handle_redirect_request(
     }
 
     if path == final_path {
+        let content_disposition = format!("filename=\"{}\"", file_name);
         write_http_payload(
             socket,
             &request,
             method,
             body,
-            Some(file_name),
+            Some(content_disposition.as_str()),
+            None,
             true,
             true,
             Some("\"etag-redirect\""),
@@ -284,6 +376,7 @@ async fn handle_plain_request(
     body: &[u8],
     expected_path: &str,
     content_disposition: Option<&str>,
+    content_type: Option<&str>,
 ) {
     let request = read_http_request(socket).await;
     let (method, path) = parse_request_line(&request);
@@ -300,6 +393,7 @@ async fn handle_plain_request(
         method,
         body,
         content_disposition,
+        content_type,
         true,
         true,
         None,
@@ -313,6 +407,7 @@ async fn write_http_payload(
     method: &str,
     body: &[u8],
     content_disposition: Option<&str>,
+    content_type: Option<&str>,
     include_length: bool,
     accept_ranges: bool,
     entity_tag: Option<&str>,
@@ -323,9 +418,12 @@ async fn write_http_payload(
     }
     if let Some(content_disposition) = content_disposition {
         headers.push_str(&format!(
-            "Content-Disposition: attachment; filename=\"{}\"\r\n",
+            "Content-Disposition: attachment; {}\r\n",
             content_disposition
         ));
+    }
+    if let Some(content_type) = content_type {
+        headers.push_str(&format!("Content-Type: {}\r\n", content_type));
     }
     if let Some(entity_tag) = entity_tag {
         headers.push_str(&format!("ETag: {}\r\n", entity_tag));

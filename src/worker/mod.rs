@@ -30,6 +30,7 @@ pub struct Worker {
     pub spec: DownloadSpec,
     pub source: SourceDescriptor,
     pub(crate) lane: ExecutionLaneAssignment,
+    pub length_known: bool,
     pub start: u64,
     pub end: u64,
     pub downloaded_size: AtomicU64,
@@ -81,6 +82,7 @@ impl Worker {
             spec,
             source,
             lane: lane.clone(),
+            length_known: lane.length_known,
             start: lane.start,
             end: lane.end,
             file_path,
@@ -260,6 +262,7 @@ mod tests {
             ExecutionLaneAssignment {
                 lane_id: 1,
                 source_id: "https::https://example.com/file".into(),
+                length_known: true,
                 piece_start: 0,
                 piece_end: 0,
                 block_start: 0,

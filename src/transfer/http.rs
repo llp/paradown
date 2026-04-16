@@ -53,6 +53,9 @@ impl TransferDriver for HttpTransferDriver {
         range_start: u64,
     ) -> u64 {
         response.content_length().unwrap_or_else(|| {
+            if !worker.length_known {
+                return 0;
+            }
             if use_range_requests {
                 worker.end.saturating_sub(range_start).saturating_add(1)
             } else {

@@ -42,6 +42,9 @@ impl ProgressReporter {
 
 impl Worker {
     pub(crate) fn expected_length(&self) -> u64 {
+        if !self.length_known {
+            return 0;
+        }
         self.end.saturating_sub(self.start).saturating_add(1)
     }
 
@@ -76,6 +79,10 @@ impl Worker {
         actual_length: u64,
         expected_length: u64,
     ) -> Result<(), Error> {
+        if !self.length_known {
+            return Ok(());
+        }
+
         if actual_length != expected_length {
             return Err(Error::Other(format!(
                 "Worker {} downloaded length mismatch: expected {}, got {}",

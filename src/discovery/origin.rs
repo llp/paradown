@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OriginMetadata {
-    pub total_size: u64,
+    pub total_size: Option<u64>,
     pub supports_range_requests: bool,
     pub resource_identity: HttpResourceIdentity,
     pub suggested_file_name: Option<String>,

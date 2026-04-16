@@ -544,11 +544,7 @@ fn render_dashboard(
     output.push_str("paradown download dashboard\n");
 
     let status_summary = summarize_statuses(snapshots);
-    let total_downloaded: u64 = snapshots
-        .iter()
-        .map(|snapshot| snapshot.downloaded_size)
-        .sum();
-    let total_size: u64 = snapshots.iter().map(|snapshot| snapshot.total_size).sum();
+    let totals = aggregate_totals(snapshots);
 
     output.push_str(&format!(
         "Tasks:{} running:{} preparing:{} paused:{} pending:{} finished:{}  Total:{} / {}  Speed:{}  Rate:{}\n",
@@ -558,8 +554,8 @@ fn render_dashboard(
         status_summary.paused,
         status_summary.pending,
         status_summary.terminal,
-        format_bytes(total_downloaded),
-        format_bytes(total_size),
+        format_bytes(totals.total_downloaded),
+        format_total_label(totals.known_total_size, totals.has_unknown_total),
         format_speed(render_state.total_speed_bps),
         format_rate_limit(rate_limit_kbps),
     ));
@@ -617,11 +613,7 @@ fn render_plain_progress(
 ) -> String {
     let mut output = String::new();
     let status_summary = summarize_statuses(snapshots);
-    let total_downloaded: u64 = snapshots
-        .iter()
-        .map(|snapshot| snapshot.downloaded_size)
-        .sum();
-    let total_size: u64 = snapshots.iter().map(|snapshot| snapshot.total_size).sum();
+    let totals = aggregate_totals(snapshots);
 
     output.push_str(&format!(
         "{} tasks={} running={} preparing={} paused={} pending={} finished={} total={} / {} speed={} rate={}\n",
@@ -632,8 +624,8 @@ fn render_plain_progress(
         status_summary.paused,
         status_summary.pending,
         status_summary.terminal,
-        format_bytes(total_downloaded),
-        format_bytes(total_size),
+        format_bytes(totals.total_downloaded),
+        format_total_label(totals.known_total_size, totals.has_unknown_total),
         format_speed(render_state.total_speed_bps),
         format_rate_limit(rate_limit_kbps),
     ));
@@ -645,21 +637,17 @@ fn render_plain_progress(
             .copied()
             .unwrap_or_default();
         output.push_str(&format!(
-            "  #{} {:<10} {:>6.1}% {:>10} / {:<10} {:>10} {}\n",
+            "  #{} {:<10} {:>6} {:>10} / {:<12} {:>10} {}\n",
             snapshot.id,
             snapshot.status,
-            if snapshot.total_size > 0 {
-                snapshot.downloaded_size as f64 / snapshot.total_size as f64 * 100.0
-            } else {
-                0.0
-            },
+            format_progress_percent(snapshot),
             format_bytes(snapshot.downloaded_size),
-            format_bytes(snapshot.total_size),
+            format_snapshot_total(snapshot),
             format_speed(speed_bps),
-            snapshot
-                .file_name
+            snapshot.file_name.as_deref().unwrap_or_else(|| snapshot
+                .primary_source_locator
                 .as_deref()
-                .unwrap_or(snapshot.url.as_str()),
+                .unwrap_or(snapshot.url.as_str())),
         ));
     }
     output.push('\n');
@@ -717,11 +705,12 @@ fn plain_signature(
     let mut signature = format!("rate={rate_limit_kbps:?};final={final_frame};");
     for snapshot in snapshots {
         signature.push_str(&format!(
-            "{}:{}:{}:{}:{};",
+            "{}:{}:{}:{}:{}:{};",
             snapshot.id,
             snapshot.status,
             snapshot.downloaded_size,
             snapshot.total_size,
+            snapshot.total_size_known,
             snapshot.completed_pieces
         ));
     }
@@ -729,16 +718,14 @@ fn plain_signature(
 }
 
 fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {
-    let percent = if snapshot.total_size > 0 {
-        snapshot.downloaded_size as f64 / snapshot.total_size as f64
-    } else {
-        0.0
-    };
+    let percent = progress_ratio(snapshot).unwrap_or_default();
     let bar = progress_bar(percent, BAR_WIDTH);
-    let label = snapshot
-        .file_name
-        .clone()
-        .unwrap_or_else(|| snapshot.url.clone());
+    let label = snapshot.file_name.clone().unwrap_or_else(|| {
+        snapshot
+            .primary_source_locator
+            .clone()
+            .unwrap_or_else(|| snapshot.url.clone())
+    });
     let label = truncate_middle(&label, 30);
     let piece_label = if snapshot.piece_count > 0 {
         format!(
@@ -750,17 +737,69 @@ fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {
     };
 
     format!(
-        "#{:<3} {:<10} {} {:>6.1}% {:>10} / {:<10} {:>10}{}  {}",
+        "#{:<3} {:<10} {} {:>6} {:>10} / {:<12} {:>10}{}  {}",
         snapshot.id,
         snapshot.status,
         bar,
-        percent * 100.0,
+        format_progress_percent(snapshot),
         format_bytes(snapshot.downloaded_size),
-        format_bytes(snapshot.total_size),
+        format_snapshot_total(snapshot),
         format_speed(speed_bps),
         piece_label,
         label,
     )
+}
+
+fn progress_ratio(snapshot: &TaskSnapshot) -> Option<f64> {
+    if !snapshot.total_size_known || snapshot.total_size == 0 {
+        None
+    } else {
+        Some(snapshot.downloaded_size as f64 / snapshot.total_size as f64)
+    }
+}
+
+fn format_progress_percent(snapshot: &TaskSnapshot) -> String {
+    progress_ratio(snapshot)
+        .map(|ratio| format!("{:.1}%", ratio * 100.0))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_snapshot_total(snapshot: &TaskSnapshot) -> String {
+    if snapshot.total_size_known {
+        format_bytes(snapshot.total_size)
+    } else {
+        "unknown".to_string()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AggregateTotals {
+    total_downloaded: u64,
+    known_total_size: u64,
+    has_unknown_total: bool,
+}
+
+fn aggregate_totals(snapshots: &[TaskSnapshot]) -> AggregateTotals {
+    let mut totals = AggregateTotals::default();
+    for snapshot in snapshots {
+        totals.total_downloaded = totals
+            .total_downloaded
+            .saturating_add(snapshot.downloaded_size);
+        if snapshot.total_size_known {
+            totals.known_total_size = totals.known_total_size.saturating_add(snapshot.total_size);
+        } else {
+            totals.has_unknown_total = true;
+        }
+    }
+    totals
+}
+
+fn format_total_label(known_total_size: u64, has_unknown_total: bool) -> String {
+    match (known_total_size, has_unknown_total) {
+        (0, true) => "unknown".to_string(),
+        (_, true) => format!("{} + unknown", format_bytes(known_total_size)),
+        (_, false) => format_bytes(known_total_size),
+    }
 }
 
 fn progress_bar(progress: f64, width: usize) -> String {
@@ -874,7 +913,42 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes, progress_bar, truncate_middle};
+    use super::{
+        AggregateTotals, TaskSnapshot, aggregate_totals, format_bytes, format_progress_percent,
+        format_total_label, progress_bar, truncate_middle,
+    };
+    use paradown::Checksum;
+    use paradown::StatsSnapshot;
+    use std::path::PathBuf;
+
+    fn test_snapshot(
+        total_size_known: bool,
+        downloaded_size: u64,
+        total_size: u64,
+    ) -> TaskSnapshot {
+        TaskSnapshot {
+            id: 1,
+            trace_id: "task-000001".into(),
+            url: "https://example.com/file.bin".into(),
+            file_name: Some("file.bin".into()),
+            file_path: Some(PathBuf::from("/tmp/file.bin")),
+            status: "Running".into(),
+            downloaded_size,
+            total_size,
+            total_size_known,
+            source_count: 1,
+            primary_source_locator: Some("https://example.com/file.bin".into()),
+            source_locators: vec!["https://example.com/file.bin".into()],
+            completed_pieces: 0,
+            piece_count: 0,
+            completed_blocks: 0,
+            block_count: 0,
+            created_at: None,
+            updated_at: None,
+            checksums: Vec::<Checksum>::new(),
+            stats: StatsSnapshot::default(),
+        }
+    }
 
     #[test]
     fn formats_byte_values_human_readably() {
@@ -892,6 +966,29 @@ mod tests {
         assert_eq!(
             truncate_middle("abcdefghijklmnopqrstuvwxyz", 10),
             "abc...xyz"
+        );
+    }
+
+    #[test]
+    fn formats_unknown_total_progress_without_percentage() {
+        let snapshot = test_snapshot(false, 12, 0);
+        assert_eq!(format_progress_percent(&snapshot), "-");
+    }
+
+    #[test]
+    fn aggregates_known_and_unknown_totals_separately() {
+        let totals = aggregate_totals(&[test_snapshot(true, 10, 20), test_snapshot(false, 5, 0)]);
+        assert_eq!(
+            totals,
+            AggregateTotals {
+                total_downloaded: 15,
+                known_total_size: 20,
+                has_unknown_total: true,
+            }
+        );
+        assert_eq!(
+            format_total_label(totals.known_total_size, totals.has_unknown_total),
+            "20 B + unknown"
         );
     }
 }

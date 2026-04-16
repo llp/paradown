@@ -1,9 +1,9 @@
 use crate::config::Config;
-use crate::domain::{HttpAuth, HttpRequestOptions, ProxyOptions};
+use crate::domain::{HttpAuth, HttpRequestOptions, ProxyOptions, TlsOptions};
 use crate::error::Error;
 use log::LevelFilter;
 use reqwest::header::{COOKIE, HeaderName, HeaderValue, USER_AGENT};
-use reqwest::{NoProxy, Proxy, RequestBuilder};
+use reqwest::{Certificate, Identity, NoProxy, Proxy, RequestBuilder};
 use std::time::Duration;
 
 pub fn init_logger(debug: bool) {
@@ -33,6 +33,8 @@ pub(crate) fn build_http_client(config: &Config) -> Result<reqwest::Client, Erro
         .gzip(true);
 
     builder = apply_proxy_options(builder, &config.http.client.proxy)?;
+    builder = apply_cookie_store(builder, config.http.client.cookie_store);
+    builder = apply_tls_options(builder, &config.http.client.tls)?;
 
     builder
         .build()
@@ -94,6 +96,61 @@ fn apply_proxy_options(
             https_proxy = https_proxy.no_proxy(NoProxy::from_string(no_proxy));
         }
         builder = builder.proxy(https_proxy);
+    }
+
+    Ok(builder)
+}
+
+fn apply_cookie_store(
+    builder: reqwest::ClientBuilder,
+    cookie_store_enabled: bool,
+) -> reqwest::ClientBuilder {
+    if cookie_store_enabled {
+        builder.cookie_store(true)
+    } else {
+        builder
+    }
+}
+
+fn apply_tls_options(
+    mut builder: reqwest::ClientBuilder,
+    tls: &TlsOptions,
+) -> Result<reqwest::ClientBuilder, Error> {
+    if tls.insecure_skip_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+
+    if let Some(path) = &tls.ca_certificate_pem {
+        let pem = std::fs::read(path).map_err(|err| {
+            Error::Other(format!(
+                "Failed to read CA certificate PEM '{}': {err}",
+                path.display()
+            ))
+        })?;
+        let certificate = Certificate::from_pem(&pem).map_err(|err| {
+            Error::Other(format!(
+                "Invalid CA certificate PEM '{}': {err}",
+                path.display()
+            ))
+        })?;
+        builder = builder.add_root_certificate(certificate);
+    }
+
+    if let Some(path) = &tls.client_identity_pem {
+        builder = builder.use_rustls_tls();
+        let pem = std::fs::read(path).map_err(|err| {
+            Error::Other(format!(
+                "Failed to read client identity PEM '{}': {err}",
+                path.display()
+            ))
+        })?;
+        let identity = Identity::from_pem(&pem).map_err(|err| {
+            Error::Other(format!(
+                "Invalid client identity PEM '{}': {err}",
+                path.display()
+            ))
+        })?;
+        builder = builder.identity(identity);
     }
 
     Ok(builder)

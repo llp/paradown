@@ -47,7 +47,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     let resolved_file_name = job.initialize_file_name(protocol_probe.suggested_file_name.clone());
     let file_path = job.get_or_init_file_path(download_dir)?;
     debug!(
-        "[Task {}] Probe result: total_size={} supports_range_requests={} resolved_file_name={} resolved_url={:?} etag={:?} last_modified={:?}",
+        "[Task {}] Probe result: total_size={:?} supports_range_requests={} resolved_file_name={} resolved_url={:?} etag={:?} last_modified={:?}",
         job.id,
         protocol_probe.total_size,
         protocol_probe.supports_range_requests,
@@ -77,7 +77,7 @@ pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutco
     let _ = job.sync_piece_progress_from_workers().await?;
     payload_store.prepare().await?;
 
-    if protocol_probe.total_size == 0 {
+    if protocol_probe.total_size == Some(0) {
         let outcome = match verify_checksums(job, file_path.as_ref()).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(Error::Other("Checksum failed".into())),
@@ -97,23 +97,32 @@ async fn build_single_file_manifest(
     probe: &OriginMetadata,
 ) -> SessionManifest {
     let checksums = job.checksums.lock().await.clone();
-    let requested_workers = if probe.supports_range_requests {
+    let requested_workers = if probe.supports_range_requests && probe.total_size.is_some() {
         job.config.segments_per_task
     } else {
         1
     };
-    let piece_size = suggested_http_piece_size(probe.total_size, requested_workers);
-
-    SessionManifest::for_single_file_with_piece_size(
-        job.spec.clone(),
-        source_set,
-        job.resolve_or_init_file_name(),
-        file_path.as_ref().clone(),
-        probe.total_size,
-        piece_size,
-        piece_size.min(256 * 1024),
-        checksums,
-    )
+    if let Some(total_size) = probe.total_size {
+        let piece_size = suggested_http_piece_size(total_size, requested_workers);
+        SessionManifest::for_single_file_with_piece_size(
+            job.spec.clone(),
+            source_set,
+            job.resolve_or_init_file_name(),
+            file_path.as_ref().clone(),
+            total_size,
+            piece_size,
+            piece_size.min(256 * 1024),
+            checksums,
+        )
+    } else {
+        SessionManifest::for_streaming_file(
+            job.spec.clone(),
+            source_set,
+            job.resolve_or_init_file_name(),
+            file_path.as_ref().clone(),
+            checksums,
+        )
+    }
 }
 
 async fn build_runtime_source_set(
@@ -163,10 +172,22 @@ async fn handle_existing_file(
         return Ok(false);
     }
 
-    if current_size > probe.total_size {
+    if let Some(total_size) = probe.total_size
+        && current_size > total_size
+    {
         info!(
             "[Task {}] Local file size {} exceeds remote size {}, restarting download",
-            job.id, current_size, probe.total_size
+            job.id, current_size, total_size
+        );
+        fs::remove_file(file_path.as_ref()).await?;
+        reset_resume_state(job).await?;
+        return Ok(false);
+    }
+
+    if probe.total_size.is_none() {
+        debug!(
+            "[Task {}] Remote total size is unknown; existing local file will be replaced before download",
+            job.id
         );
         fs::remove_file(file_path.as_ref()).await?;
         reset_resume_state(job).await?;
@@ -197,7 +218,7 @@ async fn handle_existing_file(
             }
         }
         FileConflictStrategy::Resume => {
-            if current_size < probe.total_size {
+            if current_size < probe.total_size.unwrap_or(0) {
                 if can_resume_partial_download(job, probe, previous_identity).await {
                     debug!(
                         "[Task {}] Resuming download from byte {}",
@@ -242,7 +263,11 @@ async fn verify_existing_file(
     }
 
     let file_size = fs::metadata(file_path.as_ref()).await?.len();
-    if file_size != probe.total_size {
+    let Some(total_size) = probe.total_size else {
+        return Ok(false);
+    };
+
+    if file_size != total_size {
         return Ok(false);
     }
 
@@ -270,6 +295,9 @@ async fn can_resume_partial_download(
     probe: &OriginMetadata,
     previous_identity: &HttpResourceIdentity,
 ) -> bool {
+    if probe.total_size.is_none() {
+        return false;
+    }
     if !probe.supports_range_requests {
         return false;
     }

@@ -323,6 +323,9 @@ impl Config {
         if let Some(value) = parse_env_bool("PARADOWN_USE_ENV_PROXY")? {
             self.http.client.proxy.use_env_proxy = value;
         }
+        if let Some(value) = parse_env_bool("PARADOWN_COOKIE_STORE")? {
+            self.http.client.cookie_store = value;
+        }
         if let Some(value) = read_env("PARADOWN_HTTP_PROXY") {
             self.http.client.proxy.http_proxy = Some(value);
         }
@@ -331,6 +334,15 @@ impl Config {
         }
         if let Some(value) = read_env("PARADOWN_NO_PROXY") {
             self.http.client.proxy.no_proxy = Some(value);
+        }
+        if let Some(value) = parse_env_bool("PARADOWN_TLS_INSECURE_SKIP_VERIFY")? {
+            self.http.client.tls.insecure_skip_verify = value;
+        }
+        if let Some(value) = read_env("PARADOWN_TLS_CA_CERT_PEM") {
+            self.http.client.tls.ca_certificate_pem = Some(value.into());
+        }
+        if let Some(value) = read_env("PARADOWN_TLS_CLIENT_IDENTITY_PEM") {
+            self.http.client.tls.client_identity_pem = Some(value.into());
         }
 
         if let Some(value) = read_env("PARADOWN_HEADERS") {

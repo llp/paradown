@@ -145,6 +145,7 @@ async fn build_restored_workers(
                 crate::scheduler::planner::ExecutionLaneAssignment {
                     lane_id: worker_request.index,
                     source_id: source.id.clone(),
+                    length_known: true,
                     piece_start: worker_request.piece_start.unwrap_or(0),
                     piece_end: worker_request.piece_end.unwrap_or(0),
                     block_start: worker_request.block_start.unwrap_or(0),

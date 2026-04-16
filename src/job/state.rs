@@ -206,6 +206,7 @@ impl Task {
 
         self.downloaded_size.store(0, Ordering::Relaxed);
         self.total_size.store(0, Ordering::Relaxed);
+        self.total_size_known.store(false, Ordering::Relaxed);
         self.range_requests_supported
             .store(false, Ordering::Relaxed);
         self.protocol_probe_completed

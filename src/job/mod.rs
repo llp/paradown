@@ -56,6 +56,7 @@ pub struct Task {
     pub downloaded_size: AtomicU64,
     pub range_requests_supported: AtomicBool,
     pub protocol_probe_completed: AtomicBool,
+    pub total_size_known: AtomicBool,
 
     pub worker_event_tx: broadcast::Sender<Event>,
     pub manager: Weak<Manager>,
@@ -74,7 +75,10 @@ pub struct TaskSnapshot {
     pub status: String,
     pub downloaded_size: u64,
     pub total_size: u64,
+    pub total_size_known: bool,
     pub source_count: usize,
+    pub primary_source_locator: Option<String>,
+    pub source_locators: Vec<String>,
     pub completed_pieces: u32,
     pub piece_count: u32,
     pub completed_blocks: u32,
@@ -150,6 +154,7 @@ impl Task {
             total_size: AtomicU64::new(total_size.unwrap_or(0)),
             range_requests_supported: AtomicBool::new(false),
             protocol_probe_completed: AtomicBool::new(false),
+            total_size_known: AtomicBool::new(total_size.is_some()),
             created_at: Some(created_at.unwrap_or(now)),
             updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
             persistence,
@@ -177,6 +182,7 @@ impl Task {
         let completed_blocks = completed_block_count(&block_states);
         let block_count = block_states.len() as u32;
         let stats = self.stats.snapshot().await;
+        let sources = self.sources.read().await.clone();
         TaskSnapshot {
             id: self.id,
             trace_id: self.trace_id.clone(),
@@ -186,7 +192,14 @@ impl Task {
             status: status_str,
             downloaded_size: self.downloaded_size.load(Ordering::Relaxed),
             total_size: self.total_size.load(Ordering::Relaxed),
-            source_count: self.sources.read().await.len(),
+            total_size_known: self.total_size_known.load(Ordering::Relaxed),
+            source_count: sources.len(),
+            primary_source_locator: sources.primary().map(|source| source.locator.clone()),
+            source_locators: sources
+                .sources
+                .into_iter()
+                .map(|source| source.locator)
+                .collect(),
             completed_pieces,
             piece_count,
             completed_blocks,
@@ -239,8 +252,15 @@ impl Task {
         }
     }
 
-    pub(crate) fn update_protocol_probe(&self, total_size: u64, supports_range_requests: bool) {
-        self.total_size.store(total_size, Ordering::Relaxed);
+    pub(crate) fn update_protocol_probe(
+        &self,
+        total_size: Option<u64>,
+        supports_range_requests: bool,
+    ) {
+        self.total_size
+            .store(total_size.unwrap_or(0), Ordering::Relaxed);
+        self.total_size_known
+            .store(total_size.is_some(), Ordering::Relaxed);
         self.range_requests_supported
             .store(supports_range_requests, Ordering::Relaxed);
         self.protocol_probe_completed.store(true, Ordering::Relaxed);
@@ -248,6 +268,17 @@ impl Task {
 
     pub(crate) fn supports_range_requests(&self) -> bool {
         self.range_requests_supported.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn total_size_option(&self) -> Option<u64> {
+        self.total_size_known
+            .load(Ordering::Relaxed)
+            .then(|| self.total_size.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn finalize_stream_total_size(&self, total_size: u64) {
+        self.total_size.store(total_size, Ordering::Relaxed);
+        self.total_size_known.store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn resolve_or_init_file_name(&self) -> String {
@@ -456,6 +487,11 @@ impl Task {
 
         let piece_states =
             derive_piece_states_from_blocks(&manifest.pieces, &manifest.blocks, &block_states);
+        if !manifest.total_size_known {
+            self.downloaded_size.store(downloaded, Ordering::Relaxed);
+            return Ok(PieceProgressSnapshot { downloaded });
+        }
+
         let downloaded = downloaded.min(manifest.total_size);
         *self.block_states.write().await = block_states;
         *self.piece_states.write().await = piece_states;
@@ -481,8 +517,10 @@ impl Task {
             for block_state in block_states.iter_mut() {
                 block_state.completed = true;
             }
-            self.downloaded_size
-                .store(manifest.total_size, Ordering::Relaxed);
+            if manifest.total_size_known {
+                self.downloaded_size
+                    .store(manifest.total_size, Ordering::Relaxed);
+            }
         }
     }
 }

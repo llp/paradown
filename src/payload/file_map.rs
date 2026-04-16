@@ -21,6 +21,7 @@ pub(crate) struct WriteSlice {
 pub(crate) struct FileMap {
     segments: Vec<FileSegment>,
     total_size: u64,
+    bounded: bool,
 }
 
 impl FileMap {
@@ -38,13 +39,31 @@ impl FileMap {
         Self {
             segments,
             total_size: manifest.total_size,
+            bounded: manifest.piece_count > 0 || manifest.total_size > 0,
         }
     }
 
     pub(crate) fn segments(&self) -> &[FileSegment] {
         &self.segments
     }
+
+    pub(crate) fn is_bounded(&self) -> bool {
+        self.bounded
+    }
+
     pub(crate) fn resolve_writes(&self, offset: u64, len: usize) -> Result<Vec<WriteSlice>, Error> {
+        if !self.bounded {
+            let Some(segment) = self.segments.first() else {
+                return Err(Error::Other("payload store has no file segments".into()));
+            };
+
+            return Ok(vec![WriteSlice {
+                path: segment.path.clone(),
+                file_offset: offset,
+                buffer_range: 0..len,
+            }]);
+        }
+
         let end = offset.saturating_add(len as u64);
         if end > self.total_size {
             return Err(Error::Other(format!(

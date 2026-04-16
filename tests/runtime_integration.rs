@@ -307,6 +307,105 @@ async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
 }
 
 #[tokio::test]
+async fn deleting_a_running_session_removes_it_from_manager_and_unblocks_the_queue() {
+    let alpha = Arc::new(
+        (0..(256 * 1024))
+            .map(|idx| (idx % 223) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let beta = Arc::new(
+        (0..(72 * 1024))
+            .map(|idx| ((idx * 11) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let server = MultiFileTestServer::spawn(
+        vec![
+            TestAsset::from_shared("/alpha.bin", Arc::clone(&alpha)),
+            TestAsset::from_shared("/beta.bin", Arc::clone(&beta)),
+        ],
+        MultiFileServerConfig {
+            response_chunk_size: 4 * 1024,
+            chunk_delay: Duration::from_millis(15),
+        },
+    )
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config_with_concurrency(
+        &download_dir,
+        &db_path,
+        4,
+        1,
+        None,
+        FileConflictStrategy::Overwrite,
+    );
+    let persistence = Store::new(Arc::new(config.clone())).await.unwrap();
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let alpha_task = manager
+        .add_download(DownloadSpec::parse(server.url("/alpha.bin")).unwrap())
+        .await
+        .unwrap();
+    let beta_task = manager
+        .add_download(DownloadSpec::parse(server.url("/beta.bin")).unwrap())
+        .await
+        .unwrap();
+
+    manager.start_task(alpha_task).await.unwrap();
+    manager.start_task(beta_task).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let alpha_session = manager
+        .get_session_by_id(alpha_task)
+        .expect("running session should still be registered before deletion");
+    alpha_session.delete().await.unwrap();
+
+    assert!(
+        manager.get_session_by_id(alpha_task).is_none(),
+        "deleted session should be removed from manager state",
+    );
+
+    wait_for_task_completion(beta_task, &mut rx).await.unwrap();
+
+    let beta_downloaded = tokio::fs::read(download_dir.join("beta.bin"))
+        .await
+        .unwrap();
+    assert_eq!(beta_downloaded, *beta);
+    assert!(
+        !download_dir.join("alpha.bin").exists(),
+        "deleted task payload should be removed from disk",
+    );
+    assert!(persistence.load_task(alpha_task).await.unwrap().is_none());
+    assert!(
+        persistence
+            .load_workers(alpha_task)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        persistence
+            .load_pieces(alpha_task)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        persistence
+            .load_blocks(alpha_task)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn distributes_http_segments_across_multiple_sources() {
     let body = Arc::new(
         (0..(128 * 1024))

@@ -1,9 +1,12 @@
 mod support;
 
 use paradown::FileConflictStrategy;
-use paradown::download::{DownloadSpec, Event, Manager, Status};
+use paradown::download::{DownloadSpec, Event, Manager, Status, TaskRequest};
 use paradown::repository::models::{DBDownloadTask, DBDownloadWorker};
-use paradown::{Backend, Config, ConfigBuilder, Store};
+use paradown::{
+    Backend, Config, ConfigBuilder, SourceCapabilities, SourceDescriptor, SourceKind, SourceSet,
+    Store,
+};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
@@ -299,6 +302,91 @@ async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
         assert_eq!(snapshot.status, "Completed");
         assert_eq!(snapshot.completed_pieces, snapshot.piece_count);
     }
+}
+
+#[tokio::test]
+async fn distributes_http_segments_across_multiple_sources() {
+    let body = Arc::new(
+        (0..(128 * 1024))
+            .map(|idx| ((idx * 7) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let primary_server = MultiFileTestServer::spawn(
+        vec![TestAsset::from_shared("/shared.bin", Arc::clone(&body))],
+        MultiFileServerConfig {
+            response_chunk_size: 2 * 1024,
+            chunk_delay: Duration::from_millis(6),
+        },
+    )
+    .await;
+    let mirror_server = MultiFileTestServer::spawn(
+        vec![TestAsset::from_shared("/shared.bin", Arc::clone(&body))],
+        MultiFileServerConfig {
+            response_chunk_size: 2 * 1024,
+            chunk_delay: Duration::from_millis(6),
+        },
+    )
+    .await;
+
+    let sandbox = TempDir::new().unwrap();
+    let download_dir = sandbox.path().join("downloads");
+    let db_path = sandbox.path().join("state.db");
+    tokio::fs::create_dir_all(&download_dir).await.unwrap();
+
+    let config = build_config(
+        &download_dir,
+        &db_path,
+        4,
+        None,
+        FileConflictStrategy::Overwrite,
+    );
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let primary_spec = DownloadSpec::parse(primary_server.url("/shared.bin")).unwrap();
+    let mirror_spec = DownloadSpec::parse(mirror_server.url("/shared.bin")).unwrap();
+    let mut sources = SourceSet::single_primary(SourceDescriptor::from_spec(&primary_spec, None));
+    sources.sources.push(SourceDescriptor {
+        id: format!("mirror::{}", mirror_spec.locator()),
+        kind: SourceKind::Mirror,
+        locator: mirror_spec.locator().to_string(),
+        metadata_only: false,
+        request: None,
+        resource_identity: None,
+        capabilities: SourceCapabilities::http_origin(),
+    });
+
+    let mut rx = manager.subscribe_events();
+    let task_id = manager
+        .add_task(TaskRequest::builder(primary_spec).sources(sources).build())
+        .await
+        .unwrap();
+    manager.start_task(task_id).await.unwrap();
+    wait_for_task_completion(task_id, &mut rx).await.unwrap();
+
+    let downloaded = tokio::fs::read(download_dir.join("shared.bin"))
+        .await
+        .unwrap();
+    assert_eq!(downloaded, *body);
+
+    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    assert_eq!(snapshot.status, "Completed");
+    assert_eq!(snapshot.source_count, 2);
+    assert!(
+        snapshot
+            .source_locators
+            .iter()
+            .any(|locator| locator == mirror_spec.locator())
+    );
+
+    assert!(
+        primary_server.range_get_count("/shared.bin").await >= 1,
+        "primary source should serve at least one ranged GET",
+    );
+    assert!(
+        mirror_server.range_get_count("/shared.bin").await >= 1,
+        "mirror source should serve at least one ranged GET",
+    );
 }
 
 fn build_config(

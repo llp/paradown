@@ -15,6 +15,7 @@ pub(crate) enum SourceSelectionPolicy {
 pub(crate) struct ExecutionLaneAssignment {
     pub lane_id: u32,
     pub source_id: String,
+    pub length_known: bool,
     pub piece_start: u32,
     pub piece_end: u32,
     pub block_start: u32,
@@ -39,19 +40,39 @@ pub(crate) fn plan_execution_lanes(
     allow_parallel: bool,
 ) -> Vec<ExecutionLaneAssignment> {
     if manifest.pieces.is_empty() {
+        let transfer_sources = manifest.sources.active_transfer_sources();
+        if !manifest.total_size_known || transfer_sources.is_empty() {
+            return transfer_sources
+                .first()
+                .map(|source| ExecutionLaneAssignment {
+                    lane_id: 0,
+                    source_id: source.id.clone(),
+                    length_known: false,
+                    piece_start: 0,
+                    piece_end: 0,
+                    block_start: 0,
+                    block_end: 0,
+                    start: 0,
+                    end: 0,
+                })
+                .into_iter()
+                .collect();
+        }
         return Vec::new();
     }
 
-    let primary_source = manifest.sources.primary().or_else(|| {
-        manifest
-            .sources
-            .active_transfer_sources()
-            .into_iter()
-            .next()
-    });
-    let Some(primary_source) = primary_source else {
+    let mut transfer_sources = manifest.sources.active_transfer_sources();
+    if transfer_sources.is_empty() {
         return Vec::new();
-    };
+    }
+    transfer_sources.sort_by(|left, right| left.id.cmp(&right.id));
+    if let Some(primary) = manifest.sources.primary()
+        && let Some(position) = transfer_sources
+            .iter()
+            .position(|source| source.id == primary.id)
+    {
+        transfer_sources.swap(0, position);
+    }
 
     let policy = if allow_parallel {
         SourceSelectionPolicy::AvailabilityAware
@@ -61,8 +82,13 @@ pub(crate) fn plan_execution_lanes(
 
     if matches!(policy, SourceSelectionPolicy::PrimaryOnly) {
         return vec![
-            assignment_from_piece_slice(0, &primary_source.id, &manifest.pieces, &manifest.blocks)
-                .expect("non-empty pieces"),
+            assignment_from_piece_slice(
+                0,
+                &transfer_sources[0].id,
+                &manifest.pieces,
+                &manifest.blocks,
+            )
+            .expect("non-empty pieces"),
         ];
     }
 
@@ -77,8 +103,9 @@ pub(crate) fn plan_execution_lanes(
         }
 
         let slice = &manifest.pieces[piece_start..piece_end];
+        let source_id = &transfer_sources[index % transfer_sources.len()].id;
         if let Some(assignment) =
-            assignment_from_piece_slice(index as u32, &primary_source.id, slice, &manifest.blocks)
+            assignment_from_piece_slice(index as u32, source_id, slice, &manifest.blocks)
         {
             assignments.push(assignment);
         }
@@ -110,6 +137,7 @@ fn assignment_from_piece_slice(
     Some(ExecutionLaneAssignment {
         lane_id,
         source_id: source_id.to_string(),
+        length_known: true,
         piece_start: first.piece_index,
         piece_end: last.piece_index,
         block_start,

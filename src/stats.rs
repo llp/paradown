@@ -12,7 +12,7 @@ pub struct WorkerStats {
     pub current_speed_bps: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct StatsSnapshot {
     pub total_bytes: u64,
     pub total_speed_bps: u64,

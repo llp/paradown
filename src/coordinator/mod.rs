@@ -100,6 +100,10 @@ impl Manager {
         add_task_with_workers(self, task_request, None).await
     }
 
+    pub async fn add_session(self: &Arc<Self>, session_request: TaskRequest) -> Result<u32, Error> {
+        self.add_task(session_request).await
+    }
+
     pub async fn add_download(self: &Arc<Self>, spec: DownloadSpec) -> Result<u32, Error> {
         self.add_task(TaskRequest::builder(spec).build()).await
     }
@@ -184,9 +188,6 @@ impl Manager {
             );
             return Ok(task_id);
         };
-
-        let checksums = task.checksums.lock().await;
-        persistence.save_checksums(&checksums, task_id).await?;
 
         // 3.执行保存操作
         match persistence.save_task(&task).await {
@@ -316,8 +317,16 @@ impl Manager {
         self.get_task_by_id(id)
     }
 
+    pub fn get_session(&self, id: u32) -> Option<Arc<Task>> {
+        self.get_task(id)
+    }
+
     pub fn get_task_by_id(&self, id: u32) -> Option<Arc<Task>> {
         self.tasks.get(&id).map(|v| Arc::clone(&v))
+    }
+
+    pub fn get_session_by_id(&self, id: u32) -> Option<Arc<Task>> {
+        self.get_task_by_id(id)
     }
 
     pub fn get_task_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
@@ -327,11 +336,19 @@ impl Manager {
             .map(|entry| Arc::clone(entry.value()))
     }
 
+    pub fn get_session_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
+        self.get_task_by_locator(locator)
+    }
+
     pub fn get_all_tasks(&self) -> Vec<Arc<Task>> {
         self.tasks
             .iter()
             .map(|entry| Arc::clone(entry.value()))
             .collect()
+    }
+
+    pub fn get_all_sessions(&self) -> Vec<Arc<Task>> {
+        self.get_all_tasks()
     }
 
     //----------------------------------------------------------------------------------------------

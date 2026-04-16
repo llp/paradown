@@ -44,6 +44,88 @@ async fn retries_download_when_origin_drops_connection() {
 }
 
 #[tokio::test]
+async fn retries_http_429_after_retry_after_delay() {
+    let payload = Arc::new(vec![0xEF; 24 * 1024]);
+    let server = FlakyHttpServer::spawn(
+        Arc::clone(&payload),
+        FailureMode::StatusFirstN {
+            status: 429,
+            retry_after_secs: Some(1),
+            failures: 1,
+        },
+    )
+    .await;
+    let temp = tempdir().unwrap();
+
+    let mut config = Config::default();
+    config.download_dir = temp.path().join("downloads");
+    config.storage_backend = Backend::Memory;
+    config.segments_per_task = 1;
+    config.concurrent_tasks = 1;
+    config.retry.max_retries = 3;
+    config.http.client.proxy.use_env_proxy = false;
+
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = manager
+        .add_download(DownloadSpec::parse(server.url()).unwrap())
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    manager.start_task(task_id).await.unwrap();
+    manager.wait_for_all_tasks().await.unwrap();
+
+    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    assert_eq!(snapshot.status, "Completed");
+    assert!(snapshot.stats.retry_count >= 1);
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "Retry-After should delay the follow-up request",
+    );
+    assert_eq!(server.download_attempts(), 2);
+}
+
+#[tokio::test]
+async fn does_not_retry_non_retryable_http_statuses() {
+    let payload = Arc::new(vec![0x11; 4 * 1024]);
+    let server = FlakyHttpServer::spawn(
+        payload,
+        FailureMode::StatusFirstN {
+            status: 404,
+            retry_after_secs: None,
+            failures: usize::MAX,
+        },
+    )
+    .await;
+    let temp = tempdir().unwrap();
+
+    let mut config = Config::default();
+    config.download_dir = temp.path().join("downloads");
+    config.storage_backend = Backend::Memory;
+    config.segments_per_task = 1;
+    config.concurrent_tasks = 1;
+    config.retry.max_retries = 3;
+    config.http.client.proxy.use_env_proxy = false;
+
+    let manager = Manager::new(config).unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = manager
+        .add_download(DownloadSpec::parse(server.url()).unwrap())
+        .await
+        .unwrap();
+    manager.start_task(task_id).await.unwrap();
+    manager.wait_for_all_tasks().await.unwrap();
+
+    let snapshot = wait_for_snapshot_status(&manager, task_id, "Failed").await;
+    assert!(snapshot.status.starts_with("Failed"));
+    assert_eq!(snapshot.stats.retry_count, 0);
+    assert_eq!(server.download_attempts(), 1);
+}
+
+#[tokio::test]
 async fn writes_failure_diagnostic_after_retry_exhaustion() {
     let payload = Arc::new(vec![0xCD; 16 * 1024]);
     let server = FlakyHttpServer::spawn(payload, FailureMode::AlwaysDrop).await;
@@ -86,10 +168,16 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
 enum FailureMode {
     FailFirstN(usize),
     AlwaysDrop,
+    StatusFirstN {
+        status: u16,
+        retry_after_secs: Option<u64>,
+        failures: usize,
+    },
 }
 
 struct FlakyHttpServer {
     addr: SocketAddr,
+    download_attempts: Arc<AtomicUsize>,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -97,7 +185,8 @@ impl FlakyHttpServer {
     async fn spawn(body: Arc<Vec<u8>>, failure_mode: FailureMode) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let request_count = Arc::new(AtomicUsize::new(0));
+        let download_attempts = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&download_attempts);
 
         let handle = tokio::spawn(async move {
             loop {
@@ -114,6 +203,7 @@ impl FlakyHttpServer {
                         return;
                     };
                     let range = extract_header(&request, "range");
+                    let is_probe_request = matches!(range.as_deref(), Some("bytes=0-0"));
 
                     if method == "HEAD" {
                         let response = format!(
@@ -127,10 +217,35 @@ impl FlakyHttpServer {
                     let (start, end) = extract_range_bounds(range.as_deref(), body.len())
                         .unwrap_or((0, body.len().saturating_sub(1)));
                     let slice = &body[start..=end];
-                    let attempt = request_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    let attempt = if is_probe_request {
+                        0
+                    } else {
+                        request_count.fetch_add(1, Ordering::SeqCst) + 1
+                    };
+                    if !is_probe_request
+                        && let FailureMode::StatusFirstN {
+                            status,
+                            retry_after_secs,
+                            failures,
+                        } = failure_mode
+                        && attempt <= failures
+                    {
+                        let reason = http_reason_phrase(status);
+                        let mut response = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n"
+                        );
+                        if let Some(retry_after_secs) = retry_after_secs {
+                            response.push_str(&format!("Retry-After: {retry_after_secs}\r\n"));
+                        }
+                        response.push_str("\r\n");
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        return;
+                    }
                     let should_drop = match failure_mode {
-                        FailureMode::FailFirstN(limit) => attempt <= limit,
+                        FailureMode::FailFirstN(limit) if !is_probe_request => attempt <= limit,
                         FailureMode::AlwaysDrop => true,
+                        FailureMode::StatusFirstN { .. } => false,
+                        FailureMode::FailFirstN(_) => false,
                     };
 
                     let response = if range.is_some() {
@@ -164,11 +279,19 @@ impl FlakyHttpServer {
             }
         });
 
-        Self { addr, handle }
+        Self {
+            addr,
+            download_attempts,
+            handle,
+        }
     }
 
     fn url(&self) -> String {
         format!("http://{}/flaky.bin", self.addr)
+    }
+
+    fn download_attempts(&self) -> usize {
+        self.download_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -231,6 +354,19 @@ fn extract_range_bounds(range: Option<&str>, body_len: usize) -> Option<(usize, 
     Some((start, capped_end))
 }
 
+fn http_reason_phrase(status: u16) -> &'static str {
+    match status {
+        404 => "Not Found",
+        408 => "Request Timeout",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    }
+}
+
 async fn wait_for_file(path: &std::path::Path) -> String {
     for _ in 0..20 {
         if let Ok(contents) = tokio::fs::read_to_string(path).await {
@@ -240,4 +376,20 @@ async fn wait_for_file(path: &std::path::Path) -> String {
     }
 
     tokio::fs::read_to_string(path).await.unwrap()
+}
+
+async fn wait_for_snapshot_status(
+    manager: &Manager,
+    task_id: u32,
+    expected_prefix: &str,
+) -> paradown::download::TaskSnapshot {
+    for _ in 0..50 {
+        let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+        if snapshot.status.starts_with(expected_prefix) {
+            return snapshot;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    manager.get_task_by_id(task_id).unwrap().snapshot().await
 }

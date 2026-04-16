@@ -113,12 +113,7 @@ impl Task {
 
             if let Some(persistence) = self.persistence.as_ref() {
                 let worker_clone = Arc::clone(&worker);
-                if let Err(err) = persistence.save_worker(&worker_clone).await {
-                    debug!(
-                        "[Task {}] Failed to persist worker: {:?}",
-                        worker_clone.id, err
-                    );
-                }
+                persistence.save_worker(&worker_clone).await?;
             }
 
             workers.push(worker);
@@ -277,6 +272,10 @@ impl Task {
         debug!("[Task {}] Task was cancelled", self.id);
         self.persist_task_worker_later(worker_id);
 
+        if matches!(*self.status.lock().await, Status::Failed(_)) {
+            return;
+        }
+
         if !self.all_workers_canceled_or_completed().await {
             return;
         }
@@ -433,6 +432,7 @@ mod tests {
             &ExecutionLaneAssignment {
                 lane_id: 0,
                 source_id: "https::https://example.com/archive.bin".into(),
+                length_known: true,
                 piece_start: 0,
                 piece_end: 2,
                 block_start: 0,

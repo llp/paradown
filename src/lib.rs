@@ -34,7 +34,8 @@ pub use domain::{
 };
 pub use download::{
     DownloadSpec, Event, Manager, SegmentRequest, SegmentRequestBuilder, Session, SessionRequest,
-    SessionSnapshot, Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot, Worker,
+    SessionSnapshot, StatsSnapshot, Status, Task, TaskRequest, TaskRequestBuilder, TaskSnapshot,
+    Worker,
 };
 pub use error::Error;
 pub use runtime::{init_logger, init_logger_with_level};

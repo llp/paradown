@@ -267,6 +267,146 @@ impl Repository for SqliteRepository {
         Ok(())
     }
 
+    async fn save_bundle(
+        &self,
+        task: &DBDownloadTask,
+        workers: &[DBDownloadWorker],
+        pieces: &[DBDownloadPiece],
+        blocks: &[DBDownloadBlock],
+        checksums: &[DBDownloadChecksum],
+    ) -> Result<(), Error> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO download_tasks
+                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+            VALUES
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+            ON CONFLICT(id) DO UPDATE SET
+                url=excluded.url,
+                spec_json=excluded.spec_json,
+                source_set_json=excluded.source_set_json,
+                resolved_url=excluded.resolved_url,
+                entity_tag=excluded.entity_tag,
+                last_modified=excluded.last_modified,
+                file_name=excluded.file_name,
+                file_path=excluded.file_path,
+                status=excluded.status,
+                downloaded_size=excluded.downloaded_size,
+                total_size=excluded.total_size,
+                updated_at=COALESCE(excluded.updated_at, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            "#,
+        )
+        .bind(task.id)
+        .bind(&task.url)
+        .bind(&task.spec_json)
+        .bind(&task.source_set_json)
+        .bind(&task.resolved_url)
+        .bind(&task.entity_tag)
+        .bind(&task.last_modified)
+        .bind(&task.file_name)
+        .bind(&task.file_path)
+        .bind(&task.status)
+        .bind(task.downloaded_size as i64)
+        .bind(task.total_size.map(|v| v as i64))
+        .bind(task.created_at.map(|dt| dt.to_rfc3339()))
+        .bind(task.updated_at.map(|dt| dt.to_rfc3339()))
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM download_workers WHERE task_id = ?1")
+            .bind(task.id)
+            .execute(&mut *tx)
+            .await?;
+        for worker in workers {
+            sqlx::query(
+                r#"
+                INSERT INTO download_workers
+                    (task_id, "index", source_id, piece_start, piece_end, block_start, block_end, start, "end", downloaded, status, updated_at)
+                VALUES
+                    (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                "#,
+            )
+            .bind(worker.task_id)
+            .bind(worker.index)
+            .bind(worker.source_id.as_deref())
+            .bind(worker.piece_start.map(i64::from))
+            .bind(worker.piece_end.map(i64::from))
+            .bind(worker.block_start.map(i64::from))
+            .bind(worker.block_end.map(i64::from))
+            .bind(worker.start as i64)
+            .bind(worker.end as i64)
+            .bind(worker.downloaded as i64)
+            .bind(&worker.status)
+            .bind(worker.updated_at.map(|dt| dt.to_rfc3339()))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM download_pieces WHERE task_id = ?1")
+            .bind(task.id)
+            .execute(&mut *tx)
+            .await?;
+        for piece in pieces {
+            sqlx::query(
+                r#"
+                INSERT INTO download_pieces (task_id, piece_index, completed, updated_at)
+                VALUES (?1, ?2, ?3, COALESCE(?4, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                "#,
+            )
+            .bind(piece.task_id)
+            .bind(piece.piece_index)
+            .bind(if piece.completed { 1 } else { 0 })
+            .bind(piece.updated_at.map(|dt| dt.to_rfc3339()))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM download_blocks WHERE task_id = ?1")
+            .bind(task.id)
+            .execute(&mut *tx)
+            .await?;
+        for block in blocks {
+            sqlx::query(
+                r#"
+                INSERT INTO download_blocks (task_id, piece_index, block_index, completed, updated_at)
+                VALUES (?1, ?2, ?3, ?4, COALESCE(?5, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                "#,
+            )
+            .bind(block.task_id)
+            .bind(block.piece_index)
+            .bind(block.block_index)
+            .bind(if block.completed { 1 } else { 0 })
+            .bind(block.updated_at.map(|dt| dt.to_rfc3339()))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM download_checksums WHERE task_id = ?1")
+            .bind(task.id)
+            .execute(&mut *tx)
+            .await?;
+        for checksum in checksums {
+            sqlx::query(
+                r#"
+                    INSERT INTO download_checksums (task_id, algorithm, value, verified, verified_at)
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+            )
+            .bind(checksum.task_id)
+            .bind(&checksum.algorithm)
+            .bind(&checksum.value)
+            .bind(if checksum.verified { 1 } else { 0 })
+            .bind(checksum.verified_at.map(|dt| dt.to_rfc3339()))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     // ---------------- Worker ----------------
     async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, Error> {
         let rows =

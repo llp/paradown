@@ -11,6 +11,27 @@ pub trait Repository: Send + Sync {
     async fn load_task(&self, task_id: u32) -> Result<Option<DBDownloadTask>, Error>;
     async fn save_task(&self, task: &DBDownloadTask) -> Result<(), Error>;
     async fn delete_task(&self, task_id: u32) -> Result<(), Error>;
+    async fn save_bundle(
+        &self,
+        task: &DBDownloadTask,
+        workers: &[DBDownloadWorker],
+        pieces: &[DBDownloadPiece],
+        blocks: &[DBDownloadBlock],
+        checksums: &[DBDownloadChecksum],
+    ) -> Result<(), Error> {
+        self.save_task(task).await?;
+        self.delete_workers(task.id).await?;
+        for worker in workers {
+            self.save_worker(worker).await?;
+        }
+        self.save_pieces(task.id, pieces).await?;
+        self.save_blocks(task.id, blocks).await?;
+        self.delete_checksums(task.id).await?;
+        for checksum in checksums {
+            self.save_checksum(checksum).await?;
+        }
+        Ok(())
+    }
 
     //
     async fn load_workers(&self, task_id: u32) -> Result<Vec<DBDownloadWorker>, Error>;

@@ -13,9 +13,7 @@ impl Task {
 
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Persisting task", self.id);
-            if let Err(err) = persistence.save_task(self).await {
-                debug!("[Task {}] Failed to persist task: {:?}", self.id, err);
-            }
+            persistence.save_task(self).await?;
         }
         Ok(())
     }
@@ -24,12 +22,7 @@ impl Task {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Persisting task checksums", self.id);
             let checksums = self.checksums.lock().await;
-            if let Err(err) = persistence.save_checksums(&checksums, self.id).await {
-                debug!(
-                    "[Task {}] Failed to persist task checksums: {:?}",
-                    self.id, err
-                );
-            }
+            persistence.save_checksums(&checksums, self.id).await?;
         }
         Ok(())
     }
@@ -49,12 +42,7 @@ impl Task {
                     let mut updated_at_guard = worker.updated_at.lock().await;
                     *updated_at_guard = Some(Utc::now());
                 }
-                if let Err(err) = persistence.save_worker(&worker).await {
-                    debug!(
-                        "[Task {}] Failed to persist worker {}: {:?}",
-                        self.id, worker_id, err
-                    );
-                }
+                persistence.save_worker(&worker).await?;
             } else {
                 debug!(
                     "[Task {}] Worker {} not found, cannot persist",
@@ -68,7 +56,12 @@ impl Task {
     pub(crate) fn persist_task_worker_later(self: &Arc<Self>, worker_id: u32) {
         let task = Arc::clone(self);
         tokio::spawn(async move {
-            let _ = task.persist_task_worker(worker_id).await;
+            if let Err(err) = task.persist_task_worker(worker_id).await {
+                debug!(
+                    "[Task {}] Failed to persist worker {} asynchronously: {:?}",
+                    task.id, worker_id, err
+                );
+            }
         });
     }
 

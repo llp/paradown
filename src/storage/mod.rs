@@ -11,7 +11,7 @@ use crate::job::Task;
 use crate::repository::models::{
     DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
-use crate::repository::{MemoryRepository, Repository, SqliteRepository};
+use crate::repository::{JsonFileRepository, MemoryRepository, Repository, SqliteRepository};
 use crate::worker::Worker;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -42,12 +42,7 @@ impl Store {
     pub async fn new(config: Arc<Config>) -> Result<Self, Error> {
         let repository: Arc<dyn Repository> = match &config.storage_backend {
             Backend::Memory => Arc::new(MemoryRepository::new()),
-            Backend::JsonFile(path) => {
-                return Err(Error::ConfigError(format!(
-                    "JsonFile persistence not implemented yet: {}",
-                    path
-                )));
-            }
+            Backend::JsonFile(path) => Arc::new(JsonFileRepository::new(path).await?),
             Backend::Sqlite(path) => Arc::new(SqliteRepository::new(path).await?),
         };
 
@@ -60,11 +55,28 @@ impl Store {
 
     pub async fn save_task(&self, task: &Arc<Task>) -> Result<(), Error> {
         let db_task = task_to_db(task).await;
-        self.repository.save_task(&db_task).await?;
+        let db_workers = {
+            let workers = task.workers.read().await.clone();
+            let mut persisted = Vec::with_capacity(workers.len());
+            for worker in workers {
+                persisted.push(worker_to_db(&worker).await);
+            }
+            persisted
+        };
         let piece_states = task.piece_states_snapshot().await;
-        self.save_piece_states(task.id, &piece_states).await?;
+        let db_pieces = piece_states_to_db(task.id, &piece_states);
         let block_states = task.block_states_snapshot().await;
-        self.save_block_states(task.id, &block_states).await
+        let db_blocks = block_states_to_db(task.id, &block_states);
+        let db_checksums = {
+            let checksums = task.checksums.lock().await;
+            checksums
+                .iter()
+                .map(|checksum| checksum_to_db(checksum, task.id))
+                .collect::<Vec<_>>()
+        };
+        self.repository
+            .save_bundle(&db_task, &db_workers, &db_pieces, &db_blocks, &db_checksums)
+            .await
     }
 
     pub async fn save_tasks(&self, tasks: &[Arc<Task>]) -> Result<(), Error> {

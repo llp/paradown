@@ -7,12 +7,13 @@ use self::queue::{acquire_task_permit_or_queue, clear_pending_queue, spawn_next_
 use self::registry::{add_task_with_workers, restore_tasks};
 use crate::config::Config;
 use crate::domain::DownloadSpec;
+use crate::download::{Session, SessionRequest};
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
 use crate::rate_limiter::DownloadRateLimiter;
 use crate::request::TaskRequest;
-use crate::runtime::build_http_client;
+use crate::runtime::{HttpSessionState, build_http_client};
 use crate::storage::Store;
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -35,6 +36,7 @@ pub struct Manager {
     pub(crate) progress_persist_state: Arc<DashMap<u32, ProgressPersistState>>,
     pub task_event_tx: broadcast::Sender<Event>,
     pub http_client: Arc<reqwest::Client>,
+    pub(crate) http_session_state: Option<Arc<HttpSessionState>>,
     pub(crate) rate_limiter: Arc<DownloadRateLimiter>,
 
     pub(crate) semaphore: Arc<Semaphore>,
@@ -57,7 +59,8 @@ impl Manager {
     pub fn new(config: Config) -> Result<Arc<Self>, Error> {
         let (task_event_tx, _) = broadcast::channel(100);
         let max_concurrent = config.concurrent_tasks;
-        let http_client = Arc::new(build_http_client(&config)?);
+        let built_http_client = build_http_client(&config)?;
+        let http_client = Arc::new(built_http_client.client);
         let rate_limiter = Arc::new(DownloadRateLimiter::new(config.rate_limit_kbps));
 
         let manager = Arc::new(Self {
@@ -69,6 +72,7 @@ impl Manager {
             progress_persist_state: Arc::new(DashMap::new()),
             task_event_tx,
             http_client,
+            http_session_state: built_http_client.session_state.map(Arc::new),
             rate_limiter,
         });
 
@@ -96,12 +100,18 @@ impl Manager {
         Ok(())
     }
 
-    pub async fn add_task(self: &Arc<Self>, task_request: TaskRequest) -> Result<u32, Error> {
+    pub(crate) async fn add_task(
+        self: &Arc<Self>,
+        task_request: TaskRequest,
+    ) -> Result<u32, Error> {
         add_task_with_workers(self, task_request, None).await
     }
 
-    pub async fn add_session(self: &Arc<Self>, session_request: TaskRequest) -> Result<u32, Error> {
-        self.add_task(session_request).await
+    pub async fn add_session(
+        self: &Arc<Self>,
+        session_request: SessionRequest,
+    ) -> Result<u32, Error> {
+        self.add_task(session_request.into_inner()).await
     }
 
     pub async fn add_download(self: &Arc<Self>, spec: DownloadSpec) -> Result<u32, Error> {
@@ -313,42 +323,45 @@ impl Manager {
         Ok(())
     }
 
-    pub fn get_task(&self, id: u32) -> Option<Arc<Task>> {
+    pub(crate) fn get_task(&self, id: u32) -> Option<Arc<Task>> {
         self.get_task_by_id(id)
     }
 
-    pub fn get_session(&self, id: u32) -> Option<Arc<Task>> {
-        self.get_task(id)
+    pub fn get_session(&self, id: u32) -> Option<Session> {
+        self.get_task(id).map(Session::from_task)
     }
 
-    pub fn get_task_by_id(&self, id: u32) -> Option<Arc<Task>> {
+    pub(crate) fn get_task_by_id(&self, id: u32) -> Option<Arc<Task>> {
         self.tasks.get(&id).map(|v| Arc::clone(&v))
     }
 
-    pub fn get_session_by_id(&self, id: u32) -> Option<Arc<Task>> {
-        self.get_task_by_id(id)
+    pub fn get_session_by_id(&self, id: u32) -> Option<Session> {
+        self.get_task_by_id(id).map(Session::from_task)
     }
 
-    pub fn get_task_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
+    pub(crate) fn get_task_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
         self.tasks
             .iter()
             .find(|entry| entry.value().spec.locator() == locator)
             .map(|entry| Arc::clone(entry.value()))
     }
 
-    pub fn get_session_by_locator(&self, locator: &str) -> Option<Arc<Task>> {
-        self.get_task_by_locator(locator)
+    pub fn get_session_by_locator(&self, locator: &str) -> Option<Session> {
+        self.get_task_by_locator(locator).map(Session::from_task)
     }
 
-    pub fn get_all_tasks(&self) -> Vec<Arc<Task>> {
+    pub(crate) fn get_all_tasks(&self) -> Vec<Arc<Task>> {
         self.tasks
             .iter()
             .map(|entry| Arc::clone(entry.value()))
             .collect()
     }
 
-    pub fn get_all_sessions(&self) -> Vec<Arc<Task>> {
+    pub fn get_all_sessions(&self) -> Vec<Session> {
         self.get_all_tasks()
+            .into_iter()
+            .map(Session::from_task)
+            .collect()
     }
 
     //----------------------------------------------------------------------------------------------
@@ -398,11 +411,19 @@ impl Manager {
         self.rate_limiter.current_limit_kbps()
     }
 
+    pub(crate) fn persist_http_session_state(&self) -> Result<(), Error> {
+        if let Some(session_state) = &self.http_session_state {
+            session_state.persist()?;
+        }
+        Ok(())
+    }
+
     pub async fn wait_for_all_tasks(self: &Arc<Self>) -> Result<(), Error> {
         let mut rx = self.subscribe_events();
 
         loop {
             if self.tasks.is_empty() {
+                self.persist_http_session_state()?;
                 return Ok(());
             }
 
@@ -416,6 +437,7 @@ impl Manager {
             }
 
             if all_terminal {
+                self.persist_http_session_state()?;
                 return Ok(());
             }
 

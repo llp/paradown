@@ -48,9 +48,10 @@ impl Worker {
 
         let mut retry_count = 0;
         let mut progress = ProgressReporter::new(self, downloaded_size);
-        let driver = driver_for_source(&self.source);
 
         loop {
+            let source = self.current_source();
+            let driver = driver_for_source(&source);
             if self.should_stop_gracefully() {
                 return Ok(());
             }
@@ -212,6 +213,9 @@ impl Worker {
     }
 
     async fn finish_success(&self) {
+        if let Some(task) = self.task.upgrade() {
+            task.record_source_success(&self.current_source_id()).await;
+        }
         self.stats.record_success();
         self.set_status(Status::Completed).await;
         info!("[Worker {}] Download completed successfully", self.id);
@@ -239,6 +243,19 @@ impl Worker {
             self.id, err, retry_count
         );
         self.stats.record_failure();
+        if let Some(task) = self.task.upgrade() {
+            let current_source_id = self.current_source_id();
+            task.record_source_failure(&current_source_id).await;
+            if let Some(fallback) = task.select_retry_source(&current_source_id).await
+                && fallback.id != current_source_id
+            {
+                debug!(
+                    "[Worker {}] Switching retry source from {} to {}",
+                    self.id, current_source_id, fallback.id
+                );
+                self.switch_source(fallback);
+            }
+        }
 
         if matches!(err, Error::ResumeInvalidated(_, _)) {
             return Err(err);

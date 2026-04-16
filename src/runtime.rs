@@ -4,7 +4,56 @@ use crate::error::Error;
 use log::LevelFilter;
 use reqwest::header::{COOKIE, HeaderName, HeaderValue, USER_AGENT};
 use reqwest::{Certificate, Identity, NoProxy, Proxy, RequestBuilder};
+use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+
+pub(crate) type SharedCookieStore = Arc<CookieStoreMutex>;
+
+pub(crate) struct BuiltHttpClient {
+    pub client: reqwest::Client,
+    pub session_state: Option<HttpSessionState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct HttpSessionState {
+    cookie_store: SharedCookieStore,
+    cookie_jar_path: PathBuf,
+}
+
+impl HttpSessionState {
+    pub(crate) fn persist(&self) -> Result<(), Error> {
+        if let Some(parent) = self.cookie_jar_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                Error::Other(format!(
+                    "Failed to create cookie jar directory '{}': {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let file = File::create(&self.cookie_jar_path).map_err(|err| {
+            Error::Other(format!(
+                "Failed to create cookie jar '{}': {err}",
+                self.cookie_jar_path.display()
+            ))
+        })?;
+        let mut writer = BufWriter::new(file);
+        self.cookie_store
+            .lock()
+            .map_err(|err| Error::Other(format!("Cookie jar lock poisoned: {err}")))?
+            .save_json(&mut writer)
+            .map_err(|err| {
+                Error::Other(format!(
+                    "Failed to persist cookie jar '{}': {err}",
+                    self.cookie_jar_path.display()
+                ))
+            })
+    }
+}
 
 pub fn init_logger(debug: bool) {
     let log_level = if debug {
@@ -24,7 +73,7 @@ pub fn init_logger_with_level(log_level: LevelFilter) {
     let _ = builder.try_init();
 }
 
-pub(crate) fn build_http_client(config: &Config) -> Result<reqwest::Client, Error> {
+pub(crate) fn build_http_client(config: &Config) -> Result<BuiltHttpClient, Error> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(config.connection_timeout)
         .timeout(Duration::from_secs(300))
@@ -33,12 +82,18 @@ pub(crate) fn build_http_client(config: &Config) -> Result<reqwest::Client, Erro
         .gzip(true);
 
     builder = apply_proxy_options(builder, &config.http.client.proxy)?;
-    builder = apply_cookie_store(builder, config.http.client.cookie_store);
+    let (builder_after_cookies, session_state) = apply_cookie_store(builder, config)?;
+    builder = builder_after_cookies;
     builder = apply_tls_options(builder, &config.http.client.tls)?;
 
-    builder
+    let client = builder
         .build()
-        .map_err(|e| Error::Other(format!("Failed to build HTTP client: {}", e)))
+        .map_err(|e| Error::Other(format!("Failed to build HTTP client: {}", e)))?;
+
+    Ok(BuiltHttpClient {
+        client,
+        session_state,
+    })
 }
 
 pub(crate) fn apply_http_request_options(
@@ -103,13 +158,25 @@ fn apply_proxy_options(
 
 fn apply_cookie_store(
     builder: reqwest::ClientBuilder,
-    cookie_store_enabled: bool,
-) -> reqwest::ClientBuilder {
-    if cookie_store_enabled {
-        builder.cookie_store(true)
-    } else {
-        builder
+    config: &Config,
+) -> Result<(reqwest::ClientBuilder, Option<HttpSessionState>), Error> {
+    if !config.http.client.cookie_store {
+        return Ok((builder, None));
     }
+
+    let cookie_store = load_cookie_store(config.http.client.cookie_jar_path.as_deref())?;
+    let shared_store: SharedCookieStore = Arc::new(CookieStoreMutex::new(cookie_store));
+    let session_state = config
+        .http
+        .client
+        .cookie_jar_path
+        .as_ref()
+        .map(|path| HttpSessionState {
+            cookie_store: Arc::clone(&shared_store),
+            cookie_jar_path: path.clone(),
+        });
+
+    Ok((builder.cookie_provider(shared_store), session_state))
 }
 
 fn apply_tls_options(
@@ -154,4 +221,28 @@ fn apply_tls_options(
     }
 
     Ok(builder)
+}
+
+fn load_cookie_store(path: Option<&Path>) -> Result<CookieStore, Error> {
+    let Some(path) = path else {
+        return Ok(CookieStore::default());
+    };
+
+    if !path.exists() {
+        return Ok(CookieStore::default());
+    }
+
+    let file = File::open(path).map_err(|err| {
+        Error::Other(format!(
+            "Failed to open cookie jar '{}': {err}",
+            path.display()
+        ))
+    })?;
+    let reader = BufReader::new(file);
+    CookieStore::load_json(reader).map_err(|err| {
+        Error::Other(format!(
+            "Failed to parse cookie jar '{}': {err}",
+            path.display()
+        ))
+    })
 }

@@ -24,13 +24,13 @@ impl TransferDriver for HttpTransferDriver {
             .task
             .upgrade()
             .ok_or_else(|| Error::Other(format!("Worker {} lost its parent task", worker.id)))?;
-        let request_options = worker
-            .source
+        let source = worker.current_source();
+        let request_options = source
             .request
             .as_ref()
             .unwrap_or(task.http_request_options());
         let mut request = apply_http_request_options(
-            worker.client.get(worker.source.locator.as_str()),
+            worker.client.get(source.locator.as_str()),
             request_options,
         )?;
         if use_range_requests && range_start <= worker.end {
@@ -137,7 +137,7 @@ impl TransferDriver for HttpTransferDriver {
         debug!(
             "[Worker {}] Writing locator {} at payload offset {}",
             worker.id,
-            worker.source.locator.as_str(),
+            worker.current_source().locator.as_str(),
             write_offset
         );
 

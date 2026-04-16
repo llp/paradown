@@ -32,8 +32,7 @@ async fn retries_download_when_origin_drops_connection() {
     manager.start_task(task_id).await.unwrap();
     manager.wait_for_all_tasks().await.unwrap();
 
-    let task = manager.get_task_by_id(task_id).unwrap();
-    let snapshot = task.snapshot().await;
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
     assert_eq!(snapshot.status, "Completed");
     assert!(snapshot.stats.retry_count >= 1);
 
@@ -77,7 +76,7 @@ async fn retries_http_429_after_retry_after_delay() {
     manager.start_task(task_id).await.unwrap();
     manager.wait_for_all_tasks().await.unwrap();
 
-    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
     assert_eq!(snapshot.status, "Completed");
     assert!(snapshot.stats.retry_count >= 1);
     assert!(
@@ -149,8 +148,7 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
     manager.start_task(task_id).await.unwrap();
     manager.wait_for_all_tasks().await.unwrap();
 
-    let task = manager.get_task_by_id(task_id).unwrap();
-    let snapshot = task.snapshot().await;
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
     assert!(snapshot.status.starts_with("Failed"));
 
     let diagnostic_path = temp
@@ -382,14 +380,14 @@ async fn wait_for_snapshot_status(
     manager: &Manager,
     task_id: u32,
     expected_prefix: &str,
-) -> paradown::download::TaskSnapshot {
+) -> paradown::download::SessionSnapshot {
     for _ in 0..50 {
-        let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+        let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
         if snapshot.status.starts_with(expected_prefix) {
             return snapshot;
         }
         sleep(Duration::from_millis(20)).await;
     }
 
-    manager.get_task_by_id(task_id).unwrap().snapshot().await
+    manager.get_session_by_id(task_id).unwrap().snapshot().await
 }

@@ -1,4 +1,4 @@
-use paradown::download::{Event, Manager, TaskSnapshot};
+use paradown::download::{Event, Manager, SessionSnapshot};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{IsTerminal, Write};
@@ -217,7 +217,7 @@ impl DashboardRunner {
         stdout.flush()
     }
 
-    fn sample_render_state(&mut self, snapshots: &[TaskSnapshot]) -> RenderState {
+    fn sample_render_state(&mut self, snapshots: &[SessionSnapshot]) -> RenderState {
         let now = Instant::now();
         let mut task_speeds = HashMap::with_capacity(snapshots.len());
         let mut active_ids = Vec::with_capacity(snapshots.len());
@@ -343,7 +343,7 @@ impl PlainTextRunner {
         stdout.flush()
     }
 
-    fn sample_render_state(&mut self, snapshots: &[TaskSnapshot]) -> RenderState {
+    fn sample_render_state(&mut self, snapshots: &[SessionSnapshot]) -> RenderState {
         let now = Instant::now();
         let mut task_speeds = HashMap::with_capacity(snapshots.len());
         let mut active_ids = Vec::with_capacity(snapshots.len());
@@ -463,7 +463,7 @@ impl JsonRunner {
         stdout.flush()
     }
 
-    fn sample_render_state(&mut self, snapshots: &[TaskSnapshot]) -> RenderState {
+    fn sample_render_state(&mut self, snapshots: &[SessionSnapshot]) -> RenderState {
         let now = Instant::now();
         let mut task_speeds = HashMap::with_capacity(snapshots.len());
         let mut active_ids = Vec::with_capacity(snapshots.len());
@@ -520,19 +520,19 @@ struct RenderState {
     total_speed_bps: f64,
 }
 
-async fn collect_snapshots(manager: &Manager) -> Vec<TaskSnapshot> {
-    let mut tasks = manager.get_all_tasks();
-    tasks.sort_by_key(|task| task.id);
+async fn collect_snapshots(manager: &Manager) -> Vec<SessionSnapshot> {
+    let mut sessions = manager.get_all_sessions();
+    sessions.sort_by_key(|session| session.id());
 
-    let mut snapshots = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        snapshots.push(task.snapshot().await);
+    let mut snapshots = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        snapshots.push(session.snapshot().await);
     }
     snapshots
 }
 
 fn render_dashboard(
-    snapshots: &[TaskSnapshot],
+    snapshots: &[SessionSnapshot],
     render_state: &RenderState,
     messages: &VecDeque<String>,
     rate_limit_kbps: Option<u64>,
@@ -606,7 +606,7 @@ fn render_dashboard(
 }
 
 fn render_plain_progress(
-    snapshots: &[TaskSnapshot],
+    snapshots: &[SessionSnapshot],
     render_state: &RenderState,
     rate_limit_kbps: Option<u64>,
     final_frame: bool,
@@ -647,7 +647,7 @@ fn render_plain_progress(
             snapshot.file_name.as_deref().unwrap_or_else(|| snapshot
                 .primary_source_locator
                 .as_deref()
-                .unwrap_or(snapshot.url.as_str())),
+                .unwrap_or(snapshot.locator.as_str())),
         ));
     }
     output.push('\n');
@@ -655,7 +655,7 @@ fn render_plain_progress(
 }
 
 fn render_json_progress(
-    snapshots: &[TaskSnapshot],
+    snapshots: &[SessionSnapshot],
     render_state: &RenderState,
     rate_limit_kbps: Option<u64>,
     final_frame: bool,
@@ -663,7 +663,7 @@ fn render_json_progress(
     #[derive(Serialize)]
     struct JsonTaskProgress {
         #[serde(flatten)]
-        snapshot: TaskSnapshot,
+        snapshot: SessionSnapshot,
         speed_bps: u64,
     }
 
@@ -698,7 +698,7 @@ fn render_json_progress(
 }
 
 fn plain_signature(
-    snapshots: &[TaskSnapshot],
+    snapshots: &[SessionSnapshot],
     rate_limit_kbps: Option<u64>,
     final_frame: bool,
 ) -> String {
@@ -717,14 +717,14 @@ fn plain_signature(
     signature
 }
 
-fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {
+fn render_task_line(snapshot: &SessionSnapshot, speed_bps: f64) -> String {
     let percent = progress_ratio(snapshot).unwrap_or_default();
     let bar = progress_bar(percent, BAR_WIDTH);
     let label = snapshot.file_name.clone().unwrap_or_else(|| {
         snapshot
             .primary_source_locator
             .clone()
-            .unwrap_or_else(|| snapshot.url.clone())
+            .unwrap_or_else(|| snapshot.locator.clone())
     });
     let label = truncate_middle(&label, 30);
     let piece_label = if snapshot.piece_count > 0 {
@@ -750,7 +750,7 @@ fn render_task_line(snapshot: &TaskSnapshot, speed_bps: f64) -> String {
     )
 }
 
-fn progress_ratio(snapshot: &TaskSnapshot) -> Option<f64> {
+fn progress_ratio(snapshot: &SessionSnapshot) -> Option<f64> {
     if !snapshot.total_size_known || snapshot.total_size == 0 {
         None
     } else {
@@ -758,13 +758,13 @@ fn progress_ratio(snapshot: &TaskSnapshot) -> Option<f64> {
     }
 }
 
-fn format_progress_percent(snapshot: &TaskSnapshot) -> String {
+fn format_progress_percent(snapshot: &SessionSnapshot) -> String {
     progress_ratio(snapshot)
         .map(|ratio| format!("{:.1}%", ratio * 100.0))
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn format_snapshot_total(snapshot: &TaskSnapshot) -> String {
+fn format_snapshot_total(snapshot: &SessionSnapshot) -> String {
     if snapshot.total_size_known {
         format_bytes(snapshot.total_size)
     } else {
@@ -779,7 +779,7 @@ struct AggregateTotals {
     has_unknown_total: bool,
 }
 
-fn aggregate_totals(snapshots: &[TaskSnapshot]) -> AggregateTotals {
+fn aggregate_totals(snapshots: &[SessionSnapshot]) -> AggregateTotals {
     let mut totals = AggregateTotals::default();
     for snapshot in snapshots {
         totals.total_downloaded = totals
@@ -867,7 +867,7 @@ struct StatusSummary {
     terminal: usize,
 }
 
-fn summarize_statuses(snapshots: &[TaskSnapshot]) -> StatusSummary {
+fn summarize_statuses(snapshots: &[SessionSnapshot]) -> StatusSummary {
     let mut summary = StatusSummary::default();
     for snapshot in snapshots {
         match snapshot.status.as_str() {
@@ -914,7 +914,7 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::{
-        AggregateTotals, TaskSnapshot, aggregate_totals, format_bytes, format_progress_percent,
+        AggregateTotals, SessionSnapshot, aggregate_totals, format_bytes, format_progress_percent,
         format_total_label, progress_bar, truncate_middle,
     };
     use paradown::Checksum;
@@ -925,11 +925,11 @@ mod tests {
         total_size_known: bool,
         downloaded_size: u64,
         total_size: u64,
-    ) -> TaskSnapshot {
-        TaskSnapshot {
+    ) -> SessionSnapshot {
+        SessionSnapshot {
             id: 1,
             trace_id: "task-000001".into(),
-            url: "https://example.com/file.bin".into(),
+            locator: "https://example.com/file.bin".into(),
             file_name: Some("file.bin".into()),
             file_path: Some(PathBuf::from("/tmp/file.bin")),
             status: "Running".into(),

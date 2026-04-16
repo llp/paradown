@@ -62,6 +62,7 @@ async fn handle_task_event(manager: &Arc<Manager>, event: Event) -> Result<(), E
 
 async fn handle_terminal_task_event(manager: &Arc<Manager>, task_id: u32) -> Result<(), Error> {
     manager.persist_task(task_id).await?;
+    manager.persist_http_session_state()?;
     manager.clear_progress_persist_state(task_id);
     remove_from_queue(manager, task_id).await?;
     release_task_permit(manager, task_id).await;

@@ -28,8 +28,8 @@ pub struct Worker {
     pub client: Arc<Client>,
     pub id: u32,
     pub spec: DownloadSpec,
-    pub source: SourceDescriptor,
-    pub(crate) lane: ExecutionLaneAssignment,
+    source: std::sync::RwLock<SourceDescriptor>,
+    lane: std::sync::RwLock<ExecutionLaneAssignment>,
     pub length_known: bool,
     pub start: u64,
     pub end: u64,
@@ -80,8 +80,8 @@ impl Worker {
             client,
             id,
             spec,
-            source,
-            lane: lane.clone(),
+            source: std::sync::RwLock::new(source),
+            lane: std::sync::RwLock::new(lane.clone()),
             length_known: lane.length_known,
             start: lane.start,
             end: lane.end,
@@ -100,6 +100,30 @@ impl Worker {
 
     pub(crate) async fn set_status(&self, status: Status) {
         *self.status.lock().await = status;
+    }
+
+    pub(crate) fn current_source(&self) -> SourceDescriptor {
+        self.source
+            .read()
+            .expect("worker source lock poisoned")
+            .clone()
+    }
+
+    pub(crate) fn current_source_id(&self) -> String {
+        self.current_source().id
+    }
+
+    pub(crate) fn lane_snapshot(&self) -> ExecutionLaneAssignment {
+        self.lane.read().expect("worker lane lock poisoned").clone()
+    }
+
+    pub(crate) fn switch_source(&self, source: SourceDescriptor) {
+        {
+            let mut current = self.source.write().expect("worker source lock poisoned");
+            *current = source.clone();
+        }
+        let mut lane = self.lane.write().expect("worker lane lock poisoned");
+        lane.source_id = source.id;
     }
 
     pub(crate) fn emit_worker_event(&self, event: Event) {
@@ -219,8 +243,8 @@ impl fmt::Debug for Worker {
         f.debug_struct("Worker")
             .field("id", &self.id)
             .field("spec", &self.spec)
-            .field("source", &self.source)
-            .field("lane", &self.lane)
+            .field("source", &self.current_source())
+            .field("lane", &self.lane_snapshot())
             .field("start", &self.start)
             .field("end", &self.end)
             .field("downloaded_size", &self.downloaded_size)

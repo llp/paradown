@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::job::Task;
 use chrono::Utc;
-use log::debug;
+use log::{debug, warn};
 use std::sync::Arc;
 
 impl Task {
@@ -57,10 +57,11 @@ impl Task {
         let task = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(err) = task.persist_task_worker(worker_id).await {
-                debug!(
+                warn!(
                     "[Task {}] Failed to persist worker {} asynchronously: {:?}",
                     task.id, worker_id, err
                 );
+                task.fail_with_error(err).await;
             }
         });
     }
@@ -68,12 +69,8 @@ impl Task {
     pub(crate) async fn purge_task(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task", self.id);
-            if let Err(err) = persistence.delete_task(self.id).await {
-                debug!("[Task {}] Failed to delete task: {:?}", self.id, err);
-            }
-            if let Err(err) = persistence.delete_workers(self.id).await {
-                debug!("[Task {}] Failed to delete task worker: {:?}", self.id, err);
-            }
+            persistence.delete_task(self.id).await?;
+            persistence.delete_workers(self.id).await?;
         }
         Ok(())
     }
@@ -81,9 +78,7 @@ impl Task {
     pub(crate) async fn purge_task_workers(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task workers", self.id);
-            if let Err(err) = persistence.delete_workers(self.id).await {
-                debug!("[Task {}] Failed to delete task worker: {:?}", self.id, err);
-            }
+            persistence.delete_workers(self.id).await?;
         }
         Ok(())
     }
@@ -91,12 +86,7 @@ impl Task {
     pub(crate) async fn purge_task_checksums(self: &Arc<Self>) -> Result<(), Error> {
         if let Some(persistence) = self.persistence.as_ref() {
             debug!("[Task {}] Deleting task checksums", self.id);
-            if let Err(err) = persistence.delete_checksums(self.id).await {
-                debug!(
-                    "[Task {}] Failed to delete task checksums: {:?}",
-                    self.id, err
-                );
-            }
+            persistence.delete_checksums(self.id).await?;
         }
         Ok(())
     }

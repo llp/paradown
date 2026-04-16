@@ -326,6 +326,9 @@ impl Config {
         if let Some(value) = parse_env_bool("PARADOWN_COOKIE_STORE")? {
             self.http.client.cookie_store = value;
         }
+        if let Some(value) = read_env("PARADOWN_COOKIE_JAR") {
+            self.http.client.cookie_jar_path = Some(value.into());
+        }
         if let Some(value) = read_env("PARADOWN_HTTP_PROXY") {
             self.http.client.proxy.http_proxy = Some(value);
         }

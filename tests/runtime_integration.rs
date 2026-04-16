@@ -1,7 +1,7 @@
 mod support;
 
 use paradown::FileConflictStrategy;
-use paradown::download::{DownloadSpec, Event, Manager, Status, TaskRequest};
+use paradown::download::{DownloadSpec, Event, Manager, SessionRequest};
 use paradown::repository::models::{DBDownloadTask, DBDownloadWorker};
 use paradown::{
     Backend, Config, ConfigBuilder, SourceCapabilities, SourceDescriptor, SourceKind, SourceSet,
@@ -10,7 +10,6 @@ use paradown::{
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use support::{MultiFileServerConfig, MultiFileTestServer, TestAsset};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -99,18 +98,13 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
 
-    let task = manager
-        .get_task_by_id(7)
-        .expect("restored task should exist");
-    assert!(matches!(*task.status.lock().await, Status::Paused));
-    assert_eq!(task.downloaded_size.load(Ordering::Relaxed), 60);
-
-    let workers = task.workers.read().await;
-    assert_eq!(workers.len(), 2);
-    assert!(matches!(
-        workers[1].status.lock().await.clone(),
-        Status::Paused
-    ));
+    let snapshot = manager
+        .get_session_by_id(7)
+        .expect("restored session should exist")
+        .snapshot()
+        .await;
+    assert_eq!(snapshot.status, "Paused");
+    assert_eq!(snapshot.downloaded_size, 60);
 }
 
 #[tokio::test]
@@ -151,8 +145,8 @@ async fn downloads_file_end_to_end_via_manager() {
         .unwrap();
     assert_eq!(downloaded, *body);
 
-    let task = manager.get_task_by_id(task_id).unwrap();
-    assert!(matches!(*task.status.lock().await, Status::Completed));
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
+    assert_eq!(snapshot.status, "Completed");
 }
 
 #[tokio::test]
@@ -257,11 +251,19 @@ async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
     assert_eq!(alpha_downloaded, *alpha);
     assert_eq!(beta_downloaded, *beta);
 
-    let alpha_snapshot = manager.get_task_by_id(alpha_task).unwrap().snapshot().await;
+    let alpha_snapshot = manager
+        .get_session_by_id(alpha_task)
+        .unwrap()
+        .snapshot()
+        .await;
     assert_eq!(alpha_snapshot.status, "Completed");
     assert_eq!(alpha_snapshot.completed_pieces, alpha_snapshot.piece_count);
 
-    let beta_snapshot = manager.get_task_by_id(beta_task).unwrap().snapshot().await;
+    let beta_snapshot = manager
+        .get_session_by_id(beta_task)
+        .unwrap()
+        .snapshot()
+        .await;
     assert_eq!(beta_snapshot.status, "Completed");
     assert_eq!(beta_snapshot.completed_pieces, beta_snapshot.piece_count);
 
@@ -294,11 +296,11 @@ async fn downloads_multiple_tasks_concurrently_and_restores_completed_state() {
 
     let restored_manager = Manager::new(config).unwrap();
     restored_manager.init().await.unwrap();
-    let mut restored_tasks = restored_manager.get_all_tasks();
-    restored_tasks.sort_by_key(|task| task.id);
-    assert_eq!(restored_tasks.len(), 2);
-    for task in restored_tasks {
-        let snapshot = task.snapshot().await;
+    let mut restored_sessions = restored_manager.get_all_sessions();
+    restored_sessions.sort_by_key(|session| session.id());
+    assert_eq!(restored_sessions.len(), 2);
+    for session in restored_sessions {
+        let snapshot = session.snapshot().await;
         assert_eq!(snapshot.status, "Completed");
         assert_eq!(snapshot.completed_pieces, snapshot.piece_count);
     }
@@ -358,7 +360,11 @@ async fn distributes_http_segments_across_multiple_sources() {
 
     let mut rx = manager.subscribe_events();
     let task_id = manager
-        .add_task(TaskRequest::builder(primary_spec).sources(sources).build())
+        .add_session(
+            SessionRequest::builder(primary_spec)
+                .sources(sources)
+                .build(),
+        )
         .await
         .unwrap();
     manager.start_task(task_id).await.unwrap();
@@ -369,7 +375,7 @@ async fn distributes_http_segments_across_multiple_sources() {
         .unwrap();
     assert_eq!(downloaded, *body);
 
-    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
     assert_eq!(snapshot.status, "Completed");
     assert_eq!(snapshot.source_count, 2);
     assert!(

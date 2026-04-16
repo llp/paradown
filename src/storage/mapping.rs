@@ -42,6 +42,8 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
 
 pub(crate) async fn worker_to_db(worker: &Arc<Worker>) -> DBDownloadWorker {
     let updated_at = *worker.updated_at.lock().await;
+    let source = worker.current_source();
+    let lane = worker.lane_snapshot();
 
     DBDownloadWorker {
         id: worker.id,
@@ -51,11 +53,11 @@ pub(crate) async fn worker_to_db(worker: &Arc<Worker>) -> DBDownloadWorker {
             .map(|task| task.id)
             .unwrap_or_default(),
         index: worker.id,
-        source_id: Some(worker.source.id.clone()),
-        piece_start: Some(worker.lane.piece_start),
-        piece_end: Some(worker.lane.piece_end),
-        block_start: Some(worker.lane.block_start),
-        block_end: Some(worker.lane.block_end),
+        source_id: Some(source.id),
+        piece_start: Some(lane.piece_start),
+        piece_end: Some(lane.piece_end),
+        block_start: Some(lane.block_start),
+        block_end: Some(lane.block_end),
         start: worker.start,
         end: worker.end,
         downloaded: worker.downloaded_size.load(Ordering::Relaxed),

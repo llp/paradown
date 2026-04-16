@@ -16,7 +16,7 @@ impl TransferDriver for FtpTransferDriver {
     ) -> Result<reqwest::RequestBuilder, Error> {
         Err(Error::UnsupportedProtocol(format!(
             "{} transfer is not implemented yet",
-            worker.source.locator.as_str()
+            worker.current_source().locator.as_str()
         )))
     }
 

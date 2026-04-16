@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
 use crate::job::finalize::finalize_download;
-use crate::scheduler::planner::{ExecutionLaneAssignment, plan_execution_lanes};
+use crate::scheduler::planner::{ExecutionLaneAssignment, plan_execution_lanes_with_source_order};
 use crate::status::Status;
 use crate::worker::Worker;
 use chrono::Utc;
@@ -132,11 +132,13 @@ impl Task {
         } else {
             1
         };
+        let preferred_source_ids = self.preferred_transfer_source_ids().await;
 
-        Ok(plan_execution_lanes(
+        Ok(plan_execution_lanes_with_source_order(
             &manifest,
             requested_workers,
             self.supports_range_requests(),
+            &preferred_source_ids,
         ))
     }
 
@@ -168,7 +170,7 @@ impl Task {
             let matches_assignment = worker.id == assignment.lane_id
                 && worker.start == assignment.start
                 && worker.end == assignment.end
-                && worker.source.id == assignment.source_id
+                && worker.current_source_id() == assignment.source_id
                 && downloaded <= expected_length;
 
             if !matches_assignment {

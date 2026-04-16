@@ -5,7 +5,7 @@ use self::commands::{Command, CommandTarget, StatusFilter, help_lines, parse_com
 use self::render::{DashboardHandle, DashboardMessageTx, JsonHandle, PlainTextHandle};
 use clap::Parser;
 use log::{LevelFilter, error, info, warn};
-use paradown::download::{DownloadSpec, Event, Manager, TaskSnapshot};
+use paradown::download::{DownloadSpec, Event, Manager, Session, SessionSnapshot};
 use paradown::{Config, Error, HttpAuth, HttpHeader, init_logger_with_level};
 use serde::Serialize;
 use std::io::IsTerminal;
@@ -62,6 +62,9 @@ pub(crate) struct Cli {
 
     #[arg(long = "cookie-store")]
     cookie_store: bool,
+
+    #[arg(long = "cookie-jar", value_name = "FILE")]
+    cookie_jar: Option<PathBuf>,
 
     #[arg(long = "insecure-tls")]
     insecure_tls: bool,
@@ -243,6 +246,10 @@ fn build_config(cli: &Cli) -> Result<Config, Error> {
     }
     if cli.cookie_store {
         config.http.client.cookie_store = true;
+    }
+    if let Some(path) = &cli.cookie_jar {
+        config.http.client.cookie_store = true;
+        config.http.client.cookie_jar_path = Some(path.clone());
     }
     if let Some(proxy) = &cli.http_proxy {
         config.http.client.proxy.http_proxy = Some(proxy.clone());
@@ -449,7 +456,7 @@ fn emit_messages(message_tx: &Option<DashboardMessageTx>, messages: Vec<String>)
 
 async fn status_messages(manager: &Arc<Manager>, target: CommandTarget) -> Vec<String> {
     let mut tasks = resolve_target_tasks(manager, target);
-    tasks.sort_by_key(|task| task.id);
+    tasks.sort_by_key(|task| task.id());
 
     if tasks.is_empty() {
         return vec!["No matching tasks".into()];
@@ -474,8 +481,8 @@ async fn list_messages(
     filter: StatusFilter,
     terminal_only: bool,
 ) -> Vec<String> {
-    let mut tasks = manager.get_all_tasks();
-    tasks.sort_by_key(|task| task.id);
+    let mut tasks = manager.get_all_sessions();
+    tasks.sort_by_key(|task| task.id());
 
     let mut lines = Vec::new();
     for task in tasks {
@@ -497,12 +504,12 @@ async fn list_messages(
 }
 
 async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String> {
-    let Some(task) = manager.get_task_by_id(task_id) else {
-        return vec![format!("Task #{task_id} not found")];
+    let Some(session) = manager.get_session_by_id(task_id) else {
+        return vec![format!("Session #{task_id} not found")];
     };
-    let snapshot = task.snapshot().await;
+    let snapshot = session.snapshot().await;
     vec![
-        format!("Task #{} ({})", snapshot.id, snapshot.trace_id),
+        format!("Session #{} ({})", snapshot.id, snapshot.trace_id),
         format!("  status: {}", snapshot.status),
         format!(
             "  progress: {} / {} (pieces {}/{})",
@@ -516,7 +523,7 @@ async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String>
             snapshot
                 .primary_source_locator
                 .as_deref()
-                .unwrap_or(snapshot.url.as_str())
+                .unwrap_or(snapshot.locator.as_str())
         ),
         format!("  sources: {}", snapshot.source_count),
         format!(
@@ -547,9 +554,9 @@ async fn apply_task_command(
             return apply_global_command(manager, control).await;
         }
         CommandTarget::All => manager
-            .get_all_tasks()
+            .get_all_sessions()
             .into_iter()
-            .map(|task| task.id)
+            .map(|session| session.id())
             .collect(),
         CommandTarget::Tasks(ids) => ids,
     };
@@ -590,17 +597,17 @@ async fn apply_global_command(manager: &Arc<Manager>, control: TaskControl) -> V
     }
 }
 
-fn resolve_target_tasks(manager: &Arc<Manager>, target: CommandTarget) -> Vec<Arc<paradown::Task>> {
+fn resolve_target_tasks(manager: &Arc<Manager>, target: CommandTarget) -> Vec<Session> {
     match target {
-        CommandTarget::All => manager.get_all_tasks(),
+        CommandTarget::All => manager.get_all_sessions(),
         CommandTarget::Tasks(ids) => ids
             .into_iter()
-            .filter_map(|task_id| manager.get_task_by_id(task_id))
+            .filter_map(|task_id| manager.get_session_by_id(task_id))
             .collect(),
     }
 }
 
-fn format_status_line(snapshot: &TaskSnapshot) -> String {
+fn format_status_line(snapshot: &SessionSnapshot) -> String {
     let progress = format_progress(
         snapshot.total_size_known,
         snapshot.downloaded_size,
@@ -628,7 +635,7 @@ fn format_status_line(snapshot: &TaskSnapshot) -> String {
             snapshot
                 .primary_source_locator
                 .as_deref()
-                .unwrap_or(snapshot.url.as_str())
+                .unwrap_or(snapshot.locator.as_str())
         })
     )
 }
@@ -649,7 +656,7 @@ fn format_snapshot_total(total_size_known: bool, total_size: u64) -> String {
     }
 }
 
-fn matches_status_filter(snapshot: &TaskSnapshot, filter: StatusFilter) -> bool {
+fn matches_status_filter(snapshot: &SessionSnapshot, filter: StatusFilter) -> bool {
     match filter {
         StatusFilter::All => true,
         StatusFilter::Pending => snapshot.status == "Pending",
@@ -712,9 +719,9 @@ async fn describe_task_error(
 ) -> String {
     let available_ids = {
         let mut ids: Vec<_> = manager
-            .get_all_tasks()
+            .get_all_sessions()
             .into_iter()
-            .map(|task| task.id)
+            .map(|session| session.id())
             .collect();
         ids.sort_unstable();
         ids
@@ -739,10 +746,13 @@ async fn describe_task_error(
         };
     }
 
-    let Some(task) = manager.get_task_by_id(task_id) else {
-        return format!("Failed to {} task #{task_id}: {err}", control.verb_label());
+    let Some(session) = manager.get_session_by_id(task_id) else {
+        return format!(
+            "Failed to {} session #{task_id}: {err}",
+            control.verb_label()
+        );
     };
-    let snapshot = task.snapshot().await;
+    let snapshot = session.snapshot().await;
     let hint = status_hint(control, &snapshot);
     if hint.is_empty() {
         format!(
@@ -764,7 +774,7 @@ async fn describe_task_error(
     }
 }
 
-fn status_hint(control: TaskControl, snapshot: &TaskSnapshot) -> &'static str {
+fn status_hint(control: TaskControl, snapshot: &SessionSnapshot) -> &'static str {
     match (control, snapshot.status.as_str()) {
         (TaskControl::Retry, "Completed") => {
             "completed tasks are not retried automatically; use delete <id> and add the URL again if you want a fresh download"
@@ -780,7 +790,7 @@ fn status_hint(control: TaskControl, snapshot: &TaskSnapshot) -> &'static str {
 
 #[derive(Serialize)]
 struct CompletionSummary {
-    snapshots: Vec<TaskSnapshot>,
+    snapshots: Vec<SessionSnapshot>,
     completed: usize,
     failed: usize,
     canceled: usize,
@@ -795,8 +805,8 @@ struct CompletionSummary {
 }
 
 async fn build_completion_summary(manager: &Arc<Manager>) -> CompletionSummary {
-    let mut tasks = manager.get_all_tasks();
-    tasks.sort_by_key(|task| task.id);
+    let mut tasks = manager.get_all_sessions();
+    tasks.sort_by_key(|session| session.id());
 
     let mut snapshots = Vec::with_capacity(tasks.len());
     let mut completed = 0usize;

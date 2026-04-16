@@ -25,6 +25,7 @@ use crate::worker::Worker;
 use chrono::{DateTime, Utc};
 use log::debug;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,6 +42,7 @@ pub struct Task {
     http_resource_identity: RwLock<HttpResourceIdentity>,
     http_request: HttpRequestOptions,
     sources: RwLock<SourceSet>,
+    source_runtime: RwLock<HashMap<String, SourceRuntimeState>>,
     pub checksums: Mutex<Vec<Checksum>>,
     manifest: RwLock<Option<SessionManifest>>,
     piece_states: RwLock<Vec<PieceState>>,
@@ -94,6 +96,12 @@ pub(crate) struct PieceProgressSnapshot {
     pub downloaded: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceRuntimeState {
+    pub consecutive_failures: u32,
+    pub successful_transfers: u32,
+}
+
 impl Task {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -143,6 +151,7 @@ impl Task {
             http_resource_identity: RwLock::new(resource_identity.unwrap_or_default()),
             http_request,
             sources: RwLock::new(initial_sources),
+            source_runtime: RwLock::new(HashMap::new()),
             checksums: Mutex::new(checksums),
             manifest: RwLock::new(None),
             piece_states: RwLock::new(piece_states.unwrap_or_default()),
@@ -418,6 +427,81 @@ impl Task {
 
     pub(crate) async fn set_source_set(&self, source_set: SourceSet) {
         *self.sources.write().await = source_set;
+    }
+
+    pub(crate) async fn record_source_success(&self, source_id: &str) {
+        let mut runtime = self.source_runtime.write().await;
+        let state = runtime.entry(source_id.to_string()).or_default();
+        state.successful_transfers = state.successful_transfers.saturating_add(1);
+        state.consecutive_failures = 0;
+    }
+
+    pub(crate) async fn record_source_failure(&self, source_id: &str) {
+        let mut runtime = self.source_runtime.write().await;
+        let state = runtime.entry(source_id.to_string()).or_default();
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    }
+
+    pub(crate) async fn ranked_transfer_sources(&self) -> Vec<crate::domain::SourceDescriptor> {
+        let source_set = self.source_set_snapshot().await;
+        let primary_id = source_set.primary().map(|source| source.id.clone());
+        let runtime = self.source_runtime.read().await;
+        let mut sources = source_set
+            .active_transfer_sources()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        sources.sort_by(|left, right| {
+            let left_state = runtime.get(&left.id).cloned().unwrap_or_default();
+            let right_state = runtime.get(&right.id).cloned().unwrap_or_default();
+
+            left_state
+                .consecutive_failures
+                .cmp(&right_state.consecutive_failures)
+                .then_with(|| {
+                    right_state
+                        .successful_transfers
+                        .cmp(&left_state.successful_transfers)
+                })
+                .then_with(|| {
+                    let left_is_primary = primary_id.as_deref() == Some(left.id.as_str());
+                    let right_is_primary = primary_id.as_deref() == Some(right.id.as_str());
+                    right_is_primary.cmp(&left_is_primary)
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        sources
+    }
+
+    pub(crate) async fn preferred_transfer_source_ids(&self) -> Vec<String> {
+        self.ranked_transfer_sources()
+            .await
+            .into_iter()
+            .map(|source| source.id)
+            .collect()
+    }
+
+    pub(crate) async fn select_retry_source(
+        &self,
+        current_source_id: &str,
+    ) -> Option<crate::domain::SourceDescriptor> {
+        let ranked = self.ranked_transfer_sources().await;
+        let current_state = self
+            .source_runtime
+            .read()
+            .await
+            .get(current_source_id)
+            .cloned()
+            .unwrap_or_default();
+        if current_state.consecutive_failures == 0 {
+            return None;
+        }
+
+        ranked
+            .into_iter()
+            .find(|source| source.id != current_source_id)
     }
 
     pub(crate) async fn reset_piece_progress(&self) {

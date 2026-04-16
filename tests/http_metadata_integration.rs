@@ -73,7 +73,7 @@ async fn downloads_streaming_target_when_content_length_is_missing() {
     let downloaded = tokio::fs::read(download_dir.join("stream")).await.unwrap();
     assert_eq!(downloaded, b"stream-without-length");
 
-    let snapshot = manager.get_task_by_id(task_id).unwrap().snapshot().await;
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
     assert_eq!(snapshot.status, "Completed");
     assert!(snapshot.total_size_known);
     assert_eq!(snapshot.total_size, downloaded.len() as u64);

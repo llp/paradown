@@ -117,6 +117,7 @@ pub struct HttpClientOptions {
     pub proxy: ProxyOptions,
     #[serde(default)]
     pub cookie_store: bool,
+    pub cookie_jar_path: Option<PathBuf>,
     #[serde(default)]
     pub tls: TlsOptions,
 }

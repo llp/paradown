@@ -34,10 +34,20 @@ pub(crate) fn suggested_http_piece_size(total_size: u64, requested_workers: usiz
     ideal_piece_size.min(MAX_HTTP_PIECE_SIZE as u64).max(1) as u32
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn plan_execution_lanes(
     manifest: &SessionManifest,
     requested_workers: usize,
     allow_parallel: bool,
+) -> Vec<ExecutionLaneAssignment> {
+    plan_execution_lanes_with_source_order(manifest, requested_workers, allow_parallel, &[])
+}
+
+pub(crate) fn plan_execution_lanes_with_source_order(
+    manifest: &SessionManifest,
+    requested_workers: usize,
+    allow_parallel: bool,
+    preferred_source_ids: &[String],
 ) -> Vec<ExecutionLaneAssignment> {
     if manifest.pieces.is_empty() {
         let transfer_sources = manifest.sources.active_transfer_sources();
@@ -65,14 +75,20 @@ pub(crate) fn plan_execution_lanes(
     if transfer_sources.is_empty() {
         return Vec::new();
     }
-    transfer_sources.sort_by(|left, right| left.id.cmp(&right.id));
-    if let Some(primary) = manifest.sources.primary()
-        && let Some(position) = transfer_sources
-            .iter()
-            .position(|source| source.id == primary.id)
-    {
-        transfer_sources.swap(0, position);
-    }
+    let primary_id = manifest.sources.primary().map(|source| source.id.clone());
+    transfer_sources.sort_by(|left, right| {
+        source_rank(
+            left.id.as_str(),
+            preferred_source_ids,
+            primary_id.as_deref(),
+        )
+        .cmp(&source_rank(
+            right.id.as_str(),
+            preferred_source_ids,
+            primary_id.as_deref(),
+        ))
+        .then_with(|| left.id.cmp(&right.id))
+    });
 
     let policy = if allow_parallel {
         SourceSelectionPolicy::AvailabilityAware
@@ -112,6 +128,19 @@ pub(crate) fn plan_execution_lanes(
     }
 
     assignments
+}
+
+fn source_rank(
+    source_id: &str,
+    preferred_source_ids: &[String],
+    primary_id: Option<&str>,
+) -> (usize, usize) {
+    let preferred_index = preferred_source_ids
+        .iter()
+        .position(|preferred| preferred == source_id)
+        .unwrap_or(usize::MAX);
+    let primary_rank = usize::from(primary_id != Some(source_id));
+    (preferred_index, primary_rank)
 }
 
 fn assignment_from_piece_slice(

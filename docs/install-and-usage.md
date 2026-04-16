@@ -15,7 +15,7 @@ Not in the current release scope:
 
 - real FTP transfer implementation
 - BT / magnet / P2SP
-- JSON file persistence backend
+- browser-grade HTTP session emulation beyond persisted cookie jars
 
 ## Install
 
@@ -71,12 +71,13 @@ paradown --config ./examples/config.toml --urls https://example.com/file.iso
 Important config notes:
 
 - config files now carry `schema_version`; missing versions are treated as schema `1`
-- `connection_timeout` uses TOML struct form, for example `connection_timeout = { secs = 30, nanos = 0 }`
-- `rate_limit_kbps` is optional; omit it to disable throttling
+- `connect_timeout_secs` is an integer number of seconds and only controls TCP connect timeout
+- `rate_limit_kib_per_sec` is optional; omit it to disable throttling
 - `storage_backend = { Sqlite = "./downloads.db" }` is the recommended production path today
 - `storage_backend = { JsonFile = "./downloads.json" }` is supported when you prefer a single portable state file
 - `http.client.proxy.use_env_proxy = true` keeps `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` enabled
-- `on_complete` runs once after the session finishes and receives summary env vars
+- `completion_hook` runs once after the session finishes and receives summary env vars
+- `log_level` controls log-oriented output; dashboard/plain/json modes still cap logs at `warn` to keep output clean
 
 ## Usage
 
@@ -133,7 +134,7 @@ paradown \
 
 ```bash
 paradown \
-  --on-complete 'echo "completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"' \
+  --completion-hook 'echo "completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"' \
   --urls https://example.com/file.iso
 ```
 
@@ -142,7 +143,7 @@ paradown \
 ```bash
 paradown \
   --interactive \
-  --rate-limit-kbps 1024 \
+  --rate-limit-kib 1024 \
   --urls https://example.com/a.iso https://example.com/b.iso
 ```
 
@@ -158,7 +159,7 @@ Interactive commands:
 - `retry [all|id ...]`
 - `cancel [all|id ...]`
 - `delete [all|id ...]`
-- `limit <kbps|off>`
+- `limit <kib|off>`
 
 ## Output Modes
 

@@ -7,17 +7,17 @@
 
 schema_version = 1
 download_dir = "./downloads"
-shuffle = false
+shuffle_tasks = false
 concurrent_tasks = 4
 segments_per_task = 4
-rate_limit_kbps = 512
-connection_timeout = { secs = 30, nanos = 0 }
+rate_limit_kib_per_sec = 512
+connect_timeout_secs = 30
 storage_backend = { Sqlite = "./downloads.db" }
 # Alternative lightweight state file:
 # storage_backend = { JsonFile = "./downloads.json" }
 file_conflict_strategy = "Resume"
-debug = false
-on_complete = "echo paradown finished: completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"
+log_level = "info"
+completion_hook = "echo paradown finished: completed=$PARADOWN_COMPLETED failed=$PARADOWN_FAILED"
 
 [retry]
 max_retries = 3

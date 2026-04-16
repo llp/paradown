@@ -35,7 +35,7 @@ What is implemented today:
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
-- JSON file persistence backend
+- Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 
 ## Quick start
@@ -73,7 +73,7 @@ Run with interactive commands enabled:
 ```bash
 cargo run --all-features -- \
   --interactive \
-  --rate-limit-kbps 512 \
+  --rate-limit-kib 512 \
   --urls https://example.com/file.iso https://example.com/file-2.iso
 ```
 
@@ -112,8 +112,8 @@ Release automation:
 - `-w, --workers <N>`: override worker thread count
 - `--max-concurrent <N>`: override max concurrent tasks
 - `-d, --download-dir <DIR>`: override download directory
-- `--rate-limit-kbps <KBPS>`: set global rate limit
-- `-s, --shuffle`: shuffle task order
+- `--rate-limit-kib <KIB_PER_SEC>`: set global rate limit
+- `-s, --shuffle-tasks`: shuffle task order
 - `-v, --verbose`: verbose logging
 - `--json`: emit JSON progress frames and JSON summary
 - `--interactive`: enable stdin command mode
@@ -128,7 +128,7 @@ Release automation:
 - `--insecure-tls`: skip server certificate verification
 - `--ca-cert <PEM_FILE>`: trust an additional PEM-encoded CA certificate
 - `--client-identity <PEM_FILE>`: load a PEM-encoded client certificate + key
-- `--on-complete <COMMAND>`: run a shell hook after the session finishes
+- `--completion-hook <COMMAND>`: run a shell hook after the session finishes
 - `-u, --urls <URL>...`: one or more URLs to download
 
 Config precedence is: `CLI > environment > config file > defaults`.
@@ -156,7 +156,7 @@ Supported commands:
 - `retry [all|id ...]`
 - `cancel [all|id ...]`
 - `delete [all|id ...]`
-- `limit <kbps|off>`
+- `limit <kib|off>`
 
 If no task ids are provided, `status / pause / resume / cancel` default to `all`.
 If no task ids are provided, `retry / delete` also default to `all`.
@@ -171,14 +171,14 @@ Current example:
 
 ```toml
 download_dir = "./downloads"
-shuffle = false
+shuffle_tasks = false
 concurrent_tasks = 4
 segments_per_task = 4
-rate_limit_kbps = 512
-connection_timeout = { secs = 30, nanos = 0 }
+rate_limit_kib_per_sec = 512
+connect_timeout_secs = 30
 storage_backend = { Sqlite = "./downloads.db" }
 file_conflict_strategy = "Resume"
-debug = false
+log_level = "info"
 
 [retry]
 max_retries = 3
@@ -195,8 +195,9 @@ Important notes:
 
 - `schema_version = 1` is the current config format
 - `Backend::JsonFile(...)` is now supported for lightweight single-file persistence
-- if `rate_limit_kbps` is omitted, rate limiting is disabled
-- `connection_timeout` uses TOML struct form: `connection_timeout = { secs = 30, nanos = 0 }`
+- if `rate_limit_kib_per_sec` is omitted, rate limiting is disabled
+- `connect_timeout_secs` is a plain integer number of seconds
+- `log_level` controls log-oriented mode and defaults to `info`
 - `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` are enabled by default unless `--no-env-proxy` is used
 
 ## Architecture

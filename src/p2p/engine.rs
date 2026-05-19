@@ -132,6 +132,83 @@ pub enum TorrentEngineState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentTransferStats {
+    pub downloaded: u64,
+    pub total: u64,
+    pub download_rate_bps: u64,
+    pub upload_rate_bps: u64,
+    pub connected_peers: u32,
+    pub seeds: u32,
+}
+
+impl Default for TorrentTransferStats {
+    fn default() -> Self {
+        Self {
+            downloaded: 0,
+            total: 0,
+            download_rate_bps: 0,
+            upload_rate_bps: 0,
+            connected_peers: 0,
+            seeds: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentSnapshot {
+    pub backend: TorrentEngineBackend,
+    pub external_id: String,
+    pub state: TorrentEngineState,
+    pub metadata_ready: bool,
+    pub name: Option<String>,
+    pub info_hash_v1: Option<String>,
+    pub info_hash_v2: Option<String>,
+    pub private: Option<bool>,
+    pub file_count: Option<usize>,
+    pub piece_count: Option<u32>,
+    pub tracker_count: Option<usize>,
+    pub web_seed_count: Option<usize>,
+    pub resume_data_bytes: Option<usize>,
+    pub downloaded: u64,
+    pub total: u64,
+    pub download_rate_bps: u64,
+    pub upload_rate_bps: u64,
+    pub connected_peers: u32,
+    pub seeds: u32,
+}
+
+impl TorrentSnapshot {
+    pub fn from_session(
+        session: &TorrentEngineSession,
+        transfer: Option<&TorrentTransferStats>,
+    ) -> Self {
+        let metadata = session.metadata.as_ref();
+        let transfer = transfer.cloned().unwrap_or_default();
+        Self {
+            backend: session.handle.backend,
+            external_id: session.handle.external_id.clone(),
+            state: session.state.clone(),
+            metadata_ready: metadata.is_some(),
+            name: metadata.map(|metadata| metadata.name.clone()),
+            info_hash_v1: metadata.and_then(|metadata| metadata.info_hash_v1.clone()),
+            info_hash_v2: metadata.and_then(|metadata| metadata.info_hash_v2.clone()),
+            private: metadata.map(|metadata| metadata.private),
+            file_count: metadata.map(|metadata| metadata.files.len()),
+            piece_count: metadata.map(|metadata| metadata.piece_count),
+            tracker_count: metadata.map(|metadata| metadata.trackers.len()),
+            web_seed_count: metadata.map(|metadata| metadata.web_seeds.len()),
+            resume_data_bytes: session.resume_data.as_ref().map(Vec::len),
+            downloaded: transfer.downloaded,
+            total: transfer.total,
+            download_rate_bps: transfer.download_rate_bps,
+            upload_rate_bps: transfer.upload_rate_bps,
+            connected_peers: transfer.connected_peers,
+            seeds: transfer.seeds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TorrentEngineEvent {
     MetadataDiscovered(TorrentMetadata),
     StateChanged(TorrentEngineState),

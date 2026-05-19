@@ -20,6 +20,7 @@ use crate::error::Error;
 use crate::events::Event;
 use crate::p2p::{
     TorrentEngineSession, TorrentEngineState, TorrentMetadata, TorrentResumeSnapshot,
+    TorrentSnapshot, TorrentTransferStats,
 };
 use crate::payload::store::PayloadStore;
 use crate::stats::{Stats, StatsSnapshot};
@@ -54,6 +55,7 @@ pub struct Task {
     payload_store: RwLock<Option<Arc<PayloadStore>>>,
     torrent_session: RwLock<Option<TorrentEngineSession>>,
     torrent_resume: RwLock<Option<TorrentResumeSnapshot>>,
+    torrent_transfer: RwLock<Option<TorrentTransferStats>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
@@ -95,6 +97,7 @@ pub struct TaskSnapshot {
     pub updated_at: Option<DateTime<Utc>>,
     pub checksums: Vec<Checksum>,
     pub stats: StatsSnapshot,
+    pub torrent: Option<TorrentSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -166,6 +169,7 @@ impl Task {
             payload_store: RwLock::new(None),
             torrent_session: RwLock::new(None),
             torrent_resume: RwLock::new(torrent_resume),
+            torrent_transfer: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
@@ -201,6 +205,7 @@ impl Task {
         let block_count = block_states.len() as u32;
         let stats = self.stats.snapshot().await;
         let sources = self.sources.read().await.clone();
+        let torrent = self.torrent_snapshot().await;
         TaskSnapshot {
             id: self.id,
             trace_id: self.trace_id.clone(),
@@ -226,6 +231,7 @@ impl Task {
             updated_at: *updated_at_guard,
             checksums: self.checksums.lock().await.clone(),
             stats,
+            torrent,
         }
     }
 
@@ -426,6 +432,12 @@ impl Task {
         self.torrent_resume.read().await.clone()
     }
 
+    pub(crate) async fn torrent_snapshot(&self) -> Option<TorrentSnapshot> {
+        let session = self.torrent_session.read().await.clone()?;
+        let transfer = self.torrent_transfer.read().await.clone();
+        Some(TorrentSnapshot::from_session(&session, transfer.as_ref()))
+    }
+
     pub(crate) async fn record_torrent_metadata(&self, metadata: TorrentMetadata) {
         if let Some(session) = self.torrent_session.write().await.as_mut() {
             session.metadata = Some(metadata.clone());
@@ -456,10 +468,15 @@ impl Task {
         }
     }
 
+    pub(crate) async fn record_torrent_transfer(&self, transfer: TorrentTransferStats) {
+        *self.torrent_transfer.write().await = Some(transfer);
+    }
+
     pub(crate) async fn clear_torrent_session(&self) {
         let mut torrent_session = self.torrent_session.write().await;
         *torrent_session = None;
         *self.torrent_resume.write().await = None;
+        *self.torrent_transfer.write().await = None;
     }
 
     pub(crate) async fn payload_store(&self) -> Result<Arc<PayloadStore>, Error> {

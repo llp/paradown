@@ -144,6 +144,61 @@ impl TorrentEngine for StateChangingTorrentEngine {
 }
 
 #[derive(Debug)]
+struct ProgressReportingTorrentEngine;
+
+#[async_trait]
+impl TorrentEngine for ProgressReportingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        if let Some(sender) = request.event_sender.as_ref() {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                let _ = sender.send(TorrentEngineEvent::Progress {
+                    downloaded: 4,
+                    total: 10,
+                    download_rate_bps: 2048,
+                    upload_rate_bps: 512,
+                    connected_peers: 7,
+                    seeds: 3,
+                });
+            });
+        }
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 struct ResumeRecordingTorrentEngine {
     received_resume: Arc<Mutex<Option<TorrentResumeSnapshot>>>,
     emit_resume_data: Option<Vec<u8>>,
@@ -264,6 +319,16 @@ async fn torrent_sessions_use_injected_engine_and_manifest_mapping() {
     assert_eq!(snapshot.total_size, 10);
     assert_eq!(snapshot.piece_count, 3);
     assert_eq!(snapshot.block_count, 3);
+    let torrent = snapshot.torrent.expect("torrent snapshot");
+    assert_eq!(torrent.backend, TorrentEngineBackend::Libtorrent);
+    assert_eq!(torrent.external_id, format!("lt-{task_id}"));
+    assert_eq!(
+        torrent.info_hash_v1.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
+    assert_eq!(torrent.name.as_deref(), Some("payload"));
+    assert_eq!(torrent.piece_count, Some(3));
+    assert_eq!(torrent.file_count, Some(1));
     assert_eq!(
         snapshot.file_path.as_deref(),
         Some(sandbox.path().join("downloads/payload.bin").as_path())
@@ -315,6 +380,43 @@ async fn torrent_engine_seeding_state_completes_task() {
 
     assert_eq!(snapshot.status, "Completed");
     assert_eq!(snapshot.completed_pieces, 3);
+}
+
+#[tokio::test]
+async fn torrent_progress_updates_public_swarm_snapshot() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let manager = Manager::new_with_torrent_engine(
+        p2p_config(&sandbox),
+        Arc::new(ProgressReportingTorrentEngine),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let mut snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    for _ in 0..80 {
+        if snapshot
+            .torrent
+            .as_ref()
+            .is_some_and(|torrent| torrent.connected_peers == 7)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    }
+
+    let torrent = snapshot.torrent.expect("torrent snapshot");
+    assert_eq!(snapshot.downloaded_size, 4);
+    assert_eq!(snapshot.total_size, 10);
+    assert_eq!(torrent.downloaded, 4);
+    assert_eq!(torrent.total, 10);
+    assert_eq!(torrent.download_rate_bps, 2048);
+    assert_eq!(torrent.upload_rate_bps, 512);
+    assert_eq!(torrent.connected_peers, 7);
+    assert_eq!(torrent.seeds, 3);
 }
 
 #[tokio::test]

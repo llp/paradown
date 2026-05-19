@@ -521,7 +521,7 @@ async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String>
         return vec![format!("Session #{task_id} not found")];
     };
     let snapshot = session.snapshot().await;
-    vec![
+    let mut lines = vec![
         format!("Session #{} ({})", snapshot.id, snapshot.trace_id),
         format!("  status: {}", snapshot.status),
         format!(
@@ -554,7 +554,27 @@ async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String>
             snapshot.stats.resume_hits,
             snapshot.stats.resume_attempts
         ),
-    ]
+    ];
+    if let Some(torrent) = snapshot.torrent.as_ref() {
+        lines.push(format!(
+            "  torrent: {:?} state={:?} id={} metadata={}",
+            torrent.backend, torrent.state, torrent.external_id, torrent.metadata_ready
+        ));
+        lines.push(format!(
+            "  swarm: peers={} seeds={} down={}/s up={}/s",
+            torrent.connected_peers,
+            torrent.seeds,
+            format_bytes(torrent.download_rate_bps),
+            format_bytes(torrent.upload_rate_bps)
+        ));
+        if let Some(name) = torrent.name.as_deref() {
+            lines.push(format!(
+                "  torrent_name: {} files={:?} pieces={:?}",
+                name, torrent.file_count, torrent.piece_count
+            ));
+        }
+    }
+    lines
 }
 
 async fn apply_task_command(

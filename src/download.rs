@@ -12,7 +12,7 @@ pub use crate::p2p::{
     LibtorrentEngineConfig, LibtorrentEngineUnavailable, TorrentEngine, TorrentEngineBackend,
     TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest,
     TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash,
-    TorrentResumeSnapshot, TorrentTracker,
+    TorrentResumeSnapshot, TorrentSnapshot, TorrentTracker, TorrentTransferStats,
 };
 pub use crate::request::{SegmentRequest, SegmentRequestBuilder};
 use crate::request::{TaskRequest, TaskRequestBuilder};
@@ -107,6 +107,7 @@ pub struct SessionSnapshot {
     pub updated_at: Option<DateTime<Utc>>,
     pub checksums: Vec<Checksum>,
     pub stats: StatsSnapshot,
+    pub torrent: Option<TorrentSnapshot>,
 }
 
 impl From<TaskSnapshot> for SessionSnapshot {
@@ -132,6 +133,7 @@ impl From<TaskSnapshot> for SessionSnapshot {
             updated_at: snapshot.updated_at,
             checksums: snapshot.checksums,
             stats: snapshot.stats,
+            torrent: snapshot.torrent,
         }
     }
 }

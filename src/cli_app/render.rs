@@ -947,6 +947,7 @@ mod tests {
             updated_at: None,
             checksums: Vec::<Checksum>::new(),
             stats: StatsSnapshot::default(),
+            torrent: None,
         }
     }
 

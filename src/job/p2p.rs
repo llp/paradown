@@ -4,7 +4,8 @@ use crate::job::Task;
 use crate::job::finalize::finish_job;
 use crate::job::prepare::PreparationOutcome;
 use crate::p2p::{
-    TorrentEngineEvent, TorrentEngineRequest, TorrentEngineState, manifest_from_torrent_metadata,
+    TorrentEngineEvent, TorrentEngineRequest, TorrentEngineState, TorrentTransferStats,
+    manifest_from_torrent_metadata,
 };
 use log::{debug, warn};
 use std::path::PathBuf;
@@ -103,8 +104,22 @@ async fn handle_torrent_engine_event(
             }
         }
         TorrentEngineEvent::Progress {
-            downloaded, total, ..
+            downloaded,
+            total,
+            download_rate_bps,
+            upload_rate_bps,
+            connected_peers,
+            seeds,
         } => {
+            job.record_torrent_transfer(TorrentTransferStats {
+                downloaded,
+                total,
+                download_rate_bps,
+                upload_rate_bps,
+                connected_peers,
+                seeds,
+            })
+            .await;
             job.downloaded_size.store(downloaded, Ordering::Relaxed);
             job.total_size.store(total, Ordering::Relaxed);
             job.total_size_known.store(true, Ordering::Relaxed);

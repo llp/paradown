@@ -13,7 +13,8 @@ Current release scope:
 
 The native `paradown-libtorrent` adapter is packaged separately for
 environments with `libtorrent-rasterbar` available; it is not bundled into the
-default HTTP/HTTPS CLI archive.
+default HTTP/HTTPS CLI archive. Use it for `.torrent` and magnet workloads that
+need the full libtorrent engine.
 
 Not in the current release scope:
 
@@ -240,6 +241,19 @@ If the remote `ETag` or `Last-Modified` changed, `paradown` intentionally falls 
 Use [scripts/build-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-release.sh). It builds the release binary, packages the release files, and writes a checksum file.
 
 For the native libtorrent adapter, use [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh). It builds `paradown-libtorrent` with the adapter-local `native-libtorrent` feature and packages a separate archive.
+
+Example native run:
+
+```bash
+paradown-libtorrent \
+  --download-dir ./downloads \
+  --timeout-secs 120 \
+  --urls ./example.torrent 'magnet:?xt=urn:btih:...'
+```
+
+When the timeout expires, the native CLI exits with code `124` and prints the
+latest swarm state plus recent tracker, DHT, peer, listen, and port-mapping
+diagnostics.
 
 ### I need Docker / SBOM / package-manager files
 

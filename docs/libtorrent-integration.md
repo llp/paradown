@@ -80,14 +80,17 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --features native-libtorrent \
   --bin paradown-libtorrent -- \
   --download-dir ./downloads \
+  --timeout-secs 120 \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
 ```
 
 `--peer HOST:PORT` is an explicit diagnostic/bootstrap hook for private local
-fixtures or trackerless swarms. The native adapter also exposes `listen_port`
-and `connect_peer` as narrow advanced control hooks. They are used by tests and
-can support future tracker/DHT diagnostics without leaking libtorrent types into
-the main crate.
+fixtures or trackerless swarms. `--timeout-secs N` bounds public-swarm smoke
+runs and exits with code `124` after printing the latest swarm snapshot and
+recent tracker/DHT/peer/listen/port-mapping diagnostics. The native adapter also
+exposes `listen_port` and `connect_peer` as narrow advanced control hooks. They
+are used by tests and keep diagnostics available without leaking libtorrent
+types into the main crate.
 
 Native release packages are built separately from the default HTTP CLI:
 

@@ -36,11 +36,12 @@ What is implemented today:
   metadata extraction, alert translation, and pause/resume/remove controls
 - Native libtorrent local peer-wire regression covering seeder-to-leecher transfer
 - Native libtorrent magnet metadata-exchange regression covering magnet-to-metadata-to-file completion
+- Separate `paradown-libtorrent` CLI/release package with timeout-bounded
+  swarm diagnostics for tracker, DHT, peer, listen, and NAT traversal issues
 
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
-- Public CLI/release packaging for the native libtorrent adapter
 - Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 
@@ -90,6 +91,7 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --features native-libtorrent \
   --bin paradown-libtorrent -- \
   --download-dir ./downloads \
+  --timeout-secs 120 \
   --urls ./ubuntu.torrent 'magnet:?xt=urn:btih:...'
 ```
 

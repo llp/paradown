@@ -1,4 +1,5 @@
 pub(crate) mod finalize;
+pub(crate) mod p2p;
 pub(crate) mod prepare;
 pub(crate) mod state;
 pub(crate) mod storage;
@@ -17,6 +18,7 @@ use crate::domain::{
 };
 use crate::error::Error;
 use crate::events::Event;
+use crate::p2p::TorrentEngineSession;
 use crate::payload::store::PayloadStore;
 use crate::stats::{Stats, StatsSnapshot};
 use crate::status::Status;
@@ -48,6 +50,7 @@ pub struct Task {
     piece_states: RwLock<Vec<PieceState>>,
     block_states: RwLock<Vec<BlockState>>,
     payload_store: RwLock<Option<Arc<PayloadStore>>>,
+    torrent_session: RwLock<Option<TorrentEngineSession>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
@@ -157,6 +160,7 @@ impl Task {
             piece_states: RwLock::new(piece_states.unwrap_or_default()),
             block_states: RwLock::new(block_states.unwrap_or_default()),
             payload_store: RwLock::new(None),
+            torrent_session: RwLock::new(None),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
@@ -242,6 +246,26 @@ impl Task {
         let file_path = match prepare_download(self).await? {
             PreparationOutcome::Ready(prepared) => prepared.file_path,
             PreparationOutcome::Finished => return Ok(()),
+            PreparationOutcome::StartedByEngine => {
+                let should_emit_start = {
+                    let mut status = self.status.lock().await;
+                    if status.is_terminal() {
+                        false
+                    } else {
+                        *status = Status::Running;
+                        true
+                    }
+                };
+                if should_emit_start {
+                    debug!(
+                        "[Task {}] Starting external torrent engine session",
+                        self.id
+                    );
+                    self.emit_manager_event(Event::Start(self.id));
+                    self.persist_task().await?;
+                }
+                return Ok(());
+            }
         };
 
         self.set_status(Status::Running).await;
@@ -382,6 +406,20 @@ impl Task {
         payload_store
     }
 
+    pub(crate) async fn set_torrent_session(&self, session: TorrentEngineSession) {
+        let mut torrent_session = self.torrent_session.write().await;
+        *torrent_session = Some(session);
+    }
+
+    pub(crate) async fn torrent_session(&self) -> Option<TorrentEngineSession> {
+        self.torrent_session.read().await.clone()
+    }
+
+    pub(crate) async fn clear_torrent_session(&self) {
+        let mut torrent_session = self.torrent_session.write().await;
+        *torrent_session = None;
+    }
+
     pub(crate) async fn payload_store(&self) -> Result<Arc<PayloadStore>, Error> {
         self.payload_store
             .read()
@@ -395,6 +433,7 @@ impl Task {
         self.piece_states.write().await.clear();
         self.block_states.write().await.clear();
         *self.payload_store.write().await = None;
+        self.clear_torrent_session().await;
     }
 
     pub(crate) async fn http_resource_identity(&self) -> HttpResourceIdentity {

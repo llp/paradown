@@ -31,10 +31,12 @@ What is implemented today:
 - HTTP request customization (`headers / cookie / auth / proxy overrides`)
 - Failure diagnostics written to `.paradown/diagnostics`
 - Optional interactive commands for pause/resume/cancel/status/rate updates
+- Libtorrent-first P2P engine API boundary for future torrent/magnet execution
 
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
+- Real libtorrent adapter wiring for torrent/magnet payload transfer
 - Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 
@@ -191,6 +193,16 @@ backoff_factor = 2.0
 [progress_throttle]
 interval_ms = 200
 threshold_bytes = 1048576
+
+[p2p]
+enabled = true
+
+[p2p.libtorrent]
+alert_queue_size = 1024
+enable_dht = true
+enable_lsd = true
+enable_upnp = true
+enable_natpmp = true
 ```
 
 Important notes:
@@ -201,6 +213,7 @@ Important notes:
 - `connect_timeout_secs` is a plain integer number of seconds
 - `log_level` controls log-oriented mode and defaults to `info`
 - `HTTP_PROXY / HTTPS_PROXY / NO_PROXY` are enabled by default unless `--no-env-proxy` is used
+- `p2p.libtorrent` configures the preferred full BitTorrent engine; the native adapter is isolated under `integrations/libtorrent-engine`
 
 ## Architecture
 
@@ -211,6 +224,7 @@ The current internal structure is roughly:
 - `coordinator/`: queueing, event fan-in, and task registration
 - `job/`: per-download lifecycle, preparation, persistence helpers, finalization
 - `worker/`: worker facade, runtime loop, transfer logic, retry logic
+- `p2p/`: torrent engine trait, libtorrent-first request/event model, and metadata-to-manifest mapping
 - `storage/`: storage facade plus runtime/DB mapping
 - `request/`: task and segment request models
 - `repository/`: persistence trait plus sqlite / memory backends

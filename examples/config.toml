@@ -29,6 +29,17 @@ backoff_factor = 2.0
 interval_ms = 200
 threshold_bytes = 1048576
 
+[p2p]
+enabled = true
+
+[p2p.libtorrent]
+alert_queue_size = 1024
+enable_dht = true
+enable_lsd = true
+enable_upnp = true
+enable_natpmp = true
+# listen_interfaces = "0.0.0.0:6881"
+
 [http.client]
 cookie_store = false
 # cookie_jar_path = "./cookies/session.json"

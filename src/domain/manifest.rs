@@ -122,6 +122,40 @@ impl SessionManifest {
             checksums,
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_files_with_piece_size(
+        spec: DownloadSpec,
+        sources: SourceSet,
+        id: String,
+        total_size: u64,
+        piece_size: u32,
+        block_size: u32,
+        files: Vec<FileManifest>,
+        checksums: Vec<Checksum>,
+    ) -> Self {
+        let max_piece_size = total_size.max(1).min(u32::MAX as u64) as u32;
+        let piece_size = piece_size.max(1).min(max_piece_size);
+        let pieces = plan_piece_layouts(total_size, piece_size);
+        let block_size = block_size.max(1).min(piece_size);
+        let blocks = plan_piece_blocks(&pieces, block_size);
+
+        Self {
+            id,
+            spec,
+            sources,
+            total_size,
+            total_size_known: true,
+            piece_size,
+            piece_count: pieces.len() as u32,
+            block_size,
+            block_count: blocks.len() as u32,
+            files,
+            pieces,
+            blocks,
+            checksums,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -65,6 +65,12 @@ flowchart LR
 - 当前主干已经升级成：
   - `SessionManifest + SourceSet + ExecutionLane + PieceState + BlockState`
   - worker 不再只是假设“单 URL + 连续区间”的执行器
+- P2P 已经开始按完整 libtorrent 集成路线推进：
+  - 主 crate 新增 `TorrentEngine` 抽象
+  - `Manager::new_with_torrent_engine(...)` 可以注入真实 P2P 引擎
+  - torrent/magnet 会话已经从 HTTP origin discovery 分流到独立 P2P pipeline
+  - torrent metadata 可以映射为统一 `SessionManifest`
+  - libtorrent adapter 放在 `integrations/libtorrent-engine/` 隔离 native 构建风险，并提供 `native-libtorrent` feature
 - `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
   - 重定向后的最终 URL 持久化
@@ -72,6 +78,7 @@ flowchart LR
   - `ETag / Last-Modified / If-Range` 安全续传
   - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
+- `libtorrent` 目前已有主 crate API、adapter 包和初步 native feature；生产级 torrent-file metadata 提取与完整控制还需要继续扩展 CXX 绑定
 - 当前研发重点仍然是把 HTTP/HTTPS 做扎实，而不是马上推进更多协议实现
 
 ## 3. 当前代码与目标代码的映射

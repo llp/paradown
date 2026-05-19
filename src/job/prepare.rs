@@ -4,6 +4,7 @@ use crate::domain::{HttpResourceIdentity, SessionManifest, SourceSet};
 use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
+use crate::job::p2p::prepare_swarm_download;
 use crate::payload::verifier::verify_file_checksums;
 use crate::scheduler::planner::suggested_http_piece_size;
 use log::{debug, info};
@@ -18,10 +19,15 @@ pub(crate) struct PreparedDownload {
 
 pub(crate) enum PreparationOutcome {
     Ready(PreparedDownload),
+    StartedByEngine,
     Finished,
 }
 
 pub(crate) async fn prepare_download(job: &Arc<Task>) -> Result<PreparationOutcome, Error> {
+    if job.spec.supports_swarm_discovery() {
+        return prepare_swarm_download(job).await;
+    }
+
     let download_dir = &job.config.download_dir;
     if !download_dir.exists() {
         fs::create_dir_all(download_dir)

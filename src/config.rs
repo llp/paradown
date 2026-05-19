@@ -1,4 +1,5 @@
 use crate::domain::{HttpAuth, HttpConfig, HttpHeader};
+use crate::p2p::LibtorrentEngineConfig;
 use crate::storage::Backend;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,23 @@ impl Default for RetryConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct P2pConfig {
+    #[serde(default = "default_p2p_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub libtorrent: LibtorrentEngineConfig,
+}
+
+impl Default for P2pConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_p2p_enabled(),
+            libtorrent: LibtorrentEngineConfig::default(),
+        }
+    }
+}
+
 /// 下载配置主结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -130,6 +148,8 @@ pub struct Config {
     pub completion_hook: Option<String>,
     #[serde(default)]
     pub http: HttpConfig,
+    #[serde(default)]
+    pub p2p: P2pConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +182,7 @@ impl Default for Config {
             log_level: LogLevel::default(),
             completion_hook: None,
             http: HttpConfig::default(),
+            p2p: P2pConfig::default(),
         }
     }
 }
@@ -239,6 +260,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn p2p(mut self, p2p: P2pConfig) -> Self {
+        self.inner.p2p = p2p;
+        self
+    }
+
     /// 构建配置并验证
     pub fn build(self) -> Result<Config, ConfigError> {
         self.inner.validate()?;
@@ -264,6 +290,8 @@ pub enum ConfigError {
     InvalidProgressThrottleInterval(u64),
     #[error("Invalid retry config: {0}")]
     InvalidRetryConfig(String),
+    #[error("Invalid p2p config: {0}")]
+    InvalidP2pConfig(String),
     #[error("Completion hook cannot be blank")]
     InvalidCompletionHook,
     #[error("Unsupported config schema version {found}, current supported version is {supported}")]
@@ -319,6 +347,7 @@ impl Config {
         }
 
         validate_retry_config(&self.retry)?;
+        validate_p2p_config(&self.p2p)?;
 
         if self
             .completion_hook
@@ -445,6 +474,27 @@ impl Config {
         if let Some(value) = read_env("PARADOWN_BEARER_TOKEN") {
             self.http.request.auth = Some(HttpAuth::Bearer { token: value });
         }
+        if let Some(value) = parse_env_bool("PARADOWN_P2P_ENABLED")? {
+            self.p2p.enabled = value;
+        }
+        if let Some(value) = parse_env_usize("PARADOWN_LIBTORRENT_ALERT_QUEUE_SIZE")? {
+            self.p2p.libtorrent.alert_queue_size = value;
+        }
+        if let Some(value) = parse_env_bool("PARADOWN_LIBTORRENT_DHT")? {
+            self.p2p.libtorrent.enable_dht = value;
+        }
+        if let Some(value) = parse_env_bool("PARADOWN_LIBTORRENT_LSD")? {
+            self.p2p.libtorrent.enable_lsd = value;
+        }
+        if let Some(value) = parse_env_bool("PARADOWN_LIBTORRENT_UPNP")? {
+            self.p2p.libtorrent.enable_upnp = value;
+        }
+        if let Some(value) = parse_env_bool("PARADOWN_LIBTORRENT_NATPMP")? {
+            self.p2p.libtorrent.enable_natpmp = value;
+        }
+        if let Some(value) = read_env("PARADOWN_LIBTORRENT_LISTEN_INTERFACES") {
+            self.p2p.libtorrent.listen_interfaces = Some(value);
+        }
 
         Ok(())
     }
@@ -503,6 +553,27 @@ fn validate_retry_config(retry: &RetryConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_p2p_config(p2p: &P2pConfig) -> Result<(), ConfigError> {
+    if p2p.libtorrent.alert_queue_size == 0 {
+        return Err(ConfigError::InvalidP2pConfig(
+            "libtorrent alert_queue_size must be greater than 0".into(),
+        ));
+    }
+
+    if p2p
+        .libtorrent
+        .listen_interfaces
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(ConfigError::InvalidP2pConfig(
+            "libtorrent listen_interfaces cannot be blank".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn default_schema_version() -> u32 {
     CURRENT_CONFIG_SCHEMA
 }
@@ -521,6 +592,10 @@ fn default_segments_per_task() -> usize {
 
 fn default_connect_timeout_secs() -> u64 {
     30
+}
+
+fn default_p2p_enabled() -> bool {
+    true
 }
 
 fn default_storage_backend() -> Backend {
@@ -706,6 +781,17 @@ mod tests {
             file_conflict_strategy = "Overwrite"
             log_level = "debug"
             completion_hook = "echo finished"
+
+            [p2p]
+            enabled = true
+
+            [p2p.libtorrent]
+            alert_queue_size = 2048
+            enable_dht = true
+            enable_lsd = false
+            enable_upnp = false
+            enable_natpmp = false
+            listen_interfaces = "0.0.0.0:6881"
             "#
         );
 
@@ -719,9 +805,30 @@ mod tests {
         assert_eq!(parsed.connect_timeout_secs, 45);
         assert_eq!(parsed.log_level, LogLevel::Debug);
         assert_eq!(parsed.completion_hook.as_deref(), Some("echo finished"));
+        assert!(parsed.p2p.enabled);
+        assert_eq!(parsed.p2p.libtorrent.alert_queue_size, 2048);
+        assert!(!parsed.p2p.libtorrent.enable_lsd);
+        assert_eq!(
+            parsed.p2p.libtorrent.listen_interfaces.as_deref(),
+            Some("0.0.0.0:6881")
+        );
         assert!(matches!(
             parsed.file_conflict_strategy,
             FileConflictStrategy::Overwrite
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_p2p_config() {
+        let config = r#"
+            [p2p.libtorrent]
+            alert_queue_size = 0
+        "#;
+
+        let err = config.parse::<Config>().unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigLoadError::Config(super::ConfigError::InvalidP2pConfig(_))
         ));
     }
 

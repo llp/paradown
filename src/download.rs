@@ -8,6 +8,12 @@ pub use crate::domain::{
 use crate::error::Error;
 pub use crate::events::Event;
 use crate::job::{Task, TaskSnapshot};
+pub use crate::p2p::{
+    LibtorrentEngineConfig, LibtorrentEngineUnavailable, TorrentEngine, TorrentEngineBackend,
+    TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest,
+    TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash,
+    TorrentTracker,
+};
 pub use crate::request::{SegmentRequest, SegmentRequestBuilder};
 use crate::request::{TaskRequest, TaskRequestBuilder};
 pub use crate::stats::StatsSnapshot;

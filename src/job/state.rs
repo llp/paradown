@@ -132,6 +132,15 @@ impl Task {
         }
         drop(status);
 
+        if let Some(session) = self.torrent_session().await
+            && let Some(manager) = self.manager.upgrade()
+        {
+            manager
+                .torrent_engine
+                .pause_session(&session.handle)
+                .await?;
+        }
+
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let _ = worker.pause().await;
@@ -151,6 +160,20 @@ impl Task {
                     return Box::pin(self.start()).await;
                 }
                 Status::Paused => {
+                    if let Some(session) = self.torrent_session().await
+                        && let Some(manager) = self.manager.upgrade()
+                    {
+                        *status = Status::Running;
+                        drop(status);
+                        manager
+                            .torrent_engine
+                            .resume_session(&session.handle)
+                            .await?;
+                        self.persist_task().await?;
+                        self.emit_manager_event(Event::Start(self.id));
+                        return Ok(());
+                    }
+
                     debug!(
                         "[Task {}] Resuming paused task through fresh preparation",
                         self.id
@@ -195,6 +218,15 @@ impl Task {
         }
         drop(status);
 
+        if let Some(session) = self.torrent_session().await
+            && let Some(manager) = self.manager.upgrade()
+        {
+            manager
+                .torrent_engine
+                .cancel_session(&session.handle)
+                .await?;
+        }
+
         self.persist_task().await?;
 
         let workers = { self.workers.read().await.clone() };
@@ -207,6 +239,15 @@ impl Task {
     }
 
     pub async fn delete(self: &Arc<Self>) -> Result<(), Error> {
+        if let Some(session) = self.torrent_session().await
+            && let Some(manager) = self.manager.upgrade()
+        {
+            manager
+                .torrent_engine
+                .remove_session(&session.handle, true)
+                .await?;
+        }
+
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let _ = worker.delete().await;

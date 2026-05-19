@@ -11,6 +11,7 @@ use crate::download::{Session, SessionRequest};
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
+use crate::p2p::{TorrentEngine, default_libtorrent_engine};
 use crate::rate_limiter::DownloadRateLimiter;
 use crate::request::TaskRequest;
 use crate::runtime::{HttpSessionState, build_http_client};
@@ -38,6 +39,7 @@ pub struct Manager {
     pub http_client: Arc<reqwest::Client>,
     pub(crate) http_session_state: Option<Arc<HttpSessionState>>,
     pub(crate) rate_limiter: Arc<DownloadRateLimiter>,
+    pub(crate) torrent_engine: Arc<dyn TorrentEngine>,
 
     pub(crate) semaphore: Arc<Semaphore>,
 }
@@ -57,6 +59,14 @@ pub(crate) struct ProgressPersistState {
 
 impl Manager {
     pub fn new(config: Config) -> Result<Arc<Self>, Error> {
+        let torrent_engine = default_libtorrent_engine(config.p2p.libtorrent.clone());
+        Self::new_with_torrent_engine(config, torrent_engine)
+    }
+
+    pub fn new_with_torrent_engine(
+        config: Config,
+        torrent_engine: Arc<dyn TorrentEngine>,
+    ) -> Result<Arc<Self>, Error> {
         config.validate()?;
         let (task_event_tx, _) = broadcast::channel(100);
         let max_concurrent = config.concurrent_tasks;
@@ -75,6 +85,7 @@ impl Manager {
             http_client,
             http_session_state: built_http_client.session_state.map(Arc::new),
             rate_limiter,
+            torrent_engine,
         });
 
         Ok(manager)
@@ -99,6 +110,10 @@ impl Manager {
         spawn_task_event_loop(Arc::clone(self));
 
         Ok(())
+    }
+
+    pub fn torrent_engine_capabilities(&self) -> crate::p2p::TorrentEngineCapabilities {
+        self.torrent_engine.capabilities()
     }
 
     pub(crate) async fn add_task(

@@ -8,6 +8,7 @@ pub mod download;
 mod error;
 mod events;
 mod job;
+pub mod p2p;
 mod payload;
 mod protocol_probe;
 mod rate_limiter;
@@ -24,7 +25,7 @@ mod worker;
 
 pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
-    Config, ConfigBuilder, ConfigError, ConfigLoadError, FileConflictStrategy, LogLevel,
+    Config, ConfigBuilder, ConfigError, ConfigLoadError, FileConflictStrategy, LogLevel, P2pConfig,
     ProgressThrottleConfig, RetryConfig,
 };
 pub use domain::{

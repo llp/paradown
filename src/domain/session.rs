@@ -17,7 +17,9 @@ pub struct SessionDescriptor {
 
 impl SessionDescriptor {
     pub fn new(spec: DownloadSpec, sources: SourceSet) -> Self {
-        let mode = if sources.active_transfer_sources().len() > 1 {
+        let mode = if spec.supports_swarm_discovery() {
+            SessionMode::Swarm
+        } else if sources.active_transfer_sources().len() > 1 {
             SessionMode::MultiSource
         } else {
             SessionMode::SingleSource

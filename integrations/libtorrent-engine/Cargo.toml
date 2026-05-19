@@ -1,0 +1,19 @@
+[package]
+name = "paradown-libtorrent-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+paradown = { path = "../.." }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+lt-rs = { version = "0.1.4", optional = true }
+
+[features]
+default = []
+native-libtorrent = ["dep:lt-rs"]
+static-libtorrent = ["native-libtorrent", "lt-rs/static-libtorrent"]
+static-boost = ["native-libtorrent", "lt-rs/static-boost"]
+static-ssl = ["native-libtorrent", "lt-rs/static-ssl"]

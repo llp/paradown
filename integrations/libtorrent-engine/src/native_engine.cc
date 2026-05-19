@@ -163,6 +163,16 @@ NativeTorrentMetadata map_metadata(lt::torrent_info const& info) {
         out.files.push_back(map_file(files, i));
     }
 
+    if (info.v1()) {
+        for (lt::piece_index_t i(0); i < info.end_piece(); ++i) {
+            NativeTorrentPieceHash mapped;
+            mapped.piece_index = static_cast<std::uint32_t>(static_cast<int>(i));
+            mapped.sha1 = rust_string(hash_to_hex(info.hash_for_piece(i)));
+            mapped.sha256 = rust_string("");
+            out.piece_hashes.push_back(mapped);
+        }
+    }
+
     for (auto const& tracker : info.trackers()) {
         NativeTorrentTracker mapped;
         mapped.url = rust_string(tracker.url);

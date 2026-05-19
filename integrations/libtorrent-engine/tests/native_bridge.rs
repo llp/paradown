@@ -58,6 +58,13 @@ fn native_bridge_extracts_torrent_file_metadata() {
     assert_eq!(metadata.files[0].path_components, ["hello.txt"]);
     assert_eq!(metadata.files[0].length, 5);
     assert_eq!(metadata.files[0].offset, 0);
+    assert_eq!(metadata.piece_hashes.len(), 1);
+    assert_eq!(metadata.piece_hashes[0].piece_index, 0);
+    assert_eq!(
+        metadata.piece_hashes[0].sha1.as_deref(),
+        Some("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+    );
+    assert_eq!(metadata.piece_hashes[0].sha256, None);
 
     runtime
         .block_on(engine.remove_session(&session.handle, true))

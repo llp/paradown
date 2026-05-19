@@ -264,6 +264,28 @@ fn spawn_event_reporter(manager: Arc<Manager>) -> tokio::task::JoinHandle<()> {
                 } => eprintln!("#{id} progress {downloaded}/{total}"),
                 Event::Complete(id) => eprintln!("#{id} completed"),
                 Event::Error(id, err) => eprintln!("#{id} failed: {err}"),
+                Event::TorrentDiagnostic { id, diagnostic } => {
+                    eprintln!(
+                        "#{id} torrent {:?}/{:?}: {}{}{}{}",
+                        diagnostic.scope,
+                        diagnostic.severity,
+                        diagnostic.message,
+                        diagnostic
+                            .url
+                            .as_deref()
+                            .map(|url| format!(" url={url}"))
+                            .unwrap_or_default(),
+                        diagnostic
+                            .endpoint
+                            .as_deref()
+                            .map(|endpoint| format!(" endpoint={endpoint}"))
+                            .unwrap_or_default(),
+                        diagnostic
+                            .peers
+                            .map(|peers| format!(" peers={peers}"))
+                            .unwrap_or_default()
+                    );
+                }
                 Event::Cancel(id) => eprintln!("#{id} canceled"),
                 Event::Delete(id) => eprintln!("#{id} deleted"),
             }

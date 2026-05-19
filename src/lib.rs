@@ -40,6 +40,9 @@ pub use download::{
 };
 pub use error::Error;
 pub use p2p::TorrentResumeSnapshot;
-pub use p2p::{TorrentSnapshot, TorrentTransferStats};
+pub use p2p::{
+    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentSnapshot,
+    TorrentTransferStats,
+};
 pub use runtime::{init_logger, init_logger_with_level};
 pub use storage::{Backend, Store};

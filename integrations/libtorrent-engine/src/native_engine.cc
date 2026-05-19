@@ -39,6 +39,7 @@ constexpr std::uint8_t EVENT_PIECE_FINISHED = 4;
 constexpr std::uint8_t EVENT_RESUME_DATA = 5;
 constexpr std::uint8_t EVENT_FINISHED = 6;
 constexpr std::uint8_t EVENT_ERROR = 7;
+constexpr std::uint8_t EVENT_DIAGNOSTIC = 8;
 
 constexpr std::uint8_t STATE_RESOLVING_METADATA = 1;
 constexpr std::uint8_t STATE_CHECKING_FILES = 2;
@@ -47,8 +48,23 @@ constexpr std::uint8_t STATE_SEEDING = 4;
 constexpr std::uint8_t STATE_PAUSED = 5;
 constexpr std::uint8_t STATE_COMPLETED = 6;
 
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_TRACKER = 1;
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_DHT = 2;
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_PEER = 3;
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_LISTEN = 4;
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_PORT_MAPPING = 5;
+constexpr std::uint8_t DIAGNOSTIC_SCOPE_SESSION = 6;
+
+constexpr std::uint8_t DIAGNOSTIC_SEVERITY_INFO = 1;
+constexpr std::uint8_t DIAGNOSTIC_SEVERITY_WARNING = 2;
+constexpr std::uint8_t DIAGNOSTIC_SEVERITY_ERROR = 3;
+
 std::string to_string(rust::Str value) {
     return std::string(value.data(), value.size());
+}
+
+std::string cstr_to_string(char const* value) {
+    return value == nullptr ? "" : std::string(value);
 }
 
 std::string hex_bytes(char const* data, std::size_t size) {
@@ -66,6 +82,30 @@ std::string hash_to_hex(lt::sha1_hash const& hash) {
 
 std::string hash_to_hex(lt::sha256_hash const& hash) {
     return hex_bytes(hash.data(), hash.size());
+}
+
+std::string address_to_string(lt::address const& address) {
+    return address.to_string();
+}
+
+std::string endpoint_to_string(lt::tcp::endpoint const& endpoint) {
+    auto address = address_to_string(endpoint.address());
+    if (address.empty()) {
+        return "";
+    }
+    std::ostringstream out;
+    out << address << ":" << endpoint.port();
+    return out.str();
+}
+
+std::string endpoint_to_string(lt::address const& address, int port) {
+    auto address_text = address_to_string(address);
+    if (address_text.empty()) {
+        return "";
+    }
+    std::ostringstream out;
+    out << address_text << ":" << port;
+    return out.str();
 }
 
 std::string external_id(lt::info_hash_t const& hashes) {
@@ -225,6 +265,12 @@ NativeEngineEvent event_base(std::uint8_t kind, std::string const& id) {
     event.seeds = 0;
     event.has_metadata = false;
     event.metadata = empty_metadata();
+    event.diagnostic_scope = 0;
+    event.diagnostic_severity = 0;
+    event.diagnostic_url = rust_string("");
+    event.diagnostic_endpoint = rust_string("");
+    event.diagnostic_has_peers = false;
+    event.diagnostic_peers = 0;
     return event;
 }
 
@@ -232,6 +278,30 @@ NativeEngineEvent error_event(std::string const& id, std::string const& message)
     NativeEngineEvent event = event_base(EVENT_ERROR, id);
     event.message = rust_string(message);
     return event;
+}
+
+NativeEngineEvent diagnostic_event(std::uint8_t scope,
+                                   std::uint8_t severity,
+                                   std::string const& id,
+                                   std::string const& message) {
+    NativeEngineEvent event = event_base(EVENT_DIAGNOSTIC, id);
+    event.diagnostic_scope = scope;
+    event.diagnostic_severity = severity;
+    event.message = rust_string(message);
+    return event;
+}
+
+void set_diagnostic_url(NativeEngineEvent& event, char const* url) {
+    event.diagnostic_url = rust_string(cstr_to_string(url));
+}
+
+void set_diagnostic_endpoint(NativeEngineEvent& event, std::string const& endpoint) {
+    event.diagnostic_endpoint = rust_string(endpoint);
+}
+
+void set_diagnostic_peers(NativeEngineEvent& event, int peers) {
+    event.diagnostic_has_peers = true;
+    event.diagnostic_peers = static_cast<std::uint32_t>(std::max(0, peers));
 }
 
 void set_add_params_common(lt::add_torrent_params& params, std::string const& save_path) {
@@ -259,8 +329,10 @@ struct NativeEngine::Impl {
             lt::settings_pack::alert_mask,
             lt::alert_category::error | lt::alert_category::status |
                 lt::alert_category::storage | lt::alert_category::tracker |
-                lt::alert_category::dht | lt::alert_category::piece_progress |
-                lt::alert_category::file_progress);
+                lt::alert_category::dht | lt::alert_category::peer |
+                lt::alert_category::connect | lt::alert_category::port_mapping |
+                lt::alert_category::performance_warning |
+                lt::alert_category::piece_progress | lt::alert_category::file_progress);
         settings.set_bool(lt::settings_pack::enable_dht, config.enable_dht);
         settings.set_bool(lt::settings_pack::enable_lsd, config.enable_lsd);
         settings.set_bool(lt::settings_pack::enable_upnp, config.enable_upnp);
@@ -383,6 +455,150 @@ rust::Vec<NativeEngineEvent> poll_alerts(NativeEngine& engine) {
             events.push_back(event);
         } else if (auto* save_failed = lt::alert_cast<lt::save_resume_data_failed_alert>(alert)) {
             events.push_back(error_event(external_id(save_failed->handle), save_failed->message()));
+        } else if (auto* tracker_error = lt::alert_cast<lt::tracker_error_alert>(alert)) {
+            auto id = external_id(tracker_error->handle);
+            auto message = cstr_to_string(tracker_error->failure_reason());
+            if (message.empty()) {
+                message = tracker_error->error ? tracker_error->error.message() : tracker_error->message();
+            }
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_TRACKER, DIAGNOSTIC_SEVERITY_ERROR, id, message);
+            set_diagnostic_url(event, tracker_error->tracker_url());
+            set_diagnostic_endpoint(event, endpoint_to_string(tracker_error->local_endpoint));
+            events.push_back(event);
+        } else if (auto* tracker_warning = lt::alert_cast<lt::tracker_warning_alert>(alert)) {
+            auto id = external_id(tracker_warning->handle);
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_TRACKER,
+                DIAGNOSTIC_SEVERITY_WARNING,
+                id,
+                cstr_to_string(tracker_warning->warning_message()));
+            set_diagnostic_url(event, tracker_warning->tracker_url());
+            set_diagnostic_endpoint(event, endpoint_to_string(tracker_warning->local_endpoint));
+            events.push_back(event);
+        } else if (auto* tracker_reply = lt::alert_cast<lt::tracker_reply_alert>(alert)) {
+            auto id = external_id(tracker_reply->handle);
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_TRACKER,
+                DIAGNOSTIC_SEVERITY_INFO,
+                id,
+                tracker_reply->message());
+            set_diagnostic_url(event, tracker_reply->tracker_url());
+            set_diagnostic_endpoint(event, endpoint_to_string(tracker_reply->local_endpoint));
+            set_diagnostic_peers(event, tracker_reply->num_peers);
+            events.push_back(event);
+        } else if (auto* dht_reply = lt::alert_cast<lt::dht_reply_alert>(alert)) {
+            auto id = external_id(dht_reply->handle);
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_DHT, DIAGNOSTIC_SEVERITY_INFO, id, dht_reply->message());
+            set_diagnostic_peers(event, dht_reply->num_peers);
+            events.push_back(event);
+        } else if (auto* tracker_announce = lt::alert_cast<lt::tracker_announce_alert>(alert)) {
+            auto id = external_id(tracker_announce->handle);
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_TRACKER,
+                DIAGNOSTIC_SEVERITY_INFO,
+                id,
+                tracker_announce->message());
+            set_diagnostic_url(event, tracker_announce->tracker_url());
+            set_diagnostic_endpoint(event, endpoint_to_string(tracker_announce->local_endpoint));
+            events.push_back(event);
+        } else if (auto* peer_error = lt::alert_cast<lt::peer_error_alert>(alert)) {
+            auto id = external_id(peer_error->handle);
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_PEER, DIAGNOSTIC_SEVERITY_WARNING, id, peer_error->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(peer_error->endpoint));
+            events.push_back(event);
+        } else if (auto* peer_connect = lt::alert_cast<lt::peer_connect_alert>(alert)) {
+            auto id = external_id(peer_connect->handle);
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_PEER, DIAGNOSTIC_SEVERITY_INFO, id, peer_connect->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(peer_connect->endpoint));
+            events.push_back(event);
+        } else if (auto* peer_disconnected = lt::alert_cast<lt::peer_disconnected_alert>(alert)) {
+            auto id = external_id(peer_disconnected->handle);
+            auto severity = peer_disconnected->error
+                                ? DIAGNOSTIC_SEVERITY_WARNING
+                                : DIAGNOSTIC_SEVERITY_INFO;
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_PEER, severity, id, peer_disconnected->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(peer_disconnected->endpoint));
+            events.push_back(event);
+        } else if (auto* peer_ban = lt::alert_cast<lt::peer_ban_alert>(alert)) {
+            auto id = external_id(peer_ban->handle);
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_PEER, DIAGNOSTIC_SEVERITY_WARNING, id, peer_ban->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(peer_ban->endpoint));
+            events.push_back(event);
+        } else if (auto* lsd_peer = lt::alert_cast<lt::lsd_peer_alert>(alert)) {
+            auto id = external_id(lsd_peer->handle);
+            NativeEngineEvent event =
+                diagnostic_event(DIAGNOSTIC_SCOPE_PEER, DIAGNOSTIC_SEVERITY_INFO, id, lsd_peer->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(lsd_peer->endpoint));
+            events.push_back(event);
+        } else if (auto* dht_bootstrap = lt::alert_cast<lt::dht_bootstrap_alert>(alert)) {
+            events.push_back(diagnostic_event(
+                DIAGNOSTIC_SCOPE_DHT,
+                DIAGNOSTIC_SEVERITY_INFO,
+                "",
+                dht_bootstrap->message()));
+        } else if (auto* dht_error = lt::alert_cast<lt::dht_error_alert>(alert)) {
+            events.push_back(diagnostic_event(
+                DIAGNOSTIC_SCOPE_DHT,
+                DIAGNOSTIC_SEVERITY_ERROR,
+                "",
+                dht_error->message()));
+        } else if (auto* external_ip = lt::alert_cast<lt::external_ip_alert>(alert)) {
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_SESSION,
+                DIAGNOSTIC_SEVERITY_INFO,
+                "",
+                external_ip->message());
+            set_diagnostic_endpoint(event, address_to_string(external_ip->external_address));
+            events.push_back(event);
+        } else if (auto* listen_failed = lt::alert_cast<lt::listen_failed_alert>(alert)) {
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_LISTEN,
+                DIAGNOSTIC_SEVERITY_ERROR,
+                "",
+                listen_failed->message());
+            auto endpoint = endpoint_to_string(listen_failed->address, listen_failed->port);
+            if (endpoint.empty()) {
+                endpoint = cstr_to_string(listen_failed->listen_interface());
+            }
+            set_diagnostic_endpoint(event, endpoint);
+            events.push_back(event);
+        } else if (auto* listen_succeeded = lt::alert_cast<lt::listen_succeeded_alert>(alert)) {
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_LISTEN,
+                DIAGNOSTIC_SEVERITY_INFO,
+                "",
+                listen_succeeded->message());
+            set_diagnostic_endpoint(event, endpoint_to_string(listen_succeeded->address, listen_succeeded->port));
+            events.push_back(event);
+        } else if (auto* portmap_error = lt::alert_cast<lt::portmap_error_alert>(alert)) {
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_PORT_MAPPING,
+                DIAGNOSTIC_SEVERITY_WARNING,
+                "",
+                portmap_error->message());
+            set_diagnostic_endpoint(event, address_to_string(portmap_error->local_address));
+            events.push_back(event);
+        } else if (auto* portmap = lt::alert_cast<lt::portmap_alert>(alert)) {
+            NativeEngineEvent event = diagnostic_event(
+                DIAGNOSTIC_SCOPE_PORT_MAPPING,
+                DIAGNOSTIC_SEVERITY_INFO,
+                "",
+                portmap->message());
+            set_diagnostic_endpoint(event, address_to_string(portmap->local_address));
+            events.push_back(event);
+        } else if (auto* performance = lt::alert_cast<lt::performance_alert>(alert)) {
+            auto id = external_id(performance->handle);
+            events.push_back(diagnostic_event(
+                DIAGNOSTIC_SCOPE_SESSION,
+                DIAGNOSTIC_SEVERITY_WARNING,
+                id,
+                performance->message()));
         } else if (auto* state = lt::alert_cast<lt::state_update_alert>(alert)) {
             for (auto const& status : state->status) {
                 auto id = external_id(status.handle);

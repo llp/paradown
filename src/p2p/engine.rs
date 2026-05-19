@@ -154,6 +154,33 @@ impl Default for TorrentTransferStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TorrentDiagnosticScope {
+    Tracker,
+    Dht,
+    Peer,
+    Listen,
+    PortMapping,
+    Session,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TorrentDiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentDiagnosticEvent {
+    pub scope: TorrentDiagnosticScope,
+    pub severity: TorrentDiagnosticSeverity,
+    pub message: String,
+    pub url: Option<String>,
+    pub endpoint: Option<String>,
+    pub peers: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorrentSnapshot {
     pub backend: TorrentEngineBackend,
@@ -175,12 +202,14 @@ pub struct TorrentSnapshot {
     pub upload_rate_bps: u64,
     pub connected_peers: u32,
     pub seeds: u32,
+    pub diagnostics: Vec<TorrentDiagnosticEvent>,
 }
 
 impl TorrentSnapshot {
     pub fn from_session(
         session: &TorrentEngineSession,
         transfer: Option<&TorrentTransferStats>,
+        diagnostics: &[TorrentDiagnosticEvent],
     ) -> Self {
         let metadata = session.metadata.as_ref();
         let transfer = transfer.cloned().unwrap_or_default();
@@ -204,6 +233,7 @@ impl TorrentSnapshot {
             upload_rate_bps: transfer.upload_rate_bps,
             connected_peers: transfer.connected_peers,
             seeds: transfer.seeds,
+            diagnostics: diagnostics.to_vec(),
         }
     }
 }
@@ -226,6 +256,7 @@ pub enum TorrentEngineEvent {
     ResumeData {
         bytes: Vec<u8>,
     },
+    Diagnostic(TorrentDiagnosticEvent),
     Finished,
     Error(String),
 }

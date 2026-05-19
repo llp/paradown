@@ -38,8 +38,11 @@ The stable Rust boundary lives in `src/p2p/`:
 - `TorrentEngineSession`: engine handle plus optional metadata/manifest
 - `TorrentResumeSnapshot`: persisted handle, state, metadata, and fast-resume
   bytes used to restart a torrent session without losing swarm state
-- `TorrentEngineEvent`: metadata, progress, piece, resume-data, finish, and
-  error events
+- `TorrentEngineEvent`: metadata, progress, piece, resume-data, diagnostic,
+  finish, and error events
+- `TorrentDiagnosticEvent`: engine-neutral tracker, DHT, peer, listen,
+  port-mapping, and session diagnostics surfaced through both `Event` and
+  `TorrentSnapshot`
 - `TorrentMetadata`: engine-neutral torrent metadata
 
 `Manager::new_with_torrent_engine(config, engine)` is the injection point.
@@ -103,7 +106,7 @@ backend stores resume bytes as `BLOB`, while JSON and memory backends keep the
 same `DBDownloadTask` shape. That lets the adapter evolve without changing the
 public `Manager` / `Session` API.
 
-The adapter should map libtorrent alerts into `TorrentEngineEvent`:
+The adapter maps libtorrent alerts into `TorrentEngineEvent`:
 
 - metadata received -> `MetadataDiscovered`
 - torrent status update -> `Progress`
@@ -111,6 +114,8 @@ The adapter should map libtorrent alerts into `TorrentEngineEvent`:
 - save resume data -> `ResumeData`
 - torrent finished -> `Finished`
 - torrent error / metadata failed -> `Error`
+- tracker, DHT, peer, listen, port-mapping, external-IP, and performance
+  alerts -> `Diagnostic`
 
 The adapter must also translate libtorrent torrent info into `TorrentMetadata`,
 then let the main crate convert it to `SessionManifest`. That keeps all file

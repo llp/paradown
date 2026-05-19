@@ -374,6 +374,20 @@ fn spawn_event_reporter(manager: Arc<Manager>) -> tokio::task::JoinHandle<()> {
                 Ok(Event::Cancel(id)) => warn!("Task #{id} canceled"),
                 Ok(Event::Delete(id)) => warn!("Task #{id} deleted"),
                 Ok(Event::Error(id, err)) => error!("Task #{id} failed: {err}"),
+                Ok(Event::TorrentDiagnostic { id, diagnostic }) => {
+                    let message = format_torrent_diagnostic(&diagnostic);
+                    match diagnostic.severity {
+                        paradown::TorrentDiagnosticSeverity::Error => {
+                            error!("Task #{id} torrent diagnostic: {message}")
+                        }
+                        paradown::TorrentDiagnosticSeverity::Warning => {
+                            warn!("Task #{id} torrent diagnostic: {message}")
+                        }
+                        paradown::TorrentDiagnosticSeverity::Info => {
+                            info!("Task #{id} torrent diagnostic: {message}")
+                        }
+                    }
+                }
                 Ok(Event::Preparing(_)) | Ok(Event::Pending(_)) | Ok(Event::Progress { .. }) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!("Event reporter skipped {skipped} messages because it lagged behind");
@@ -573,8 +587,31 @@ async fn show_task_messages(manager: &Arc<Manager>, task_id: u32) -> Vec<String>
                 name, torrent.file_count, torrent.piece_count
             ));
         }
+        if !torrent.diagnostics.is_empty() {
+            lines.push("  torrent_diagnostics:".into());
+            for diagnostic in torrent.diagnostics.iter().rev().take(8) {
+                lines.push(format!("    {}", format_torrent_diagnostic(diagnostic)));
+            }
+        }
     }
     lines
+}
+
+fn format_torrent_diagnostic(diagnostic: &paradown::TorrentDiagnosticEvent) -> String {
+    let mut parts = vec![format!(
+        "{:?}/{:?}: {}",
+        diagnostic.scope, diagnostic.severity, diagnostic.message
+    )];
+    if let Some(url) = diagnostic.url.as_deref() {
+        parts.push(format!("url={url}"));
+    }
+    if let Some(endpoint) = diagnostic.endpoint.as_deref() {
+        parts.push(format!("endpoint={endpoint}"));
+    }
+    if let Some(peers) = diagnostic.peers {
+        parts.push(format!("peers={peers}"));
+    }
+    parts.join(" ")
 }
 
 async fn apply_task_command(

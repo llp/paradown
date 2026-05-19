@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use cxx::UniquePtr;
 use paradown::Error;
 use paradown::p2p::{
-    LibtorrentEngineConfig, TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities,
+    LibtorrentEngineConfig, TorrentDiagnosticEvent, TorrentDiagnosticScope,
+    TorrentDiagnosticSeverity, TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities,
     TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession,
     TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentTracker,
 };
@@ -15,9 +16,12 @@ use crate::ffi::ffi::{
     NativeEngine, NativeEngineConfig, NativeEngineEvent, NativeStartResult, NativeTorrentMetadata,
 };
 use crate::ffi::{
-    EVENT_ERROR, EVENT_FINISHED, EVENT_METADATA, EVENT_PIECE_FINISHED, EVENT_PROGRESS,
-    EVENT_RESUME_DATA, EVENT_STATE, STATE_CHECKING_FILES, STATE_COMPLETED, STATE_DOWNLOADING,
-    STATE_PAUSED, STATE_RESOLVING_METADATA, STATE_SEEDING,
+    DIAGNOSTIC_SCOPE_DHT, DIAGNOSTIC_SCOPE_LISTEN, DIAGNOSTIC_SCOPE_PEER,
+    DIAGNOSTIC_SCOPE_PORT_MAPPING, DIAGNOSTIC_SCOPE_SESSION, DIAGNOSTIC_SCOPE_TRACKER,
+    DIAGNOSTIC_SEVERITY_ERROR, DIAGNOSTIC_SEVERITY_INFO, DIAGNOSTIC_SEVERITY_WARNING,
+    EVENT_DIAGNOSTIC, EVENT_ERROR, EVENT_FINISHED, EVENT_METADATA, EVENT_PIECE_FINISHED,
+    EVENT_PROGRESS, EVENT_RESUME_DATA, EVENT_STATE, STATE_CHECKING_FILES, STATE_COMPLETED,
+    STATE_DOWNLOADING, STATE_PAUSED, STATE_RESOLVING_METADATA, STATE_SEEDING,
 };
 
 struct NativeDriver {
@@ -266,6 +270,15 @@ fn translate_event(
     senders: &HashMap<String, mpsc::UnboundedSender<TorrentEngineEvent>>,
     event: NativeEngineEvent,
 ) -> Vec<(mpsc::UnboundedSender<TorrentEngineEvent>, TorrentEngineEvent)> {
+    if event.kind == EVENT_DIAGNOSTIC && event.external_id.is_empty() {
+        let diagnostic = diagnostic_from_native(&event);
+        return senders
+            .values()
+            .cloned()
+            .map(|sender| (sender, TorrentEngineEvent::Diagnostic(diagnostic.clone())))
+            .collect();
+    }
+
     let Some(sender) = senders.get(event.external_id.as_str()).cloned() else {
         return Vec::new();
     };
@@ -306,9 +319,51 @@ fn translate_event(
                 bytes: event.resume_data,
             },
         )],
+        EVENT_DIAGNOSTIC => vec![(
+            sender,
+            TorrentEngineEvent::Diagnostic(diagnostic_from_native(&event)),
+        )],
         EVENT_FINISHED => vec![(sender, TorrentEngineEvent::Finished)],
         EVENT_ERROR => vec![(sender, TorrentEngineEvent::Error(event.message.to_string()))],
         _ => Vec::new(),
+    }
+}
+
+fn diagnostic_from_native(event: &NativeEngineEvent) -> TorrentDiagnosticEvent {
+    TorrentDiagnosticEvent {
+        scope: diagnostic_scope_from_native(event.diagnostic_scope),
+        severity: diagnostic_severity_from_native(event.diagnostic_severity),
+        message: event.message.to_string(),
+        url: non_empty_string(&event.diagnostic_url),
+        endpoint: non_empty_string(&event.diagnostic_endpoint),
+        peers: event
+            .diagnostic_has_peers
+            .then_some(event.diagnostic_peers),
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn diagnostic_scope_from_native(scope: u8) -> TorrentDiagnosticScope {
+    match scope {
+        DIAGNOSTIC_SCOPE_TRACKER => TorrentDiagnosticScope::Tracker,
+        DIAGNOSTIC_SCOPE_DHT => TorrentDiagnosticScope::Dht,
+        DIAGNOSTIC_SCOPE_PEER => TorrentDiagnosticScope::Peer,
+        DIAGNOSTIC_SCOPE_LISTEN => TorrentDiagnosticScope::Listen,
+        DIAGNOSTIC_SCOPE_PORT_MAPPING => TorrentDiagnosticScope::PortMapping,
+        DIAGNOSTIC_SCOPE_SESSION => TorrentDiagnosticScope::Session,
+        _ => TorrentDiagnosticScope::Session,
+    }
+}
+
+fn diagnostic_severity_from_native(severity: u8) -> TorrentDiagnosticSeverity {
+    match severity {
+        DIAGNOSTIC_SEVERITY_INFO => TorrentDiagnosticSeverity::Info,
+        DIAGNOSTIC_SEVERITY_WARNING => TorrentDiagnosticSeverity::Warning,
+        DIAGNOSTIC_SEVERITY_ERROR => TorrentDiagnosticSeverity::Error,
+        _ => TorrentDiagnosticSeverity::Info,
     }
 }
 

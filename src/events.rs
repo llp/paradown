@@ -1,4 +1,5 @@
 use crate::Error;
+use crate::p2p::TorrentDiagnosticEvent;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -13,6 +14,10 @@ pub enum Event {
     },
     Complete(u32),
     Error(u32, Error),
+    TorrentDiagnostic {
+        id: u32,
+        diagnostic: TorrentDiagnosticEvent,
+    },
     Cancel(u32),
     Delete(u32),
 }

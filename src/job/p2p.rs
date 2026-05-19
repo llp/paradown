@@ -144,6 +144,13 @@ async fn handle_torrent_engine_event(
             job.record_torrent_resume_data(bytes).await;
             job.persist_task().await?;
         }
+        TorrentEngineEvent::Diagnostic(diagnostic) => {
+            job.record_torrent_diagnostic(diagnostic.clone()).await;
+            job.emit_manager_event(Event::TorrentDiagnostic {
+                id: job.id,
+                diagnostic,
+            });
+        }
         TorrentEngineEvent::Finished => {
             job.record_torrent_state(TorrentEngineState::Completed)
                 .await;
@@ -151,6 +158,15 @@ async fn handle_torrent_engine_event(
             job.release_permit().await;
         }
         TorrentEngineEvent::Error(message) => {
+            job.record_torrent_diagnostic(crate::p2p::TorrentDiagnosticEvent {
+                scope: crate::p2p::TorrentDiagnosticScope::Session,
+                severity: crate::p2p::TorrentDiagnosticSeverity::Error,
+                message: message.clone(),
+                url: None,
+                endpoint: None,
+                peers: None,
+            })
+            .await;
             let err = Error::Other(message);
             finish_job(job, Err(err)).await?;
             job.release_permit().await;

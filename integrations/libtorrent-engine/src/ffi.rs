@@ -71,6 +71,12 @@ pub(crate) mod ffi {
         pub resume_data: Vec<u8>,
         pub has_metadata: bool,
         pub metadata: NativeTorrentMetadata,
+        pub diagnostic_scope: u8,
+        pub diagnostic_severity: u8,
+        pub diagnostic_url: String,
+        pub diagnostic_endpoint: String,
+        pub diagnostic_has_peers: bool,
+        pub diagnostic_peers: u32,
     }
 
     unsafe extern "C++" {
@@ -121,6 +127,7 @@ pub(crate) const EVENT_PIECE_FINISHED: u8 = 4;
 pub(crate) const EVENT_RESUME_DATA: u8 = 5;
 pub(crate) const EVENT_FINISHED: u8 = 6;
 pub(crate) const EVENT_ERROR: u8 = 7;
+pub(crate) const EVENT_DIAGNOSTIC: u8 = 8;
 
 pub(crate) const STATE_RESOLVING_METADATA: u8 = 1;
 pub(crate) const STATE_CHECKING_FILES: u8 = 2;
@@ -128,3 +135,14 @@ pub(crate) const STATE_DOWNLOADING: u8 = 3;
 pub(crate) const STATE_SEEDING: u8 = 4;
 pub(crate) const STATE_PAUSED: u8 = 5;
 pub(crate) const STATE_COMPLETED: u8 = 6;
+
+pub(crate) const DIAGNOSTIC_SCOPE_TRACKER: u8 = 1;
+pub(crate) const DIAGNOSTIC_SCOPE_DHT: u8 = 2;
+pub(crate) const DIAGNOSTIC_SCOPE_PEER: u8 = 3;
+pub(crate) const DIAGNOSTIC_SCOPE_LISTEN: u8 = 4;
+pub(crate) const DIAGNOSTIC_SCOPE_PORT_MAPPING: u8 = 5;
+pub(crate) const DIAGNOSTIC_SCOPE_SESSION: u8 = 6;
+
+pub(crate) const DIAGNOSTIC_SEVERITY_INFO: u8 = 1;
+pub(crate) const DIAGNOSTIC_SEVERITY_WARNING: u8 = 2;
+pub(crate) const DIAGNOSTIC_SEVERITY_ERROR: u8 = 3;

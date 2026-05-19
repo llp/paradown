@@ -3,10 +3,11 @@ mod libtorrent;
 mod manifest;
 
 pub use engine::{
-    TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent,
-    TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession, TorrentEngineState,
-    TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentResumeSnapshot, TorrentSnapshot,
-    TorrentTracker, TorrentTransferStats,
+    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentEngine,
+    TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle,
+    TorrentEngineRequest, TorrentEngineSession, TorrentEngineState, TorrentFileEntry,
+    TorrentMetadata, TorrentPieceHash, TorrentResumeSnapshot, TorrentSnapshot, TorrentTracker,
+    TorrentTransferStats,
 };
 pub use libtorrent::{LibtorrentEngineConfig, LibtorrentEngineUnavailable};
 

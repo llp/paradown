@@ -177,6 +177,10 @@ impl DashboardRunner {
             Ok(Event::Cancel(id)) => self.push_message(format!("Task #{id} canceled")),
             Ok(Event::Delete(id)) => self.push_message(format!("Task #{id} deleted")),
             Ok(Event::Error(id, err)) => self.push_message(format!("Task #{id} failed: {err}")),
+            Ok(Event::TorrentDiagnostic { id, diagnostic }) => self.push_message(format!(
+                "Task #{id} torrent {:?}: {}",
+                diagnostic.scope, diagnostic.message
+            )),
             Ok(Event::Pending(_) | Event::Preparing(_) | Event::Progress { .. }) => {}
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 self.push_message(format!(
@@ -313,6 +317,7 @@ impl PlainTextRunner {
                 | Ok(Event::Cancel(_))
                 | Ok(Event::Delete(_))
                 | Ok(Event::Error(_, _))
+                | Ok(Event::TorrentDiagnostic { .. })
                 | Err(broadcast::error::RecvError::Lagged(_))
                 | Err(broadcast::error::RecvError::Closed)
         )
@@ -433,6 +438,7 @@ impl JsonRunner {
                 | Ok(Event::Cancel(_))
                 | Ok(Event::Delete(_))
                 | Ok(Event::Error(_, _))
+                | Ok(Event::TorrentDiagnostic { .. })
                 | Err(broadcast::error::RecvError::Lagged(_))
                 | Err(broadcast::error::RecvError::Closed)
         )

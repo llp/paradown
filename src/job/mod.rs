@@ -19,8 +19,8 @@ use crate::domain::{
 use crate::error::Error;
 use crate::events::Event;
 use crate::p2p::{
-    TorrentEngineSession, TorrentEngineState, TorrentMetadata, TorrentResumeSnapshot,
-    TorrentSnapshot, TorrentTransferStats,
+    TorrentDiagnosticEvent, TorrentEngineSession, TorrentEngineState, TorrentMetadata,
+    TorrentResumeSnapshot, TorrentSnapshot, TorrentTransferStats,
 };
 use crate::payload::store::PayloadStore;
 use crate::stats::{Stats, StatsSnapshot};
@@ -30,12 +30,14 @@ use crate::worker::Worker;
 use chrono::{DateTime, Utc};
 use log::debug;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, RwLock, broadcast};
+
+const MAX_TORRENT_DIAGNOSTICS: usize = 32;
 
 pub struct Task {
     pub id: u32,
@@ -56,6 +58,7 @@ pub struct Task {
     torrent_session: RwLock<Option<TorrentEngineSession>>,
     torrent_resume: RwLock<Option<TorrentResumeSnapshot>>,
     torrent_transfer: RwLock<Option<TorrentTransferStats>>,
+    torrent_diagnostics: RwLock<VecDeque<TorrentDiagnosticEvent>>,
     pub config: Arc<Config>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
@@ -170,6 +173,7 @@ impl Task {
             torrent_session: RwLock::new(None),
             torrent_resume: RwLock::new(torrent_resume),
             torrent_transfer: RwLock::new(None),
+            torrent_diagnostics: RwLock::new(VecDeque::new()),
             status: Mutex::new(initial_status),
             downloaded_size: AtomicU64::new(downloaded_size.unwrap_or(0)),
             config,
@@ -435,7 +439,18 @@ impl Task {
     pub(crate) async fn torrent_snapshot(&self) -> Option<TorrentSnapshot> {
         let session = self.torrent_session.read().await.clone()?;
         let transfer = self.torrent_transfer.read().await.clone();
-        Some(TorrentSnapshot::from_session(&session, transfer.as_ref()))
+        let diagnostics = self
+            .torrent_diagnostics
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        Some(TorrentSnapshot::from_session(
+            &session,
+            transfer.as_ref(),
+            &diagnostics,
+        ))
     }
 
     pub(crate) async fn record_torrent_metadata(&self, metadata: TorrentMetadata) {
@@ -472,11 +487,20 @@ impl Task {
         *self.torrent_transfer.write().await = Some(transfer);
     }
 
+    pub(crate) async fn record_torrent_diagnostic(&self, diagnostic: TorrentDiagnosticEvent) {
+        let mut diagnostics = self.torrent_diagnostics.write().await;
+        if diagnostics.len() == MAX_TORRENT_DIAGNOSTICS {
+            diagnostics.pop_front();
+        }
+        diagnostics.push_back(diagnostic);
+    }
+
     pub(crate) async fn clear_torrent_session(&self) {
         let mut torrent_session = self.torrent_session.write().await;
         *torrent_session = None;
         *self.torrent_resume.write().await = None;
         *self.torrent_transfer.write().await = None;
+        self.torrent_diagnostics.write().await.clear();
     }
 
     pub(crate) async fn payload_store(&self) -> Result<Arc<PayloadStore>, Error> {

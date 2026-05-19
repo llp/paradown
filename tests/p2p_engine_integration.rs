@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use paradown::p2p::{
-    TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent,
-    TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession, TorrentEngineState,
-    TorrentFileEntry, TorrentMetadata, TorrentResumeSnapshot,
+    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentEngine,
+    TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle,
+    TorrentEngineRequest, TorrentEngineSession, TorrentEngineState, TorrentFileEntry,
+    TorrentMetadata, TorrentResumeSnapshot,
 };
-use paradown::{Backend, Config, DownloadSpec, Error, Manager, Store};
+use paradown::{Backend, Config, DownloadSpec, Error, Event, Manager, Store};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -172,6 +173,69 @@ impl TorrentEngine for ProgressReportingTorrentEngine {
                     connected_peers: 7,
                     seeds: 3,
                 });
+            });
+        }
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct DiagnosticReportingTorrentEngine;
+
+#[async_trait]
+impl TorrentEngine for DiagnosticReportingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        if let Some(sender) = request.event_sender.as_ref() {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                let _ = sender.send(TorrentEngineEvent::Diagnostic(TorrentDiagnosticEvent {
+                    scope: TorrentDiagnosticScope::Tracker,
+                    severity: TorrentDiagnosticSeverity::Warning,
+                    message: "tracker announce timed out".into(),
+                    url: Some("udp://tracker.example/announce".into()),
+                    endpoint: Some("127.0.0.1:6969".into()),
+                    peers: None,
+                }));
+                let _ = sender.send(TorrentEngineEvent::Diagnostic(TorrentDiagnosticEvent {
+                    scope: TorrentDiagnosticScope::Dht,
+                    severity: TorrentDiagnosticSeverity::Info,
+                    message: "DHT lookup returned peers".into(),
+                    url: None,
+                    endpoint: None,
+                    peers: Some(5),
+                }));
             });
         }
         Ok(fake_session(&request))
@@ -417,6 +481,63 @@ async fn torrent_progress_updates_public_swarm_snapshot() {
     assert_eq!(torrent.upload_rate_bps, 512);
     assert_eq!(torrent.connected_peers, 7);
     assert_eq!(torrent.seeds, 3);
+}
+
+#[tokio::test]
+async fn torrent_diagnostics_update_snapshot_and_event_stream() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let manager = Manager::new_with_torrent_engine(
+        p2p_config(&sandbox),
+        Arc::new(DiagnosticReportingTorrentEngine),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+    let mut events = manager.subscribe_events();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let mut snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    for _ in 0..80 {
+        if snapshot
+            .torrent
+            .as_ref()
+            .is_some_and(|torrent| torrent.diagnostics.len() >= 2)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    }
+
+    let torrent = snapshot.torrent.expect("torrent snapshot");
+    assert_eq!(torrent.diagnostics.len(), 2);
+    assert_eq!(
+        torrent.diagnostics[0].scope,
+        TorrentDiagnosticScope::Tracker
+    );
+    assert_eq!(
+        torrent.diagnostics[0].url.as_deref(),
+        Some("udp://tracker.example/announce")
+    );
+    assert_eq!(torrent.diagnostics[1].scope, TorrentDiagnosticScope::Dht);
+    assert_eq!(torrent.diagnostics[1].peers, Some(5));
+
+    let mut saw_diagnostic_event = false;
+    for _ in 0..16 {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
+            Ok(Ok(Event::TorrentDiagnostic { id, diagnostic })) if id == task_id => {
+                saw_diagnostic_event = diagnostic.scope == TorrentDiagnosticScope::Tracker
+                    || diagnostic.scope == TorrentDiagnosticScope::Dht;
+                if saw_diagnostic_event {
+                    break;
+                }
+            }
+            Ok(Ok(_)) => {}
+            _ => {}
+        }
+    }
+    assert!(saw_diagnostic_event);
 }
 
 #[tokio::test]

@@ -47,10 +47,10 @@ async fn handle_task_event(manager: &Arc<Manager>, event: Event) -> Result<(), E
             handle_terminal_task_event(manager, task_id).await
         }
         Event::Pause(task_id) => handle_terminal_task_event(manager, task_id).await,
-        Event::Preparing(task_id) => {
-            manager.persist_task(task_id).await?;
-            Ok(())
-        }
+        // Task::start owns preparation persistence. Re-saving from the
+        // broadcast loop can race with engine session persistence and replay
+        // an older snapshot over fresh torrent resume data.
+        Event::Preparing(_) => Ok(()),
         Event::Progress { id, downloaded, .. } => {
             if manager.should_persist_progress(id, downloaded) {
                 manager.persist_task(id).await?;

@@ -118,7 +118,7 @@ impl TorrentEngine for ResumeRecordingTorrentEngine {
         {
             let sender = sender.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
                 let _ = sender.send(TorrentEngineEvent::ResumeData { bytes });
             });
         }

@@ -91,7 +91,13 @@ async fn handle_torrent_engine_event(
         }
         TorrentEngineEvent::StateChanged(state) => {
             job.record_torrent_state(state.clone()).await;
-            if matches!(state, TorrentEngineState::Paused) {
+            if matches!(
+                state,
+                TorrentEngineState::Completed | TorrentEngineState::Seeding
+            ) {
+                finish_job(job, Ok(())).await?;
+                job.release_permit().await;
+            } else if matches!(state, TorrentEngineState::Paused) {
                 job.set_status(crate::Status::Paused).await;
                 job.emit_manager_event(Event::Pause(job.id));
             }

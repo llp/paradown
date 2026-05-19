@@ -1,7 +1,8 @@
 use clap::Parser;
-use paradown::download::{DownloadSpec, Event, Manager};
+use paradown::download::{DownloadSpec, Event, Manager, TorrentEngineHandle};
 use paradown::{Backend, Config, init_logger_with_level};
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
+use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -28,6 +29,9 @@ struct Cli {
 
     #[arg(long, value_name = "INTERFACES")]
     listen_interfaces: Option<String>,
+
+    #[arg(long = "peer", value_name = "HOST:PORT")]
+    peers: Vec<String>,
 
     #[arg(long)]
     disable_dht: bool,
@@ -78,22 +82,37 @@ async fn run() -> Result<ExitCode> {
     if locators.is_empty() {
         return Err("provide at least one .torrent path or magnet URI".into());
     }
+    let peers = parse_peers(&cli.peers)?;
 
     let engine = Arc::new(LibtorrentRasterbarEngine::new(
         config.p2p.libtorrent.clone(),
     )?);
-    let manager = Manager::new_with_torrent_engine(config.clone(), engine)?;
+    let manager = Manager::new_with_torrent_engine(config.clone(), engine.clone())?;
     manager.init().await?;
 
     let event_task = spawn_event_reporter(Arc::clone(&manager));
     let mut task_ids = Vec::with_capacity(locators.len());
+    let mut torrent_handles = Vec::with_capacity(locators.len());
     for locator in locators {
         let task_id = manager.add_download(DownloadSpec::parse(locator)?).await?;
         manager.start_task(task_id).await?;
+        if let Some(session) = manager.get_session(task_id)
+            && let Some(handle) = session.torrent_handle().await
+        {
+            torrent_handles.push(handle);
+        }
         task_ids.push(task_id);
     }
+    if !peers.is_empty() && torrent_handles.is_empty() {
+        return Err("explicit peers were provided, but no torrent handles are available".into());
+    }
+    let peer_task = spawn_peer_connector(Arc::clone(&engine), torrent_handles, peers);
 
     manager.wait_for_all_tasks().await?;
+    if let Some(peer_task) = peer_task {
+        peer_task.abort();
+        let _ = peer_task.await;
+    }
     event_task.abort();
     let _ = event_task.await;
 
@@ -171,6 +190,62 @@ fn collect_locators(cli: &Cli) -> Vec<String> {
         .chain(cli.locators.iter())
         .cloned()
         .collect()
+}
+
+#[derive(Clone, Debug)]
+struct PeerEndpoint {
+    host: String,
+    port: u16,
+}
+
+fn parse_peers(values: &[String]) -> Result<Vec<PeerEndpoint>> {
+    values.iter().map(|value| parse_peer(value)).collect()
+}
+
+fn parse_peer(value: &str) -> Result<PeerEndpoint> {
+    let (host, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| format!("peer must be HOST:PORT, got '{value}'"))?;
+    if host.trim().is_empty() {
+        return Err(format!("peer host cannot be blank in '{value}'").into());
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|err| format!("invalid peer port in '{value}': {err}"))?;
+    Ok(PeerEndpoint {
+        host: host.to_string(),
+        port,
+    })
+}
+
+fn spawn_peer_connector(
+    engine: Arc<LibtorrentRasterbarEngine>,
+    handles: Vec<TorrentEngineHandle>,
+    peers: Vec<PeerEndpoint>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if handles.is_empty() || peers.is_empty() {
+        return None;
+    }
+
+    Some(tokio::spawn(async move {
+        let mut reported_errors = HashSet::new();
+        loop {
+            for handle in &handles {
+                for peer in &peers {
+                    if let Err(err) = engine.connect_peer(handle, &peer.host, peer.port) {
+                        let key = format!("{}:{}:{}", handle.external_id, peer.host, peer.port);
+                        if reported_errors.insert(key) {
+                            eprintln!(
+                                "#{} peer {}:{} failed: {}",
+                                handle.external_id, peer.host, peer.port, err
+                            );
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }))
 }
 
 fn spawn_event_reporter(manager: Arc<Manager>) -> tokio::task::JoinHandle<()> {

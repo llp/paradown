@@ -47,6 +47,13 @@ impl Session {
         self.inner.snapshot().await.into()
     }
 
+    pub async fn torrent_handle(&self) -> Option<TorrentEngineHandle> {
+        self.inner
+            .torrent_session()
+            .await
+            .map(|session| session.handle)
+    }
+
     pub async fn pause(&self) -> Result<(), Error> {
         self.inner.pause().await
     }

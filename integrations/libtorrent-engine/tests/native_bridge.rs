@@ -5,7 +5,9 @@ use paradown::download::{
 };
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -234,6 +236,29 @@ fn native_bridge_resolves_magnet_metadata_from_local_peer() {
     let _ = fs::remove_dir_all(sandbox);
 }
 
+#[test]
+fn native_cli_smoke_prints_native_options() {
+    let output = run_cli_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_paradown-libtorrent"))
+            .arg("--help"),
+        Duration::from_secs(5),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "CLI exited with {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    assert!(stdout.contains("paradown-libtorrent"));
+    assert!(stdout.contains("--download-dir"));
+    assert!(stdout.contains("--listen-interfaces"));
+    assert!(stdout.contains("--peer"));
+}
+
 fn local_engine() -> LibtorrentRasterbarEngine {
     LibtorrentRasterbarEngine::new(LibtorrentEngineConfig {
         enable_dht: false,
@@ -244,6 +269,41 @@ fn local_engine() -> LibtorrentRasterbarEngine {
         ..LibtorrentEngineConfig::default()
     })
     .unwrap()
+}
+
+fn run_cli_with_timeout(command: &mut Command, timeout: Duration) -> Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_end(&mut stdout);
+            }
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_end(&mut stderr);
+            }
+            let _ = child.wait();
+            panic!(
+                "CLI timed out after {:?}\nstdout:\n{}\nstderr:\n{}",
+                timeout,
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 async fn wait_for_listen_port(engine: &LibtorrentRasterbarEngine) -> u16 {

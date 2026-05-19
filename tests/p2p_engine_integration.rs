@@ -93,6 +93,57 @@ impl TorrentEngine for FastFinishingTorrentEngine {
 }
 
 #[derive(Debug)]
+struct StateChangingTorrentEngine {
+    state: TorrentEngineState,
+}
+
+#[async_trait]
+impl TorrentEngine for StateChangingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        if let Some(sender) = request.event_sender.as_ref() {
+            let sender = sender.clone();
+            let state = self.state.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                let _ = sender.send(TorrentEngineEvent::StateChanged(state));
+            });
+        }
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 struct ResumeRecordingTorrentEngine {
     received_resume: Arc<Mutex<Option<TorrentResumeSnapshot>>>,
     emit_resume_data: Option<Vec<u8>>,
@@ -234,6 +285,34 @@ async fn torrent_engine_finish_event_cannot_be_overwritten_by_start_transition()
 
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    assert_eq!(snapshot.status, "Completed");
+    assert_eq!(snapshot.completed_pieces, 3);
+}
+
+#[tokio::test]
+async fn torrent_engine_seeding_state_completes_task() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let manager = Manager::new_with_torrent_engine(
+        p2p_config(&sandbox),
+        Arc::new(StateChangingTorrentEngine {
+            state: TorrentEngineState::Seeding,
+        }),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let mut snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    for _ in 0..80 {
+        if snapshot.status == "Completed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        snapshot = manager.get_session(task_id).unwrap().snapshot().await;
+    }
+
     assert_eq!(snapshot.status, "Completed");
     assert_eq!(snapshot.completed_pieces, 3);
 }

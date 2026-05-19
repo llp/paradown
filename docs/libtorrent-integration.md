@@ -79,9 +79,11 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
 ```
 
-The native adapter exposes `listen_port` and `connect_peer` as narrow advanced
-control hooks. They are used by tests and can support future tracker/DHT
-diagnostics without leaking libtorrent types into the main crate.
+`--peer HOST:PORT` is an explicit diagnostic/bootstrap hook for private local
+fixtures or trackerless swarms. The native adapter also exposes `listen_port`
+and `connect_peer` as narrow advanced control hooks. They are used by tests and
+can support future tracker/DHT diagnostics without leaking libtorrent types into
+the main crate.
 
 Native development requires `libtorrent-rasterbar` headers and libraries. The
 build first uses `pkg-config libtorrent-rasterbar`; if that is unavailable it

@@ -68,6 +68,17 @@ finishes the file transfer.
 Completing the production adapter still requires public CLI/release packaging.
 Those are intentionally adapter-local tasks.
 
+For native product runs, the adapter crate provides a feature-gated
+`paradown-libtorrent` binary:
+
+```bash
+cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
+  --features native-libtorrent \
+  --bin paradown-libtorrent -- \
+  --download-dir ./downloads \
+  --urls ./example.torrent 'magnet:?xt=urn:btih:...'
+```
+
 The native adapter exposes `listen_port` and `connect_peer` as narrow advanced
 control hooks. They are used by tests and can support future tracker/DHT
 diagnostics without leaking libtorrent types into the main crate.

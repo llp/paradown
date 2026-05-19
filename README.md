@@ -83,6 +83,16 @@ cargo run --all-features -- \
   --urls https://example.com/file.iso https://example.com/file-2.iso
 ```
 
+Run the native libtorrent adapter CLI:
+
+```bash
+cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
+  --features native-libtorrent \
+  --bin paradown-libtorrent -- \
+  --download-dir ./downloads \
+  --urls ./ubuntu.torrent 'magnet:?xt=urn:btih:...'
+```
+
 Download from a URL file:
 
 ```bash

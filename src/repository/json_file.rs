@@ -307,6 +307,7 @@ mod tests {
                 total_size: Some(42),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             })
             .await
             .unwrap();

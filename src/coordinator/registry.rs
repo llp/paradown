@@ -85,6 +85,7 @@ pub(crate) async fn add_task_with_workers(
         task_request.status,
         task_request.downloaded_size,
         task_request.total_size,
+        task_request.torrent_resume.clone(),
         task_request.checksums.clone().unwrap_or_default(),
         Arc::clone(&manager.http_client),
         manager.config.clone(),

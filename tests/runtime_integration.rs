@@ -55,6 +55,7 @@ async fn restores_paused_task_from_sqlite_on_manager_init() {
             total_size: Some(100),
             created_at: None,
             updated_at: None,
+            ..DBDownloadTask::default()
         })
         .await
         .unwrap();

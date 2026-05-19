@@ -161,6 +161,7 @@ pub struct TorrentEngineRequest {
     pub requested_file_name: Option<String>,
     pub requested_file_path: Option<PathBuf>,
     pub rate_limit_kib_per_sec: Option<u64>,
+    pub resume: Option<TorrentResumeSnapshot>,
     pub event_sender: Option<mpsc::UnboundedSender<TorrentEngineEvent>>,
 }
 
@@ -170,6 +171,26 @@ pub struct TorrentEngineSession {
     pub state: TorrentEngineState,
     pub metadata: Option<TorrentMetadata>,
     pub manifest: Option<SessionManifest>,
+    pub resume_data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentResumeSnapshot {
+    pub handle: TorrentEngineHandle,
+    pub state: TorrentEngineState,
+    pub metadata: Option<TorrentMetadata>,
+    pub resume_data: Option<Vec<u8>>,
+}
+
+impl TorrentResumeSnapshot {
+    pub fn from_session(session: &TorrentEngineSession) -> Self {
+        Self {
+            handle: session.handle.clone(),
+            state: session.state.clone(),
+            metadata: session.metadata.clone(),
+            resume_data: session.resume_data.clone(),
+        }
+    }
 }
 
 #[async_trait]

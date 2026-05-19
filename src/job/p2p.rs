@@ -27,6 +27,7 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
     }
 
     let requested_file_path = job.file_path.get().cloned();
+    let resume = job.torrent_resume_snapshot().await;
     let (event_sender, event_receiver) = mpsc::unbounded_channel();
     let request = TorrentEngineRequest {
         session_id: job.id,
@@ -35,12 +36,17 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
         requested_file_name: job.file_name.get().cloned(),
         requested_file_path: requested_file_path.clone(),
         rate_limit_kib_per_sec: job.config.rate_limit_kib_per_sec.map(u64::from),
+        resume: resume.clone(),
         event_sender: Some(event_sender),
     };
 
     let engine_session = manager.torrent_engine.start_session(request).await?;
 
-    if let Some(metadata) = engine_session.metadata.as_ref() {
+    if let Some(metadata) = engine_session.metadata.as_ref().or_else(|| {
+        resume
+            .as_ref()
+            .and_then(|snapshot| snapshot.metadata.as_ref())
+    }) {
         install_torrent_metadata(job, metadata, requested_file_path.as_deref()).await?;
     } else if let Some(manifest) = engine_session.manifest.clone() {
         job.update_protocol_probe(Some(manifest.total_size), true);
@@ -48,6 +54,7 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
     }
 
     job.set_torrent_session(engine_session).await;
+    job.persist_task().await?;
     spawn_torrent_event_listener(job, event_receiver);
 
     Ok(PreparationOutcome::StartedByEngine)
@@ -77,11 +84,13 @@ async fn handle_torrent_engine_event(
     match event {
         TorrentEngineEvent::MetadataDiscovered(metadata) => {
             debug!("[Task {}] Torrent metadata discovered", job.id);
+            job.record_torrent_metadata(metadata.clone()).await;
             install_torrent_metadata(job, &metadata, job.file_path.get().map(PathBuf::as_path))
                 .await?;
             job.persist_task().await?;
         }
         TorrentEngineEvent::StateChanged(state) => {
+            job.record_torrent_state(state.clone()).await;
             if matches!(state, TorrentEngineState::Paused) {
                 job.set_status(crate::Status::Paused).await;
                 job.emit_manager_event(Event::Pause(job.id));
@@ -110,10 +119,13 @@ async fn handle_torrent_engine_event(
             }
             job.persist_task().await?;
         }
-        TorrentEngineEvent::ResumeData { .. } => {
+        TorrentEngineEvent::ResumeData { bytes } => {
+            job.record_torrent_resume_data(bytes).await;
             job.persist_task().await?;
         }
         TorrentEngineEvent::Finished => {
+            job.record_torrent_state(TorrentEngineState::Completed)
+                .await;
             finish_job(job, Ok(())).await?;
             job.release_permit().await;
         }

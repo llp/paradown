@@ -39,5 +39,6 @@ pub use download::{
     SessionSnapshot, StatsSnapshot, Status, Worker,
 };
 pub use error::Error;
+pub use p2p::TorrentResumeSnapshot;
 pub use runtime::{init_logger, init_logger_with_level};
 pub use storage::{Backend, Store};

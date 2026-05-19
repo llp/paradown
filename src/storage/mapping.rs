@@ -1,6 +1,10 @@
 use crate::checksum::{Checksum, ChecksumAlgorithm};
 use crate::domain::{BlockState, DownloadSpec, HttpResourceIdentity, PieceState, SourceSet};
 use crate::job::Task;
+use crate::p2p::{
+    TorrentEngineBackend, TorrentEngineHandle, TorrentEngineState, TorrentMetadata,
+    TorrentResumeSnapshot,
+};
 use crate::repository::models::{
     DBDownloadBlock, DBDownloadChecksum, DBDownloadPiece, DBDownloadTask, DBDownloadWorker,
 };
@@ -20,6 +24,17 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
     let file_name = task.file_name.get().cloned().unwrap_or_default();
     let updated_at = *task.updated_at.lock().await;
     let resource_identity = task.http_resource_identity().await;
+    let torrent_resume = task.torrent_resume_snapshot().await;
+    let (
+        torrent_backend,
+        torrent_external_id,
+        torrent_state_json,
+        torrent_metadata_json,
+        torrent_resume_data,
+    ) = torrent_resume
+        .as_ref()
+        .map(torrent_resume_to_db_fields)
+        .unwrap_or_default();
 
     DBDownloadTask {
         id: task.id,
@@ -35,6 +50,11 @@ pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
         status: task.status.lock().await.to_string(),
         downloaded_size: task.downloaded_size.load(Ordering::Relaxed),
         total_size: task.total_size_option(),
+        torrent_backend,
+        torrent_external_id,
+        torrent_state_json,
+        torrent_metadata_json,
+        torrent_resume_data,
         created_at: task.created_at,
         updated_at,
     }
@@ -124,8 +144,70 @@ pub(crate) fn db_task_to_request(
         status: Some(Status::from_str(&task.status).unwrap_or(Status::Pending)),
         downloaded_size: Some(task.downloaded_size),
         total_size: task.total_size,
+        torrent_resume: db_task_to_torrent_resume(task),
         created_at: task.created_at,
         updated_at: task.updated_at,
+    }
+}
+
+type TorrentDbFields = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<u8>>,
+);
+
+fn torrent_resume_to_db_fields(snapshot: &TorrentResumeSnapshot) -> TorrentDbFields {
+    (
+        Some(torrent_backend_to_db(snapshot.handle.backend).to_string()),
+        Some(snapshot.handle.external_id.clone()),
+        serde_json::to_string(&snapshot.state).ok(),
+        snapshot
+            .metadata
+            .as_ref()
+            .and_then(|metadata| serde_json::to_string(metadata).ok()),
+        snapshot.resume_data.clone(),
+    )
+}
+
+fn db_task_to_torrent_resume(task: &DBDownloadTask) -> Option<TorrentResumeSnapshot> {
+    let backend = task
+        .torrent_backend
+        .as_deref()
+        .and_then(torrent_backend_from_db)?;
+    let external_id = normalized_text_field(task.torrent_external_id.as_deref().unwrap_or(""))?;
+    let state = task
+        .torrent_state_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<TorrentEngineState>(value).ok())
+        .unwrap_or(TorrentEngineState::Paused);
+    let metadata = task
+        .torrent_metadata_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<TorrentMetadata>(value).ok());
+
+    Some(TorrentResumeSnapshot {
+        handle: TorrentEngineHandle {
+            backend,
+            external_id,
+        },
+        state,
+        metadata,
+        resume_data: task.torrent_resume_data.clone(),
+    })
+}
+
+fn torrent_backend_to_db(backend: TorrentEngineBackend) -> &'static str {
+    match backend {
+        TorrentEngineBackend::Libtorrent => "libtorrent",
+    }
+}
+
+fn torrent_backend_from_db(value: &str) -> Option<TorrentEngineBackend> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "libtorrent" => Some(TorrentEngineBackend::Libtorrent),
+        _ => None,
     }
 }
 
@@ -244,6 +326,7 @@ mod tests {
                 total_size: Some(100),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             &[DBDownloadPiece {
                 task_id: 7,

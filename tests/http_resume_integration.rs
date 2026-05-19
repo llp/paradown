@@ -130,6 +130,7 @@ async fn seed_paused_resume_task(
             total_size: Some(total_size),
             created_at: None,
             updated_at: None,
+            ..DBDownloadTask::default()
         })
         .await
         .unwrap();

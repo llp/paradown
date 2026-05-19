@@ -70,6 +70,7 @@ flowchart LR
   - `Manager::new_with_torrent_engine(...)` 可以注入真实 P2P 引擎
   - torrent/magnet 会话已经从 HTTP origin discovery 分流到独立 P2P pipeline
   - torrent metadata 可以映射为统一 `SessionManifest`
+  - torrent fast-resume data / metadata / engine handle 已经纳入持久化模型，恢复后会重新传入 P2P engine
   - libtorrent adapter 放在 `integrations/libtorrent-engine/` 隔离 native 构建风险，并提供 `native-libtorrent` feature
 - `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
@@ -78,8 +79,8 @@ flowchart LR
   - `ETag / Last-Modified / If-Range` 安全续传
   - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `libtorrent` 目前已有主 crate API、adapter 包和初步 native feature；生产级 torrent-file metadata 提取与完整控制还需要继续扩展 CXX 绑定
-- 当前研发重点仍然是把 HTTP/HTTPS 做扎实，而不是马上推进更多协议实现
+- `libtorrent` 目前已有主 crate API、adapter 包、初步 native feature 和 fast-resume 状态闭环；生产级 torrent-file metadata 提取与完整控制还需要继续扩展 CXX 绑定
+- 当前研发重点已经进入 P5/P6：把 libtorrent native bridge 补完整，而不是继续扩大 HTTP/HTTPS 主线
 
 ## 3. 当前代码与目标代码的映射
 

@@ -3,6 +3,7 @@ use crate::domain::{
     BlockState, DownloadSpec, HttpRequestOptions, HttpResourceIdentity, PieceState, SourceSet,
 };
 use crate::error::Error;
+use crate::p2p::TorrentResumeSnapshot;
 use crate::status::Status;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ pub struct TaskRequest {
     pub status: Option<Status>,
     pub downloaded_size: Option<u64>,
     pub total_size: Option<u64>,
+    pub torrent_resume: Option<TorrentResumeSnapshot>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -42,6 +44,7 @@ impl TaskRequest {
             status: None,
             downloaded_size: None,
             total_size: None,
+            torrent_resume: None,
             created_at: None,
             updated_at: None,
         }
@@ -70,6 +73,7 @@ pub struct TaskRequestBuilder {
     status: Option<Status>,
     downloaded_size: Option<u64>,
     total_size: Option<u64>,
+    torrent_resume: Option<TorrentResumeSnapshot>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
 }
@@ -135,6 +139,11 @@ impl TaskRequestBuilder {
         self
     }
 
+    pub fn torrent_resume(mut self, resume: TorrentResumeSnapshot) -> Self {
+        self.torrent_resume = Some(resume);
+        self
+    }
+
     pub fn created_at(mut self, created_at: DateTime<Utc>) -> Self {
         self.created_at = Some(created_at);
         self
@@ -160,6 +169,7 @@ impl TaskRequestBuilder {
             status: self.status,
             downloaded_size: self.downloaded_size,
             total_size: self.total_size,
+            torrent_resume: self.torrent_resume,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }

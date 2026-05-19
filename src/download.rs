@@ -12,7 +12,7 @@ pub use crate::p2p::{
     LibtorrentEngineConfig, LibtorrentEngineUnavailable, TorrentEngine, TorrentEngineBackend,
     TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest,
     TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash,
-    TorrentTracker,
+    TorrentResumeSnapshot, TorrentTracker,
 };
 pub use crate::request::{SegmentRequest, SegmentRequestBuilder};
 use crate::request::{TaskRequest, TaskRequestBuilder};
@@ -219,6 +219,11 @@ impl SessionRequestBuilder {
 
     pub fn total_size(mut self, size: u64) -> Self {
         self.inner = self.inner.total_size(size);
+        self
+    }
+
+    pub fn torrent_resume(mut self, resume: TorrentResumeSnapshot) -> Self {
+        self.inner = self.inner.torrent_resume(resume);
         self
     }
 

@@ -347,6 +347,7 @@ mod tests {
                 total_size: Some(100),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             workers: vec![DBDownloadWorker {
                 id: 1,
@@ -395,6 +396,7 @@ mod tests {
                 total_size: Some(100),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             workers: vec![
                 DBDownloadWorker {
@@ -471,6 +473,7 @@ mod tests {
                 total_size: Some(100),
                 created_at: Some(Utc.with_ymd_and_hms(2026, 4, 15, 8, 0, 0).unwrap()),
                 updated_at: Some(Utc.with_ymd_and_hms(2026, 4, 15, 8, 30, 0).unwrap()),
+                ..DBDownloadTask::default()
             },
             workers: vec![
                 DBDownloadWorker {
@@ -536,6 +539,7 @@ mod tests {
                 total_size: Some(128),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             workers: vec![],
             pieces: vec![],
@@ -570,6 +574,7 @@ mod tests {
                 total_size: None,
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             workers: vec![],
             pieces: vec![],
@@ -604,6 +609,7 @@ mod tests {
                 total_size: Some(64),
                 created_at: None,
                 updated_at: None,
+                ..DBDownloadTask::default()
             },
             workers: vec![],
             pieces: vec![crate::repository::models::DBDownloadPiece {

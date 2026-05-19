@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use paradown::p2p::{
     TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent,
     TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession, TorrentEngineState,
-    TorrentFileEntry, TorrentMetadata,
+    TorrentFileEntry, TorrentMetadata, TorrentResumeSnapshot,
 };
-use paradown::{Backend, Config, DownloadSpec, Error, Manager};
-use std::sync::Arc;
+use paradown::{Backend, Config, DownloadSpec, Error, Manager, Store};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct FakeTorrentEngine;
@@ -92,6 +92,60 @@ impl TorrentEngine for FastFinishingTorrentEngine {
     }
 }
 
+#[derive(Debug)]
+struct ResumeRecordingTorrentEngine {
+    received_resume: Arc<Mutex<Option<TorrentResumeSnapshot>>>,
+    emit_resume_data: Option<Vec<u8>>,
+}
+
+#[async_trait]
+impl TorrentEngine for ResumeRecordingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        *self.received_resume.lock().unwrap() = request.resume.clone();
+        if let Some(bytes) = self.emit_resume_data.clone()
+            && let Some(sender) = request.event_sender.as_ref()
+        {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                let _ = sender.send(TorrentEngineEvent::ResumeData { bytes });
+            });
+        }
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
 fn fake_session(request: &TorrentEngineRequest) -> TorrentEngineSession {
     TorrentEngineSession {
         handle: TorrentEngineHandle {
@@ -117,6 +171,10 @@ fn fake_session(request: &TorrentEngineRequest) -> TorrentEngineSession {
             web_seeds: Vec::new(),
         }),
         manifest: None,
+        resume_data: request
+            .resume
+            .as_ref()
+            .and_then(|resume| resume.resume_data.clone()),
     }
 }
 
@@ -178,4 +236,61 @@ async fn torrent_engine_finish_event_cannot_be_overwritten_by_start_transition()
     let snapshot = manager.get_session(task_id).unwrap().snapshot().await;
     assert_eq!(snapshot.status, "Completed");
     assert_eq!(snapshot.completed_pieces, 3);
+}
+
+#[tokio::test]
+async fn torrent_resume_data_is_persisted_and_reused_after_restore() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let config = p2p_config(&sandbox);
+    let emitted_resume = vec![1, 2, 3, 5, 8, 13];
+    let first_engine = Arc::new(ResumeRecordingTorrentEngine {
+        received_resume: Arc::new(Mutex::new(None)),
+        emit_resume_data: Some(emitted_resume.clone()),
+    });
+    let manager = Manager::new_with_torrent_engine(config.clone(), first_engine).unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let store = Store::new(Arc::new(config.clone())).await.unwrap();
+    let mut persisted = store.load_task(task_id).await.unwrap().unwrap();
+    for _ in 0..20 {
+        if persisted.torrent_resume_data.as_deref() == Some(emitted_resume.as_slice()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        persisted = store.load_task(task_id).await.unwrap().unwrap();
+    }
+    assert_eq!(persisted.torrent_backend.as_deref(), Some("libtorrent"));
+    assert_eq!(
+        persisted.torrent_resume_data.as_deref(),
+        Some(emitted_resume.as_slice())
+    );
+    assert!(
+        persisted
+            .torrent_metadata_json
+            .as_deref()
+            .is_some_and(|json| json.contains("payload"))
+    );
+
+    let received_resume = Arc::new(Mutex::new(None));
+    let restore_engine = Arc::new(ResumeRecordingTorrentEngine {
+        received_resume: Arc::clone(&received_resume),
+        emit_resume_data: None,
+    });
+    let restored_manager = Manager::new_with_torrent_engine(config, restore_engine).unwrap();
+    restored_manager.init().await.unwrap();
+    restored_manager.start_task(task_id).await.unwrap();
+
+    let resume = received_resume.lock().unwrap().clone().unwrap();
+    assert_eq!(resume.handle.backend, TorrentEngineBackend::Libtorrent);
+    assert_eq!(
+        resume.resume_data.as_deref(),
+        Some(emitted_resume.as_slice())
+    );
+    assert_eq!(
+        resume.metadata.as_ref().map(|metadata| metadata.total_size),
+        Some(10)
+    );
 }

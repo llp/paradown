@@ -36,6 +36,8 @@ The stable Rust boundary lives in `src/p2p/`:
 - `TorrentEngine`: async engine trait
 - `TorrentEngineRequest`: normalized request from a `Task`
 - `TorrentEngineSession`: engine handle plus optional metadata/manifest
+- `TorrentResumeSnapshot`: persisted handle, state, metadata, and fast-resume
+  bytes used to restart a torrent session without losing swarm state
 - `TorrentEngineEvent`: metadata, progress, piece, resume-data, finish, and
   error events
 - `TorrentMetadata`: engine-neutral torrent metadata
@@ -51,11 +53,18 @@ The adapter lives under `integrations/libtorrent-engine/`. Its default build is
 a stub so the main workspace stays free of native dependencies. Enabling
 `native-libtorrent` pulls `lt-rs`, which wraps `libtorrent-rasterbar`.
 
-The current `native-libtorrent` path can create magnet sessions and translate
-the alert classes exposed by `lt-rs` into `TorrentEngineEvent`. Completing the
-production adapter still requires extending the CXX layer for torrent-file
-loading, torrent-info extraction, pause/resume/remove controls, and richer
-status counters. Those are intentionally adapter-local tasks.
+The current `native-libtorrent` path can create magnet sessions, reuse persisted
+fast-resume data, retain native torrent handles from `add_torrent_alert`, and
+translate the alert classes exposed by `lt-rs` into `TorrentEngineEvent`.
+Completing the production adapter still requires extending the CXX layer for
+torrent-file loading, torrent-info extraction, real pause/resume/remove
+controls, and richer status counters. Those are intentionally adapter-local
+tasks.
+
+Fast-resume state is owned by the main crate's persistence layer. The SQLite
+backend stores resume bytes as `BLOB`, while JSON and memory backends keep the
+same `DBDownloadTask` shape. That lets the adapter evolve without changing the
+public `Manager` / `Session` API.
 
 The adapter should map libtorrent alerts into `TorrentEngineEvent`:
 

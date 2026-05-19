@@ -58,6 +58,11 @@ impl SqliteRepository {
                 status TEXT NOT NULL,
                 downloaded_size INTEGER DEFAULT 0,
                 total_size INTEGER,
+                torrent_backend TEXT,
+                torrent_external_id TEXT,
+                torrent_state_json TEXT,
+                torrent_metadata_json TEXT,
+                torrent_resume_data BLOB,
                 created_at TEXT DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 updated_at TEXT DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
@@ -165,6 +170,26 @@ impl Repository for SqliteRepository {
                 status: row.get("status"),
                 downloaded_size: row.get::<i64, _>("downloaded_size") as u64,
                 total_size: row.try_get::<i64, _>("total_size").ok().map(|v| v as u64),
+                torrent_backend: row
+                    .try_get::<Option<String>, _>("torrent_backend")
+                    .ok()
+                    .flatten(),
+                torrent_external_id: row
+                    .try_get::<Option<String>, _>("torrent_external_id")
+                    .ok()
+                    .flatten(),
+                torrent_state_json: row
+                    .try_get::<Option<String>, _>("torrent_state_json")
+                    .ok()
+                    .flatten(),
+                torrent_metadata_json: row
+                    .try_get::<Option<String>, _>("torrent_metadata_json")
+                    .ok()
+                    .flatten(),
+                torrent_resume_data: row
+                    .try_get::<Option<Vec<u8>>, _>("torrent_resume_data")
+                    .ok()
+                    .flatten(),
                 created_at: row
                     .try_get::<String, _>("created_at")
                     .ok()
@@ -199,6 +224,26 @@ impl Repository for SqliteRepository {
                 status: row.get("status"),
                 downloaded_size: row.get::<i64, _>("downloaded_size") as u64,
                 total_size: row.try_get::<i64, _>("total_size").ok().map(|v| v as u64),
+                torrent_backend: row
+                    .try_get::<Option<String>, _>("torrent_backend")
+                    .ok()
+                    .flatten(),
+                torrent_external_id: row
+                    .try_get::<Option<String>, _>("torrent_external_id")
+                    .ok()
+                    .flatten(),
+                torrent_state_json: row
+                    .try_get::<Option<String>, _>("torrent_state_json")
+                    .ok()
+                    .flatten(),
+                torrent_metadata_json: row
+                    .try_get::<Option<String>, _>("torrent_metadata_json")
+                    .ok()
+                    .flatten(),
+                torrent_resume_data: row
+                    .try_get::<Option<Vec<u8>>, _>("torrent_resume_data")
+                    .ok()
+                    .flatten(),
                 created_at: row
                     .try_get::<String, _>("created_at")
                     .ok()
@@ -217,9 +262,9 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
-                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, torrent_backend, torrent_external_id, torrent_state_json, torrent_metadata_json, torrent_resume_data, created_at, updated_at)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, COALESCE(?18, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?19, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
             ON CONFLICT(id) DO UPDATE SET
                 url=excluded.url,
                 spec_json=excluded.spec_json,
@@ -232,6 +277,11 @@ impl Repository for SqliteRepository {
                 status=excluded.status,
                 downloaded_size=excluded.downloaded_size,
                 total_size=excluded.total_size,
+                torrent_backend=excluded.torrent_backend,
+                torrent_external_id=excluded.torrent_external_id,
+                torrent_state_json=excluded.torrent_state_json,
+                torrent_metadata_json=excluded.torrent_metadata_json,
+                torrent_resume_data=excluded.torrent_resume_data,
                 updated_at=COALESCE(excluded.updated_at, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
             "#
         )
@@ -247,6 +297,11 @@ impl Repository for SqliteRepository {
             .bind(&task.status)
             .bind(task.downloaded_size as i64)
             .bind(task.total_size.map(|v| v as i64))
+            .bind(task.torrent_backend.as_deref())
+            .bind(task.torrent_external_id.as_deref())
+            .bind(task.torrent_state_json.as_deref())
+            .bind(task.torrent_metadata_json.as_deref())
+            .bind(task.torrent_resume_data.as_deref())
             .bind(task.created_at.map(|dt| dt.to_rfc3339()))
             .bind(task.updated_at.map(|dt| dt.to_rfc3339()))
             .execute(&*self.pool)
@@ -280,9 +335,9 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO download_tasks
-                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, created_at, updated_at)
+                (id, url, spec_json, source_set_json, resolved_url, entity_tag, last_modified, file_name, file_path, status, downloaded_size, total_size, torrent_backend, torrent_external_id, torrent_state_json, torrent_metadata_json, torrent_resume_data, created_at, updated_at)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?14, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, COALESCE(?18, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), COALESCE(?19, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))
             ON CONFLICT(id) DO UPDATE SET
                 url=excluded.url,
                 spec_json=excluded.spec_json,
@@ -295,6 +350,11 @@ impl Repository for SqliteRepository {
                 status=excluded.status,
                 downloaded_size=excluded.downloaded_size,
                 total_size=excluded.total_size,
+                torrent_backend=excluded.torrent_backend,
+                torrent_external_id=excluded.torrent_external_id,
+                torrent_state_json=excluded.torrent_state_json,
+                torrent_metadata_json=excluded.torrent_metadata_json,
+                torrent_resume_data=excluded.torrent_resume_data,
                 updated_at=COALESCE(excluded.updated_at, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
             "#,
         )
@@ -310,6 +370,11 @@ impl Repository for SqliteRepository {
         .bind(&task.status)
         .bind(task.downloaded_size as i64)
         .bind(task.total_size.map(|v| v as i64))
+        .bind(task.torrent_backend.as_deref())
+        .bind(task.torrent_external_id.as_deref())
+        .bind(task.torrent_state_json.as_deref())
+        .bind(task.torrent_metadata_json.as_deref())
+        .bind(task.torrent_resume_data.as_deref())
         .bind(task.created_at.map(|dt| dt.to_rfc3339()))
         .bind(task.updated_at.map(|dt| dt.to_rfc3339()))
         .execute(&mut *tx)
@@ -724,6 +789,11 @@ async fn ensure_download_task_columns(pool: &SqlitePool) -> Result<(), Error> {
         ("resolved_url", "TEXT"),
         ("entity_tag", "TEXT"),
         ("last_modified", "TEXT"),
+        ("torrent_backend", "TEXT"),
+        ("torrent_external_id", "TEXT"),
+        ("torrent_state_json", "TEXT"),
+        ("torrent_metadata_json", "TEXT"),
+        ("torrent_resume_data", "BLOB"),
     ] {
         if existing_columns.iter().any(|name| name == column) {
             continue;
@@ -799,6 +869,7 @@ mod tests {
             total_size: Some(1024),
             created_at: Some(created_at),
             updated_at: Some(updated_at),
+            ..DBDownloadTask::default()
         };
 
         repository.save_task(&task).await.unwrap();
@@ -841,6 +912,7 @@ mod tests {
                 total_size: Some(2048),
                 created_at: Some(created_at),
                 updated_at: Some(created_at),
+                ..DBDownloadTask::default()
             })
             .await
             .unwrap();
@@ -862,6 +934,7 @@ mod tests {
                 total_size: Some(2048),
                 created_at: Some(created_at),
                 updated_at: Some(updated_at),
+                ..DBDownloadTask::default()
             })
             .await
             .unwrap();

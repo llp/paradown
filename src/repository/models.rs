@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::types::chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DBDownloadTask {
     pub id: u32,
     pub url: String,
@@ -15,6 +15,16 @@ pub struct DBDownloadTask {
     pub status: String, // Pending / Running / Paused / Completed / Failed
     pub downloaded_size: u64,
     pub total_size: Option<u64>,
+    #[serde(default)]
+    pub torrent_backend: Option<String>,
+    #[serde(default)]
+    pub torrent_external_id: Option<String>,
+    #[serde(default)]
+    pub torrent_state_json: Option<String>,
+    #[serde(default)]
+    pub torrent_metadata_json: Option<String>,
+    #[serde(default)]
+    pub torrent_resume_data: Option<Vec<u8>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }

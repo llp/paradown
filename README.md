@@ -31,12 +31,12 @@ What is implemented today:
 - HTTP request customization (`headers / cookie / auth / proxy overrides`)
 - Failure diagnostics written to `.paradown/diagnostics`
 - Optional interactive commands for pause/resume/cancel/status/rate updates
-- Libtorrent-first P2P engine API boundary for future torrent/magnet execution
+- Libtorrent-first P2P engine API boundary with persisted torrent metadata and fast-resume state
 
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
-- Real libtorrent adapter wiring for torrent/magnet payload transfer
+- Production-complete libtorrent CXX bridge for torrent-file metadata extraction and native pause/resume/remove controls
 - Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 
@@ -224,7 +224,7 @@ The current internal structure is roughly:
 - `coordinator/`: queueing, event fan-in, and task registration
 - `job/`: per-download lifecycle, preparation, persistence helpers, finalization
 - `worker/`: worker facade, runtime loop, transfer logic, retry logic
-- `p2p/`: torrent engine trait, libtorrent-first request/event model, and metadata-to-manifest mapping
+- `p2p/`: torrent engine trait, libtorrent-first request/event model, metadata-to-manifest mapping, and resume snapshots
 - `storage/`: storage facade plus runtime/DB mapping
 - `request/`: task and segment request models
 - `repository/`: persistence trait plus sqlite / memory backends

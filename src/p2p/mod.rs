@@ -5,7 +5,7 @@ mod manifest;
 pub use engine::{
     TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent,
     TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession, TorrentEngineState,
-    TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentTracker,
+    TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentResumeSnapshot, TorrentTracker,
 };
 pub use libtorrent::{LibtorrentEngineConfig, LibtorrentEngineUnavailable};
 

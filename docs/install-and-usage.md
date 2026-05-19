@@ -11,10 +11,14 @@ Current release scope:
 - segmented downloads when the origin supports range requests
 - official CLI binary with dashboard, plain-text progress mode, and interactive control
 
+The native `paradown-libtorrent` adapter is packaged separately for
+environments with `libtorrent-rasterbar` available; it is not bundled into the
+default HTTP/HTTPS CLI archive.
+
 Not in the current release scope:
 
 - real FTP transfer implementation
-- BT / magnet / P2SP
+- P2SP
 - browser-grade HTTP session emulation beyond persisted cookie jars
 
 ## Install
@@ -235,11 +239,14 @@ If the remote `ETag` or `Last-Modified` changed, `paradown` intentionally falls 
 
 Use [scripts/build-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-release.sh). It builds the release binary, packages the release files, and writes a checksum file.
 
+For the native libtorrent adapter, use [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh). It builds `paradown-libtorrent` with the adapter-local `native-libtorrent` feature and packages a separate archive.
+
 ### I need Docker / SBOM / package-manager files
 
 Repository-side release assets now include:
 
 - [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
+- [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh)
 - [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
 - [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
 - [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)

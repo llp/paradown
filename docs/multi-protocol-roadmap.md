@@ -77,6 +77,7 @@ flowchart LR
   - native adapter 已有离线回归测试验证真实 libtorrent 可以解析 `.torrent` fixture 并映射回 Rust `TorrentMetadata`
   - native adapter 已有 loopback peer-wire 回归测试，验证真实 libtorrent seeder -> leecher 传输并收到 `Finished`
   - native adapter 已有 loopback magnet metadata-exchange 回归测试，验证 magnet info-hash -> metadata -> file completion
+  - native adapter 已有 `paradown-libtorrent` 产品入口和独立 release 打包脚本
 - `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
   - 重定向后的最终 URL 持久化
@@ -84,7 +85,7 @@ flowchart LR
   - `ETag / Last-Modified / If-Range` 安全续传
   - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `libtorrent` 目前已有主 crate API、adapter 包、可编译的 native CXX bridge、torrent-file metadata 提取、magnet metadata exchange、完整控制入口、fast-resume 状态闭环和本地 peer-wire 端到端验证；下一步是做 CLI / release 打包策略
+- `libtorrent` 目前已有主 crate API、adapter 包、可编译的 native CXX bridge、torrent-file metadata 提取、magnet metadata exchange、完整控制入口、fast-resume 状态闭环、本地 peer-wire 端到端验证、native CLI 和独立 release 打包策略；下一步是收口 tracker/DHT 可观测性和真实公网 swarm 验证
 - 当前研发重点已经进入 P5/P6：把 libtorrent native bridge 补完整，而不是继续扩大 HTTP/HTTPS 主线
 
 ## 3. 当前代码与目标代码的映射

@@ -65,8 +65,9 @@ endpoint, downloads from seeder to leecher, and observes the `Finished` event.
 The same loopback harness verifies magnet metadata exchange: the leecher starts
 from only a magnet info-hash, receives torrent metadata from the seeder, and then
 finishes the file transfer.
-Completing the production adapter still requires public CLI/release packaging.
-Those are intentionally adapter-local tasks.
+The production adapter now also has an adapter-local CLI and release packaging
+script, so native product distribution can move independently from the default
+HTTP-oriented `paradown` binary.
 
 For native product runs, the adapter crate provides a feature-gated
 `paradown-libtorrent` binary:
@@ -84,6 +85,12 @@ fixtures or trackerless swarms. The native adapter also exposes `listen_port`
 and `connect_peer` as narrow advanced control hooks. They are used by tests and
 can support future tracker/DHT diagnostics without leaking libtorrent types into
 the main crate.
+
+Native release packages are built separately from the default HTTP CLI:
+
+```bash
+./scripts/build-libtorrent-release.sh
+```
 
 Native development requires `libtorrent-rasterbar` headers and libraries. The
 build first uses `pkg-config libtorrent-rasterbar`; if that is unavailable it

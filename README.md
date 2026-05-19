@@ -115,6 +115,12 @@ Build a distributable archive:
 ./scripts/build-release.sh
 ```
 
+Build the native libtorrent adapter archive:
+
+```bash
+./scripts/build-libtorrent-release.sh
+```
+
 Release automation:
 
 - CI workflow: [ci.yml](/Users/liulipeng/workspace/rust/paradown/.github/workflows/ci.yml)
@@ -319,6 +325,7 @@ git push origin v0.1.2
 Additional release-facing assets:
 
 - Docker runtime image: [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
+- Native libtorrent release script: [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh)
 - SBOM generator: [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
 - Optional signing helper: [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
 - Homebrew template: [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)

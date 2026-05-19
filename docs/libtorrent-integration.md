@@ -57,15 +57,17 @@ a stub so the main workspace stays free of native dependencies. Enabling
 The current `native-libtorrent` path can create magnet and `.torrent` sessions,
 reuse persisted fast-resume data, retain native torrent handles from
 `add_torrent_alert`, extract torrent-file metadata, save resume data, and
-translate libtorrent alerts into `TorrentEngineEvent`. Completing the production
-adapter still requires exercising this bridge against an installed
-`libtorrent-rasterbar` toolchain and then adding end-to-end swarm tests. Those
-are intentionally adapter-local tasks.
+translate libtorrent alerts into `TorrentEngineEvent`. The bridge is verified
+against `libtorrent-rasterbar 2.0.12` and has an offline native test that parses
+a `.torrent` fixture through the real library. Completing the production adapter
+still requires end-to-end swarm tests and release packaging. Those are
+intentionally adapter-local tasks.
 
 Native development requires `libtorrent-rasterbar` headers and libraries. The
 build first uses `pkg-config libtorrent-rasterbar`; if that is unavailable it
-checks `LIBTORRENT_RASTERBAR_ROOT`, Homebrew-style `opt/libtorrent-rasterbar`
-prefixes, and common system prefixes before emitting an explicit setup error.
+checks `LIBTORRENT_RASTERBAR_ROOT`, `BOOST_ROOT`, `BOOST_INCLUDEDIR`,
+Homebrew-style `opt/libtorrent-rasterbar` / `opt/boost` prefixes, and common
+system prefixes before emitting an explicit setup error.
 
 Fast-resume state is owned by the main crate's persistence layer. The SQLite
 backend stores resume bytes as `BLOB`, while JSON and memory backends keep the

@@ -72,6 +72,9 @@ flowchart LR
   - torrent metadata 可以映射为统一 `SessionManifest`
   - torrent fast-resume data / metadata / engine handle 已经纳入持久化模型，恢复后会重新传入 P2P engine
   - libtorrent adapter 放在 `integrations/libtorrent-engine/` 隔离 native 构建风险，并提供 `native-libtorrent` feature
+  - `native-libtorrent` 已经通过 adapter-local CXX bridge 直接链接 `libtorrent-rasterbar 2.0.12`
+  - `.torrent` 文件元数据提取、alert 翻译、pause/resume/remove、fast-resume 保存已经进入 native adapter
+  - native adapter 已有离线回归测试验证真实 libtorrent 可以解析 `.torrent` fixture 并映射回 Rust `TorrentMetadata`
 - `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
   - 重定向后的最终 URL 持久化
@@ -79,7 +82,7 @@ flowchart LR
   - `ETag / Last-Modified / If-Range` 安全续传
   - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `libtorrent` 目前已有主 crate API、adapter 包、初步 native feature 和 fast-resume 状态闭环；生产级 torrent-file metadata 提取与完整控制还需要继续扩展 CXX 绑定
+- `libtorrent` 目前已有主 crate API、adapter 包、可编译的 native CXX bridge、torrent-file metadata 提取、完整控制入口和 fast-resume 状态闭环；下一步是做真实 swarm 级端到端验证与打包策略
 - 当前研发重点已经进入 P5/P6：把 libtorrent native bridge 补完整，而不是继续扩大 HTTP/HTTPS 主线
 
 ## 3. 当前代码与目标代码的映射

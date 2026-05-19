@@ -32,11 +32,13 @@ What is implemented today:
 - Failure diagnostics written to `.paradown/diagnostics`
 - Optional interactive commands for pause/resume/cancel/status/rate updates
 - Libtorrent-first P2P engine API boundary with persisted torrent metadata and fast-resume state
+- Native libtorrent adapter crate with an adapter-local CXX bridge, `.torrent`
+  metadata extraction, alert translation, and pause/resume/remove controls
 
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
-- Production-complete libtorrent CXX bridge for torrent-file metadata extraction and native pause/resume/remove controls
+- End-to-end swarm validation and release packaging for the native libtorrent adapter
 - Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 

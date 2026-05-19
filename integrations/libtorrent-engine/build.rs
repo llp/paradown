@@ -21,6 +21,11 @@ fn main() {
         .include("include")
         .flag_if_supported("-std=c++17");
 
+    let candidate_prefixes = candidate_prefixes();
+    for include in native_include_dirs(&candidate_prefixes) {
+        build.include(include);
+    }
+
     match pkg_config::Config::new()
         .statik(env::var_os("CARGO_FEATURE_STATIC_LIBTORRENT").is_some())
         .probe("libtorrent-rasterbar")
@@ -32,11 +37,10 @@ fn main() {
         }
         Err(_) => {
             let mut found_header = false;
-            for prefix in candidate_prefixes() {
+            for prefix in candidate_prefixes {
                 let include = prefix.join("include");
                 if include.join("libtorrent/add_torrent_params.hpp").exists() {
                     found_header = true;
-                    build.include(&include);
                 }
 
                 let lib = prefix.join("lib");
@@ -66,15 +70,22 @@ fn candidate_prefixes() -> Vec<PathBuf> {
         prefixes.push(PathBuf::from(root));
     }
 
+    if let Some(root) = env::var_os("BOOST_ROOT") {
+        prefixes.push(PathBuf::from(root));
+    }
+
     if let Some(homebrew_prefix) = env::var_os("HOMEBREW_PREFIX") {
         let homebrew_prefix = PathBuf::from(homebrew_prefix);
         prefixes.push(homebrew_prefix.join("opt/libtorrent-rasterbar"));
+        prefixes.push(homebrew_prefix.join("opt/boost"));
         prefixes.push(homebrew_prefix);
     }
 
     prefixes.extend([
         PathBuf::from("/opt/homebrew/opt/libtorrent-rasterbar"),
+        PathBuf::from("/opt/homebrew/opt/boost"),
         PathBuf::from("/usr/local/opt/libtorrent-rasterbar"),
+        PathBuf::from("/usr/local/opt/boost"),
         PathBuf::from("/opt/homebrew"),
         PathBuf::from("/usr/local"),
         PathBuf::from("/usr"),
@@ -82,4 +93,24 @@ fn candidate_prefixes() -> Vec<PathBuf> {
     ]);
 
     prefixes
+}
+
+#[cfg(feature = "native-libtorrent")]
+fn native_include_dirs(prefixes: &[PathBuf]) -> Vec<PathBuf> {
+    let mut includes = Vec::new();
+
+    if let Some(include_dir) = env::var_os("BOOST_INCLUDEDIR") {
+        includes.push(PathBuf::from(include_dir));
+    }
+
+    for prefix in prefixes {
+        let include = prefix.join("include");
+        if include.join("libtorrent/add_torrent_params.hpp").exists()
+            || include.join("boost/config.hpp").exists()
+        {
+            includes.push(include);
+        }
+    }
+
+    includes
 }

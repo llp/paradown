@@ -166,7 +166,7 @@ NativeTorrentMetadata map_metadata(lt::torrent_info const& info) {
     for (auto const& tracker : info.trackers()) {
         NativeTorrentTracker mapped;
         mapped.url = rust_string(tracker.url);
-        mapped.tier = static_cast<std::uint32_t>(std::max(0, tracker.tier));
+        mapped.tier = static_cast<std::uint32_t>(tracker.tier);
         out.trackers.push_back(mapped);
     }
 
@@ -177,8 +177,12 @@ NativeTorrentMetadata map_metadata(lt::torrent_info const& info) {
     return out;
 }
 
-std::uint8_t map_state(lt::torrent_status::state_t state) {
-    switch (state) {
+std::uint8_t map_state(lt::torrent_status const& status) {
+    if (bool(status.flags & lt::torrent_flags::paused)) {
+        return STATE_PAUSED;
+    }
+
+    switch (status.state) {
         case lt::torrent_status::checking_files:
         case lt::torrent_status::checking_resume_data:
             return STATE_CHECKING_FILES;
@@ -315,9 +319,8 @@ NativeStartResult add_torrent_file(NativeEngine& engine,
 rust::Vec<NativeEngineEvent> poll_alerts(NativeEngine& engine) {
     rust::Vec<NativeEngineEvent> events;
     (*engine.impl->session).post_torrent_updates(
-        lt::status_flags_t::query_accurate_download_counters |
-        lt::status_flags_t::query_name |
-        lt::status_flags_t::query_save_path);
+        lt::torrent_handle::query_accurate_download_counters |
+        lt::torrent_handle::query_name | lt::torrent_handle::query_save_path);
 
     std::vector<lt::alert*> alerts;
     (*engine.impl->session).pop_alerts(&alerts);
@@ -360,7 +363,7 @@ rust::Vec<NativeEngineEvent> poll_alerts(NativeEngine& engine) {
             for (auto const& status : state->status) {
                 auto id = external_id(status.handle);
                 NativeEngineEvent state_event = event_base(EVENT_STATE, id);
-                state_event.state = map_state(status.state);
+                state_event.state = map_state(status);
                 events.push_back(state_event);
 
                 NativeEngineEvent progress = event_base(EVENT_PROGRESS, id);

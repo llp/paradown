@@ -1,32 +1,35 @@
 use async_trait::async_trait;
-use lt_rs::add_torrent_params::AddTorrentParams;
-use lt_rs::alerts::{Alert, AlertCategory, TorrentState};
-use lt_rs::session::LtSession;
-use lt_rs::settings_pack::SettingsPack;
-use lt_rs::torrent_handle::{ResumeDataFlags, StatusFlags, TorrentHandle};
+use cxx::UniquePtr;
 use paradown::Error;
 use paradown::p2p::{
     LibtorrentEngineConfig, TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities,
     TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession,
-    TorrentEngineState,
+    TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentTracker,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
-struct EngineState {
-    session: LtSession,
-    senders: HashMap<String, mpsc::UnboundedSender<TorrentEngineEvent>>,
-    sessions: HashMap<String, NativeTorrentSession>,
-    polling: bool,
+use crate::ffi::ffi::{
+    NativeEngine, NativeEngineConfig, NativeEngineEvent, NativeStartResult, NativeTorrentMetadata,
+};
+use crate::ffi::{
+    EVENT_ERROR, EVENT_FINISHED, EVENT_METADATA, EVENT_PIECE_FINISHED, EVENT_PROGRESS,
+    EVENT_RESUME_DATA, EVENT_STATE, STATE_CHECKING_FILES, STATE_COMPLETED, STATE_DOWNLOADING,
+    STATE_PAUSED, STATE_RESOLVING_METADATA, STATE_SEEDING,
+};
+
+struct NativeDriver {
+    engine: UniquePtr<NativeEngine>,
 }
 
-struct NativeTorrentSession {
-    handle: Option<TorrentHandle>,
-    state: TorrentEngineState,
-    metadata_total_size: Option<u64>,
-    resume_data: Option<Vec<u8>>,
+unsafe impl Send for NativeDriver {}
+
+struct EngineState {
+    driver: NativeDriver,
+    senders: HashMap<String, mpsc::UnboundedSender<TorrentEngineEvent>>,
+    polling: bool,
 }
 
 #[derive(Clone)]
@@ -37,24 +40,13 @@ pub struct LibtorrentRasterbarEngine {
 
 impl LibtorrentRasterbarEngine {
     pub fn new(config: LibtorrentEngineConfig) -> Result<Self, Error> {
-        let mut settings = SettingsPack::new();
-        settings.set_alert_mask(
-            AlertCategory::Error
-                | AlertCategory::Status
-                | AlertCategory::Storage
-                | AlertCategory::Tracker
-                | AlertCategory::Dht
-                | AlertCategory::PieceProgress
-                | AlertCategory::FileProgress,
-        );
-
-        let session = LtSession::new_with_settings(&settings);
+        let engine = crate::ffi::ffi::new_native_engine(native_config(&config))
+            .map_err(|err| Error::Other(format!("failed to create libtorrent session: {err}")))?;
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(EngineState {
-                session,
+                driver: NativeDriver { engine },
                 senders: HashMap::new(),
-                sessions: HashMap::new(),
                 polling: false,
             })),
         })
@@ -106,15 +98,19 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
             .resume
             .as_ref()
             .and_then(|snapshot| snapshot.metadata.clone());
-        let mut params = if let Some(bytes) = resume_data.as_deref() {
-            AddTorrentParams::load_resume_data(bytes)
-        } else {
+        let resume_bytes = resume_data.as_deref().unwrap_or(&[]);
+        let save_path = request.download_dir.to_string_lossy().to_string();
+
+        let result = {
+            let mut state = self.state.lock().expect("libtorrent state poisoned");
             match &request.spec {
-                paradown::DownloadSpec::Magnet { uri } => AddTorrentParams::parse_magnet_uri(uri),
+                paradown::DownloadSpec::Magnet { uri } => {
+                    let engine = state.driver.engine.pin_mut();
+                    crate::ffi::ffi::add_magnet(engine, uri, &save_path, resume_bytes)
+                }
                 paradown::DownloadSpec::TorrentFile { path } => {
-                    return Err(Error::UnsupportedProtocol(format!(
-                        "native lt-rs torrent-file loading is not exposed yet; extend the CXX adapter before adding {path}"
-                    )));
+                    let engine = state.driver.engine.pin_mut();
+                    crate::ffi::ffi::add_torrent_file(engine, path, &save_path, resume_bytes)
                 }
                 other => {
                     return Err(Error::UnsupportedProtocol(format!(
@@ -123,31 +119,21 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
                     )));
                 }
             }
+        }
+        .map_err(|err| Error::Other(format!("failed to add torrent: {err}")))?;
+
+        let external_id = start_external_id(&result, request.resume.as_ref());
+        let metadata = if result.has_metadata {
+            Some(metadata_from_native(&result.metadata))
+        } else {
+            resume_metadata
         };
-        params.set_path(&request.download_dir.to_string_lossy());
-        let external_id = request
-            .resume
-            .as_ref()
-            .map(|snapshot| snapshot.handle.external_id.clone())
-            .unwrap_or_else(|| params.get_info_hash().as_base64());
 
         {
             let mut state = self.state.lock().expect("libtorrent state poisoned");
             if let Some(sender) = request.event_sender {
                 state.senders.insert(external_id.clone(), sender);
             }
-            state.sessions.insert(
-                external_id.clone(),
-                NativeTorrentSession {
-                    handle: None,
-                    state: TorrentEngineState::ResolvingMetadata,
-                    metadata_total_size: resume_metadata
-                        .as_ref()
-                        .map(|metadata| metadata.total_size),
-                    resume_data: resume_data.clone(),
-                },
-            );
-            state.session.async_add_torrent(&params);
         }
         self.ensure_polling();
 
@@ -156,8 +142,12 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
                 backend: TorrentEngineBackend::Libtorrent,
                 external_id,
             },
-            state: TorrentEngineState::ResolvingMetadata,
-            metadata: resume_metadata,
+            state: if metadata.is_some() {
+                TorrentEngineState::Downloading
+            } else {
+                TorrentEngineState::ResolvingMetadata
+            },
+            metadata,
             manifest: None,
             resume_data,
         })
@@ -165,48 +155,36 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
 
     async fn pause_session(&self, handle: &TorrentEngineHandle) -> Result<(), Error> {
         let mut state = self.state.lock().expect("libtorrent state poisoned");
-        if let Some(session) = state.sessions.get_mut(&handle.external_id) {
-            session.state = TorrentEngineState::Paused;
-            if let Some(handle) = session.handle.as_ref() {
-                handle.save_resume_data(ResumeDataFlags::SaveInfoDict);
-            }
-        }
-        Ok(())
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::pause_torrent(engine, &handle.external_id)
+            .map_err(|err| Error::Other(format!("failed to pause torrent: {err}")))
     }
 
     async fn resume_session(&self, handle: &TorrentEngineHandle) -> Result<(), Error> {
         let mut state = self.state.lock().expect("libtorrent state poisoned");
-        if let Some(session) = state.sessions.get_mut(&handle.external_id) {
-            session.state = TorrentEngineState::Downloading;
-        }
-        Ok(())
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::resume_torrent(engine, &handle.external_id)
+            .map_err(|err| Error::Other(format!("failed to resume torrent: {err}")))
     }
 
     async fn cancel_session(&self, handle: &TorrentEngineHandle) -> Result<(), Error> {
         let mut state = self.state.lock().expect("libtorrent state poisoned");
-        if let Some(session) = state.sessions.get(&handle.external_id)
-            && let Some(handle) = session.handle.as_ref()
-        {
-            handle.save_resume_data(ResumeDataFlags::SaveInfoDict);
-        }
+        let engine = state.driver.engine.pin_mut();
+        let _ = crate::ffi::ffi::save_resume_data(engine, &handle.external_id);
         state.senders.remove(&handle.external_id);
-        state.sessions.remove(&handle.external_id);
         Ok(())
     }
 
     async fn remove_session(
         &self,
         handle: &TorrentEngineHandle,
-        _delete_payload: bool,
+        delete_payload: bool,
     ) -> Result<(), Error> {
         let mut state = self.state.lock().expect("libtorrent state poisoned");
-        if let Some(session) = state.sessions.get(&handle.external_id)
-            && let Some(handle) = session.handle.as_ref()
-        {
-            handle.save_resume_data(ResumeDataFlags::SaveInfoDict);
-        }
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::remove_torrent(engine, &handle.external_id, delete_payload)
+            .map_err(|err| Error::Other(format!("failed to remove torrent: {err}")))?;
         state.senders.remove(&handle.external_id);
-        state.sessions.remove(&handle.external_id);
         Ok(())
     }
 }
@@ -215,26 +193,41 @@ async fn poll_libtorrent_alerts(state: Arc<Mutex<EngineState>>) {
     loop {
         let (dispatches, should_continue) = {
             let mut state = state.lock().expect("libtorrent state poisoned");
-            state
-                .session
-                .post_torrent_updates(StatusFlags::QueryAccurateDownloadCounters);
-            state.session.pop_alerts();
-            let alerts = unsafe { state.session.take_alerts() };
-            let dispatches = alerts
-                .into_iter()
-                .flat_map(|alert| translate_alert(&mut state, alert))
-                .collect::<Vec<_>>();
-            if state.senders.is_empty() && state.sessions.is_empty() {
-                state.polling = false;
-                (dispatches, false)
-            } else {
-                (dispatches, true)
+            let engine = state.driver.engine.pin_mut();
+            match crate::ffi::ffi::poll_alerts(engine) {
+                Ok(native_events) => {
+                    let dispatches = native_events
+                        .into_iter()
+                        .flat_map(|event| translate_event(&state.senders, event))
+                        .collect::<Vec<_>>();
+                    if state.senders.is_empty() {
+                        state.polling = false;
+                        (dispatches, false)
+                    } else {
+                        (dispatches, true)
+                    }
+                }
+                Err(err) => {
+                    let dispatches = state
+                        .senders
+                        .values()
+                        .cloned()
+                        .map(|sender| {
+                            (
+                                sender,
+                                TorrentEngineEvent::Error(format!(
+                                    "failed to poll libtorrent alerts: {err}"
+                                )),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    state.polling = false;
+                    (dispatches, false)
+                }
             }
         };
 
-        for (sender, event) in dispatches {
-            let _ = sender.send(event);
-        }
+        dispatch_all(dispatches).await;
 
         if !should_continue {
             break;
@@ -244,167 +237,146 @@ async fn poll_libtorrent_alerts(state: Arc<Mutex<EngineState>>) {
     }
 }
 
-fn translate_alert(
-    state: &mut EngineState,
-    alert: Alert,
+async fn dispatch_all(dispatches: Vec<(mpsc::UnboundedSender<TorrentEngineEvent>, TorrentEngineEvent)>) {
+    for (sender, event) in dispatches {
+        let _ = sender.send(event);
+    }
+}
+
+fn translate_event(
+    senders: &HashMap<String, mpsc::UnboundedSender<TorrentEngineEvent>>,
+    event: NativeEngineEvent,
 ) -> Vec<(mpsc::UnboundedSender<TorrentEngineEvent>, TorrentEngineEvent)> {
-    match alert {
-        Alert::AddTorrent(alert) => {
-            let handle = alert.handle();
-            let external_id = handle.info_hashes().as_base64();
-            if !alert.error().is_ok() {
-                return dispatch_for_external_id(
-                    state,
-                    &external_id,
-                    TorrentEngineEvent::Error(alert.error().to_string()),
-                )
-                .into_iter()
-                .collect();
-            }
-            state
-                .sessions
-                .entry(external_id.clone())
-                .or_insert_with(|| NativeTorrentSession {
-                    handle: None,
-                    state: TorrentEngineState::ResolvingMetadata,
-                    metadata_total_size: None,
-                    resume_data: None,
-                })
-                .handle = Some(handle);
-            dispatch_for_external_id(
-                state,
-                &external_id,
-                TorrentEngineEvent::StateChanged(TorrentEngineState::ResolvingMetadata),
-            )
-            .into_iter()
-            .collect()
-        }
-        Alert::MetadataReceived(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            if let Some(session) = state.sessions.get_mut(&external_id) {
-                session.state = TorrentEngineState::Downloading;
-            }
-            dispatch_for_external_id(
-                state,
-                &external_id,
-                TorrentEngineEvent::StateChanged(TorrentEngineState::Downloading),
-            )
-            .into_iter()
-            .collect()
-        }
-        Alert::PieceFinished(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            dispatch_for_external_id(
-                state,
-                &external_id,
-                TorrentEngineEvent::PieceFinished {
-                    piece_index: alert.piece_index() as u32,
-                },
-            )
-            .into_iter()
-            .collect()
-        }
-        Alert::TorrentFinished(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            if let Some(session) = state.sessions.get_mut(&external_id) {
-                session.state = TorrentEngineState::Completed;
-            }
-            dispatch_for_external_id(state, &external_id, TorrentEngineEvent::Finished)
-                .into_iter()
-                .collect()
-        }
-        Alert::TorrentError(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            dispatch_for_external_id(state, &external_id, TorrentEngineEvent::Error(alert.message()))
-                .into_iter()
-                .collect()
-        }
-        Alert::SaveResumeData(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            let bytes = alert.params().write_resume_data_buf();
-            if let Some(session) = state.sessions.get_mut(&external_id) {
-                session.resume_data = Some(bytes.clone());
-            }
-            dispatch_for_external_id(
-                state,
-                &external_id,
-                TorrentEngineEvent::ResumeData { bytes },
-            )
-            .into_iter()
-            .collect()
-        }
-        Alert::SaveResumeDataFailed(alert) => {
-            let external_id = alert.handle().info_hashes().as_base64();
-            dispatch_for_external_id(state, &external_id, TorrentEngineEvent::Error(alert.message()))
-                .into_iter()
-                .collect()
-        }
-        Alert::StateUpdate(alert) => {
-            let mut dispatches = Vec::new();
-            for status in alert.status().iter() {
-                let external_id = status.handle().info_hashes().as_base64();
-                let engine_state = state_from_libtorrent(status.state());
-                let total = state
-                    .sessions
-                    .get(&external_id)
-                    .and_then(|session| session.metadata_total_size)
-                    .unwrap_or_default();
-                let downloaded = ((total as f64) * status.progress()).round() as u64;
-                if let Some(session) = state.sessions.get_mut(&external_id) {
-                    session.state = engine_state.clone();
-                }
-                if let Some(dispatch) = dispatch_for_external_id(
-                    state,
-                    &external_id,
-                    TorrentEngineEvent::StateChanged(engine_state),
-                ) {
-                    dispatches.push(dispatch);
-                }
-                if total > 0
-                    && let Some(dispatch) = dispatch_for_external_id(
-                        state,
-                        &external_id,
-                        TorrentEngineEvent::Progress {
-                            downloaded,
-                            total,
-                            download_rate_bps: 0,
-                            upload_rate_bps: 0,
-                            connected_peers: 0,
-                            seeds: 0,
-                        },
-                    )
-                {
-                    dispatches.push(dispatch);
-                }
-            }
-            dispatches
-        }
+    let Some(sender) = senders.get(event.external_id.as_str()).cloned() else {
+        return Vec::new();
+    };
+
+    match event.kind {
+        EVENT_METADATA if event.has_metadata => vec![(
+            sender,
+            TorrentEngineEvent::MetadataDiscovered(metadata_from_native(&event.metadata)),
+        )],
+        EVENT_METADATA => vec![(
+            sender,
+            TorrentEngineEvent::StateChanged(TorrentEngineState::Downloading),
+        )],
+        EVENT_STATE => vec![(
+            sender,
+            TorrentEngineEvent::StateChanged(state_from_native(event.state)),
+        )],
+        EVENT_PROGRESS => vec![(
+            sender,
+            TorrentEngineEvent::Progress {
+                downloaded: event.downloaded,
+                total: event.total,
+                download_rate_bps: event.download_rate_bps,
+                upload_rate_bps: event.upload_rate_bps,
+                connected_peers: event.connected_peers,
+                seeds: event.seeds,
+            },
+        )],
+        EVENT_PIECE_FINISHED => vec![(
+            sender,
+            TorrentEngineEvent::PieceFinished {
+                piece_index: event.piece_index,
+            },
+        )],
+        EVENT_RESUME_DATA => vec![(
+            sender,
+            TorrentEngineEvent::ResumeData {
+                bytes: event.resume_data,
+            },
+        )],
+        EVENT_FINISHED => vec![(sender, TorrentEngineEvent::Finished)],
+        EVENT_ERROR => vec![(sender, TorrentEngineEvent::Error(event.message.to_string()))],
         _ => Vec::new(),
     }
 }
 
-fn dispatch_for_external_id(
-    state: &EngineState,
-    external_id: &str,
-    event: TorrentEngineEvent,
-) -> Option<(mpsc::UnboundedSender<TorrentEngineEvent>, TorrentEngineEvent)> {
-    state
-        .senders
-        .get(external_id)
-        .cloned()
-        .map(|sender| (sender, event))
+fn native_config(config: &LibtorrentEngineConfig) -> NativeEngineConfig {
+    NativeEngineConfig {
+        alert_queue_size: config.alert_queue_size,
+        enable_dht: config.enable_dht,
+        enable_lsd: config.enable_lsd,
+        enable_upnp: config.enable_upnp,
+        enable_natpmp: config.enable_natpmp,
+        has_listen_interfaces: config.listen_interfaces.is_some(),
+        listen_interfaces: config.listen_interfaces.clone().unwrap_or_default(),
+    }
 }
 
-fn state_from_libtorrent(state: TorrentState) -> TorrentEngineState {
+fn start_external_id(
+    result: &NativeStartResult,
+    resume: Option<&paradown::p2p::TorrentResumeSnapshot>,
+) -> String {
+    if !result.external_id.is_empty() {
+        result.external_id.to_string()
+    } else {
+        resume
+            .map(|snapshot| snapshot.handle.external_id.clone())
+            .unwrap_or_else(|| "libtorrent:pending".into())
+    }
+}
+
+fn metadata_from_native(metadata: &NativeTorrentMetadata) -> TorrentMetadata {
+    TorrentMetadata {
+        name: metadata.name.to_string(),
+        info_hash_v1: metadata
+            .has_info_hash_v1
+            .then(|| metadata.info_hash_v1.to_string()),
+        info_hash_v2: metadata
+            .has_info_hash_v2
+            .then(|| metadata.info_hash_v2.to_string()),
+        piece_size: metadata.piece_size,
+        piece_count: metadata.piece_count,
+        total_size: metadata.total_size,
+        private: metadata.private_torrent,
+        files: metadata
+            .files
+            .iter()
+            .map(|file| TorrentFileEntry {
+                path_components: file
+                    .path_components
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                length: file.length,
+                offset: file.offset,
+            })
+            .collect(),
+        piece_hashes: metadata
+            .piece_hashes
+            .iter()
+            .map(|hash| TorrentPieceHash {
+                piece_index: hash.piece_index,
+                sha1: (!hash.sha1.is_empty()).then(|| hash.sha1.to_string()),
+                sha256: (!hash.sha256.is_empty()).then(|| hash.sha256.to_string()),
+            })
+            .collect(),
+        trackers: metadata
+            .trackers
+            .iter()
+            .map(|tracker| TorrentTracker {
+                url: tracker.url.to_string(),
+                tier: tracker.tier,
+            })
+            .collect(),
+        web_seeds: metadata
+            .web_seeds
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn state_from_native(state: u8) -> TorrentEngineState {
     match state {
-        TorrentState::CheckingFiles | TorrentState::CheckingResumeData => {
-            TorrentEngineState::CheckingFiles
-        }
-        TorrentState::DownloadingMetadata => TorrentEngineState::ResolvingMetadata,
-        TorrentState::Downloading => TorrentEngineState::Downloading,
-        TorrentState::Finished => TorrentEngineState::Completed,
-        TorrentState::Seeding => TorrentEngineState::Seeding,
-        #[allow(unreachable_patterns)]
+        STATE_RESOLVING_METADATA => TorrentEngineState::ResolvingMetadata,
+        STATE_CHECKING_FILES => TorrentEngineState::CheckingFiles,
+        STATE_DOWNLOADING => TorrentEngineState::Downloading,
+        STATE_SEEDING => TorrentEngineState::Seeding,
+        STATE_PAUSED => TorrentEngineState::Paused,
+        STATE_COMPLETED => TorrentEngineState::Completed,
         _ => TorrentEngineState::Downloading,
     }
 }

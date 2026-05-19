@@ -6,14 +6,17 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
+cxx = { version = "1.0", optional = true }
 paradown = { path = "../.." }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 
-lt-rs = { version = "0.1.4", optional = true }
+[build-dependencies]
+cxx-build = { version = "1.0", optional = true }
+pkg-config = { version = "0.3", optional = true }
 
 [features]
 default = []
-native-libtorrent = ["dep:lt-rs"]
-static-libtorrent = ["native-libtorrent", "lt-rs/static-libtorrent"]
-static-boost = ["native-libtorrent", "lt-rs/static-boost"]
-static-ssl = ["native-libtorrent", "lt-rs/static-ssl"]
+native-libtorrent = ["dep:cxx", "dep:cxx-build", "dep:pkg-config"]
+static-libtorrent = ["native-libtorrent"]
+static-boost = ["native-libtorrent"]
+static-ssl = ["native-libtorrent"]

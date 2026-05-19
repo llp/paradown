@@ -51,15 +51,21 @@ torrent sessions until a real adapter is supplied.
 
 The adapter lives under `integrations/libtorrent-engine/`. Its default build is
 a stub so the main workspace stays free of native dependencies. Enabling
-`native-libtorrent` pulls `lt-rs`, which wraps `libtorrent-rasterbar`.
+`native-libtorrent` compiles an adapter-local CXX bridge against
+`libtorrent-rasterbar`.
 
-The current `native-libtorrent` path can create magnet sessions, reuse persisted
-fast-resume data, retain native torrent handles from `add_torrent_alert`, and
-translate the alert classes exposed by `lt-rs` into `TorrentEngineEvent`.
-Completing the production adapter still requires extending the CXX layer for
-torrent-file loading, torrent-info extraction, real pause/resume/remove
-controls, and richer status counters. Those are intentionally adapter-local
-tasks.
+The current `native-libtorrent` path can create magnet and `.torrent` sessions,
+reuse persisted fast-resume data, retain native torrent handles from
+`add_torrent_alert`, extract torrent-file metadata, save resume data, and
+translate libtorrent alerts into `TorrentEngineEvent`. Completing the production
+adapter still requires exercising this bridge against an installed
+`libtorrent-rasterbar` toolchain and then adding end-to-end swarm tests. Those
+are intentionally adapter-local tasks.
+
+Native development requires `libtorrent-rasterbar` headers and libraries. The
+build first uses `pkg-config libtorrent-rasterbar`; if that is unavailable it
+checks `LIBTORRENT_RASTERBAR_ROOT`, Homebrew-style `opt/libtorrent-rasterbar`
+prefixes, and common system prefixes before emitting an explicit setup error.
 
 Fast-resume state is owned by the main crate's persistence layer. The SQLite
 backend stores resume bytes as `BLOB`, while JSON and memory backends keep the

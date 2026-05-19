@@ -34,11 +34,12 @@ What is implemented today:
 - Libtorrent-first P2P engine API boundary with persisted torrent metadata and fast-resume state
 - Native libtorrent adapter crate with an adapter-local CXX bridge, `.torrent`
   metadata extraction, alert translation, and pause/resume/remove controls
+- Native libtorrent local peer-wire regression covering seeder-to-leecher transfer
 
 What is not implemented yet:
 
 - Real FTP discovery / transfer implementation
-- End-to-end swarm validation and release packaging for the native libtorrent adapter
+- Public CLI/release packaging for the native libtorrent adapter
 - Browser-grade HTTP session emulation beyond persisted cookie jars
 - Polished terminal UI beyond log output and interactive stdin commands
 

@@ -96,6 +96,13 @@ pub(crate) mod ffi {
 
         fn poll_alerts(engine: Pin<&mut NativeEngine>) -> Result<Vec<NativeEngineEvent>>;
 
+        fn listen_port(engine: Pin<&mut NativeEngine>) -> Result<u16>;
+        fn connect_peer(
+            engine: Pin<&mut NativeEngine>,
+            external_id: &str,
+            host: &str,
+            port: u16,
+        ) -> Result<()>;
         fn pause_torrent(engine: Pin<&mut NativeEngine>, external_id: &str) -> Result<()>;
         fn resume_torrent(engine: Pin<&mut NativeEngine>, external_id: &str) -> Result<()>;
         fn remove_torrent(

@@ -12,6 +12,7 @@
 
 #include "libtorrent/add_torrent_params.hpp"
 #include "libtorrent/alert_types.hpp"
+#include "libtorrent/address.hpp"
 #include "libtorrent/bdecode.hpp"
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/file_storage.hpp"
@@ -274,6 +275,19 @@ struct NativeEngine::Impl {
     std::unordered_map<std::string, lt::torrent_handle> handles;
 };
 
+lt::torrent_handle add_torrent(NativeEngine& engine, lt::add_torrent_params params) {
+    lt::error_code ec;
+    auto handle = (*engine.impl->session).add_torrent(std::move(params), ec);
+    if (ec) {
+        throw std::runtime_error("failed to add torrent: " + ec.message());
+    }
+    auto id = external_id(handle);
+    if (!id.empty()) {
+        engine.impl->handles[id] = handle;
+    }
+    return handle;
+}
+
 NativeEngine::NativeEngine(NativeEngineConfig const& config)
     : impl(std::make_unique<NativeEngine::Impl>(config)) {}
 
@@ -290,8 +304,8 @@ NativeStartResult add_magnet(NativeEngine& engine,
     lt::add_torrent_params params =
         resume_data.empty() ? lt::parse_magnet_uri(to_string(uri)) : params_from_resume(resume_data);
     set_add_params_common(params, to_string(save_path));
-    auto id = external_id(params.info_hashes);
-    (*engine.impl->session).async_add_torrent(std::move(params));
+    auto handle = add_torrent(engine, std::move(params));
+    auto id = external_id(handle);
 
     NativeStartResult result;
     result.external_id = rust_string(id);
@@ -315,9 +329,9 @@ NativeStartResult add_torrent_file(NativeEngine& engine,
         info = params.ti;
     }
     set_add_params_common(params, to_string(save_path));
-    auto id = external_id(params.info_hashes);
     NativeTorrentMetadata metadata = info ? map_metadata(*info) : empty_metadata();
-    (*engine.impl->session).async_add_torrent(std::move(params));
+    auto handle = add_torrent(engine, std::move(params));
+    auto id = external_id(handle);
 
     NativeStartResult result;
     result.external_id = rust_string(id);
@@ -388,6 +402,27 @@ rust::Vec<NativeEngineEvent> poll_alerts(NativeEngine& engine) {
         }
     }
     return events;
+}
+
+std::uint16_t listen_port(NativeEngine& engine) {
+    return (*engine.impl->session).listen_port();
+}
+
+void connect_peer(NativeEngine& engine,
+                  rust::Str external_id,
+                  rust::Str host,
+                  std::uint16_t port) {
+    auto it = engine.impl->handles.find(to_string(external_id));
+    if (it == engine.impl->handles.end()) {
+        throw std::runtime_error("unknown torrent handle");
+    }
+
+    lt::error_code ec;
+    auto address = lt::make_address(to_string(host), ec);
+    if (ec) {
+        throw std::runtime_error("invalid peer host: " + ec.message());
+    }
+    it->second.connect_peer(lt::tcp::endpoint(address, port));
 }
 
 void pause_torrent(NativeEngine& engine, rust::Str external_id) {

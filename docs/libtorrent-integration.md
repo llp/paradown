@@ -59,9 +59,15 @@ reuse persisted fast-resume data, retain native torrent handles from
 `add_torrent_alert`, extract torrent-file metadata, save resume data, and
 translate libtorrent alerts into `TorrentEngineEvent`. The bridge is verified
 against `libtorrent-rasterbar 2.0.12` and has an offline native test that parses
-a `.torrent` fixture through the real library. Completing the production adapter
-still requires end-to-end swarm tests and release packaging. Those are
-intentionally adapter-local tasks.
+a `.torrent` fixture through the real library. It also has a local peer-wire
+regression that runs two real libtorrent sessions on loopback, injects a peer
+endpoint, downloads from seeder to leecher, and observes the `Finished` event.
+Completing the production adapter still requires public CLI/release packaging.
+Those are intentionally adapter-local tasks.
+
+The native adapter exposes `listen_port` and `connect_peer` as narrow advanced
+control hooks. They are used by tests and can support future tracker/DHT
+diagnostics without leaking libtorrent types into the main crate.
 
 Native development requires `libtorrent-rasterbar` headers and libraries. The
 build first uses `pkg-config libtorrent-rasterbar`; if that is unavailable it

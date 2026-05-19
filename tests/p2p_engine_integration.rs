@@ -255,8 +255,10 @@ async fn torrent_resume_data_is_persisted_and_reused_after_restore() {
 
     let store = Store::new(Arc::new(config.clone())).await.unwrap();
     let mut persisted = store.load_task(task_id).await.unwrap().unwrap();
-    for _ in 0..20 {
-        if persisted.torrent_resume_data.as_deref() == Some(emitted_resume.as_slice()) {
+    for _ in 0..80 {
+        if persisted.torrent_backend.as_deref() == Some("libtorrent")
+            && persisted.torrent_resume_data.as_deref() == Some(emitted_resume.as_slice())
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;

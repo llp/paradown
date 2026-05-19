@@ -56,6 +56,25 @@ impl LibtorrentRasterbarEngine {
         &self.config
     }
 
+    pub fn listen_port(&self) -> Result<u16, Error> {
+        let mut state = self.state.lock().expect("libtorrent state poisoned");
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::listen_port(engine)
+            .map_err(|err| Error::Other(format!("failed to read libtorrent listen port: {err}")))
+    }
+
+    pub fn connect_peer(
+        &self,
+        handle: &TorrentEngineHandle,
+        host: &str,
+        port: u16,
+    ) -> Result<(), Error> {
+        let mut state = self.state.lock().expect("libtorrent state poisoned");
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::connect_peer(engine, &handle.external_id, host, port)
+            .map_err(|err| Error::Other(format!("failed to connect libtorrent peer: {err}")))
+    }
+
     fn ensure_polling(&self) {
         let should_spawn = {
             let mut state = self.state.lock().expect("libtorrent state poisoned");

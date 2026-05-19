@@ -35,6 +35,11 @@ NativeStartResult add_torrent_file(NativeEngine& engine,
 
 rust::Vec<NativeEngineEvent> poll_alerts(NativeEngine& engine);
 
+std::uint16_t listen_port(NativeEngine& engine);
+void connect_peer(NativeEngine& engine,
+                  rust::Str external_id,
+                  rust::Str host,
+                  std::uint16_t port);
 void pause_torrent(NativeEngine& engine, rust::Str external_id);
 void resume_torrent(NativeEngine& engine, rust::Str external_id);
 void remove_torrent(NativeEngine& engine, rust::Str external_id, bool delete_payload);

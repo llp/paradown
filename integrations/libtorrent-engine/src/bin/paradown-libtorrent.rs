@@ -8,6 +8,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use tokio::time::{Duration, timeout};
 
 type Result<T> = std::result::Result<T, Box<dyn StdError + Send + Sync>>;
 
@@ -26,6 +27,9 @@ struct Cli {
 
     #[arg(long, value_name = "KIB_PER_SEC")]
     rate_limit_kib: Option<u64>,
+
+    #[arg(long, value_name = "SECONDS")]
+    timeout_secs: Option<NonZeroU64>,
 
     #[arg(long, value_name = "INTERFACES")]
     listen_interfaces: Option<String>,
@@ -108,7 +112,17 @@ async fn run() -> Result<ExitCode> {
     }
     let peer_task = spawn_peer_connector(Arc::clone(&engine), torrent_handles, peers);
 
-    manager.wait_for_all_tasks().await?;
+    let timed_out = wait_for_completion(&manager, cli.timeout_secs).await?;
+    if timed_out {
+        if let Some(timeout_secs) = cli.timeout_secs {
+            eprintln!(
+                "paradown-libtorrent: timed out after {}s; canceling active tasks",
+                timeout_secs
+            );
+        }
+        let _ = manager.cancel_all().await;
+    }
+
     if let Some(peer_task) = peer_task {
         peer_task.abort();
         let _ = peer_task.await;
@@ -116,35 +130,88 @@ async fn run() -> Result<ExitCode> {
     event_task.abort();
     let _ = event_task.await;
 
-    let mut exit_code = ExitCode::SUCCESS;
+    let mut exit_code = if timed_out {
+        ExitCode::from(124)
+    } else {
+        ExitCode::SUCCESS
+    };
     for task_id in task_ids {
         let Some(session) = manager.get_session(task_id) else {
-            exit_code = ExitCode::from(1);
+            if !timed_out {
+                exit_code = ExitCode::from(1);
+            }
             continue;
         };
         let snapshot = session.snapshot().await;
-        println!(
-            "#{id} {status} {downloaded}/{total} {path}",
-            id = snapshot.id,
-            status = snapshot.status,
-            downloaded = snapshot.downloaded_size,
-            total = if snapshot.total_size_known {
-                snapshot.total_size.to_string()
-            } else {
-                "?".into()
-            },
-            path = snapshot
-                .file_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| snapshot.locator.clone())
-        );
-        if snapshot.status != "Completed" {
+        print_snapshot_summary(&snapshot);
+        if snapshot.status != "Completed" && !timed_out {
             exit_code = ExitCode::from(1);
         }
     }
 
     Ok(exit_code)
+}
+
+async fn wait_for_completion(
+    manager: &Arc<Manager>,
+    timeout_secs: Option<NonZeroU64>,
+) -> Result<bool> {
+    let Some(timeout_secs) = timeout_secs else {
+        manager.wait_for_all_tasks().await?;
+        return Ok(false);
+    };
+
+    match timeout(
+        Duration::from_secs(timeout_secs.get()),
+        manager.wait_for_all_tasks(),
+    )
+    .await
+    {
+        Ok(result) => {
+            result?;
+            Ok(false)
+        }
+        Err(_) => Ok(true),
+    }
+}
+
+fn print_snapshot_summary(snapshot: &paradown::SessionSnapshot) {
+    println!(
+        "#{id} {status} {downloaded}/{total} {path}",
+        id = snapshot.id,
+        status = snapshot.status,
+        downloaded = snapshot.downloaded_size,
+        total = if snapshot.total_size_known {
+            snapshot.total_size.to_string()
+        } else {
+            "?".into()
+        },
+        path = snapshot
+            .file_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| snapshot.locator.clone())
+    );
+
+    if let Some(torrent) = snapshot.torrent.as_ref() {
+        eprintln!(
+            "#{} swarm {:?} metadata={} peers={} seeds={} down={}/s up={}/s",
+            snapshot.id,
+            torrent.state,
+            torrent.metadata_ready,
+            torrent.connected_peers,
+            torrent.seeds,
+            torrent.download_rate_bps,
+            torrent.upload_rate_bps
+        );
+        for diagnostic in torrent.diagnostics.iter().rev().take(12) {
+            eprintln!(
+                "#{} diagnostic {}",
+                snapshot.id,
+                format_diagnostic(diagnostic)
+            );
+        }
+    }
 }
 
 fn build_config(cli: &Cli) -> Result<Config> {
@@ -265,30 +332,34 @@ fn spawn_event_reporter(manager: Arc<Manager>) -> tokio::task::JoinHandle<()> {
                 Event::Complete(id) => eprintln!("#{id} completed"),
                 Event::Error(id, err) => eprintln!("#{id} failed: {err}"),
                 Event::TorrentDiagnostic { id, diagnostic } => {
-                    eprintln!(
-                        "#{id} torrent {:?}/{:?}: {}{}{}{}",
-                        diagnostic.scope,
-                        diagnostic.severity,
-                        diagnostic.message,
-                        diagnostic
-                            .url
-                            .as_deref()
-                            .map(|url| format!(" url={url}"))
-                            .unwrap_or_default(),
-                        diagnostic
-                            .endpoint
-                            .as_deref()
-                            .map(|endpoint| format!(" endpoint={endpoint}"))
-                            .unwrap_or_default(),
-                        diagnostic
-                            .peers
-                            .map(|peers| format!(" peers={peers}"))
-                            .unwrap_or_default()
-                    );
+                    eprintln!("#{id} torrent {}", format_diagnostic(&diagnostic));
                 }
                 Event::Cancel(id) => eprintln!("#{id} canceled"),
                 Event::Delete(id) => eprintln!("#{id} deleted"),
             }
         }
     })
+}
+
+fn format_diagnostic(diagnostic: &paradown::TorrentDiagnosticEvent) -> String {
+    format!(
+        "{:?}/{:?}: {}{}{}{}",
+        diagnostic.scope,
+        diagnostic.severity,
+        diagnostic.message,
+        diagnostic
+            .url
+            .as_deref()
+            .map(|url| format!(" url={url}"))
+            .unwrap_or_default(),
+        diagnostic
+            .endpoint
+            .as_deref()
+            .map(|endpoint| format!(" endpoint={endpoint}"))
+            .unwrap_or_default(),
+        diagnostic
+            .peers
+            .map(|peers| format!(" peers={peers}"))
+            .unwrap_or_default()
+    )
 }

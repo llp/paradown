@@ -255,8 +255,45 @@ fn native_cli_smoke_prints_native_options() {
     );
     assert!(stdout.contains("paradown-libtorrent"));
     assert!(stdout.contains("--download-dir"));
+    assert!(stdout.contains("--timeout-secs"));
     assert!(stdout.contains("--listen-interfaces"));
     assert!(stdout.contains("--peer"));
+}
+
+#[test]
+fn native_cli_timeout_exits_with_diagnostics_snapshot() {
+    let sandbox = unique_sandbox();
+    let download_dir = sandbox.join("downloads");
+    fs::create_dir_all(&download_dir).unwrap();
+    let torrent_path = sandbox.join("sample.torrent");
+    fs::write(&torrent_path, single_file_torrent()).unwrap();
+
+    let output = run_cli_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_paradown-libtorrent"))
+            .arg("--download-dir")
+            .arg(&download_dir)
+            .arg("--storage-db")
+            .arg(sandbox.join("downloads.db"))
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg(&torrent_path),
+        Duration::from_secs(8),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(stdout.contains("#1 "));
+    assert!(stderr.contains("timed out after 1s"));
+    assert!(stderr.contains("swarm"));
+
+    let _ = fs::remove_dir_all(sandbox);
 }
 
 fn local_engine() -> LibtorrentRasterbarEngine {

@@ -62,6 +62,9 @@ against `libtorrent-rasterbar 2.0.12` and has an offline native test that parses
 a `.torrent` fixture through the real library. It also has a local peer-wire
 regression that runs two real libtorrent sessions on loopback, injects a peer
 endpoint, downloads from seeder to leecher, and observes the `Finished` event.
+The same loopback harness verifies magnet metadata exchange: the leecher starts
+from only a magnet info-hash, receives torrent metadata from the seeder, and then
+finishes the file transfer.
 Completing the production adapter still requires public CLI/release packaging.
 Those are intentionally adapter-local tasks.
 

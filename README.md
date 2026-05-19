@@ -35,6 +35,7 @@ What is implemented today:
 - Native libtorrent adapter crate with an adapter-local CXX bridge, `.torrent`
   metadata extraction, alert translation, and pause/resume/remove controls
 - Native libtorrent local peer-wire regression covering seeder-to-leecher transfer
+- Native libtorrent magnet metadata-exchange regression covering magnet-to-metadata-to-file completion
 
 What is not implemented yet:
 

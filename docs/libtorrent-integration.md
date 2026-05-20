@@ -138,6 +138,21 @@ Public-network smoke runs are intentionally opt-in and stay out of default CI:
   --locator 'magnet:?xt=urn:btih:...'
 ```
 
+For repeatable public-swarm validation across multiple authorized samples, use
+the matrix runner:
+
+```bash
+cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
+# edit ./my-soak.tsv with content you have rights to download
+./scripts/soak-libtorrent-public.sh \
+  --matrix-file ./my-soak.tsv \
+  --out-dir ./target/libtorrent-public-soak
+```
+
+Each row writes a dedicated log and the runner emits `summary.tsv` with
+`completed`, `timed-out`, or `failed` status. Timeouts are diagnostic outcomes
+by default; pass `--require-complete` when every sample must finish.
+
 Native release packages are built separately from the default HTTP CLI:
 
 ```bash

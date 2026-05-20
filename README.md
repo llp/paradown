@@ -346,6 +346,8 @@ Additional release-facing assets:
 - Docker runtime image: [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
 - Native libtorrent release script: [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh)
 - Native libtorrent public smoke script: [scripts/smoke-libtorrent-public.sh](/Users/liulipeng/workspace/rust/paradown/scripts/smoke-libtorrent-public.sh)
+- Native libtorrent public soak matrix runner: [scripts/soak-libtorrent-public.sh](/Users/liulipeng/workspace/rust/paradown/scripts/soak-libtorrent-public.sh)
+- Local release readiness gate: [scripts/verify-release-readiness.sh](/Users/liulipeng/workspace/rust/paradown/scripts/verify-release-readiness.sh)
 - SBOM generator: [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
 - Optional signing helper: [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
 - Homebrew template: [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)

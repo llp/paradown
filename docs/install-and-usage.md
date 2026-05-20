@@ -277,6 +277,14 @@ For a repeatable public-network smoke run that stays outside default CI, use:
   --locator 'magnet:?xt=urn:btih:...'
 ```
 
+For a matrix of authorized public samples:
+
+```bash
+cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
+# edit ./my-soak.tsv with content you have rights to download
+./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv
+```
+
 ### I need Docker / SBOM / package-manager files
 
 Repository-side release assets now include:
@@ -284,6 +292,8 @@ Repository-side release assets now include:
 - [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
 - [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh)
 - [scripts/smoke-libtorrent-public.sh](/Users/liulipeng/workspace/rust/paradown/scripts/smoke-libtorrent-public.sh)
+- [scripts/soak-libtorrent-public.sh](/Users/liulipeng/workspace/rust/paradown/scripts/soak-libtorrent-public.sh)
+- [scripts/verify-release-readiness.sh](/Users/liulipeng/workspace/rust/paradown/scripts/verify-release-readiness.sh)
 - [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
 - [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
 - [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)

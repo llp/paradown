@@ -404,6 +404,8 @@ fn build_config(cli: &Cli) -> Result<Config> {
     }
     if let Some(listen_interfaces) = &cli.listen_interfaces {
         config.p2p.libtorrent.listen_interfaces = Some(listen_interfaces.clone());
+    } else if config.p2p.libtorrent.listen_interfaces.is_none() {
+        config.p2p.libtorrent.listen_interfaces = Some("0.0.0.0:6881".into());
     }
     if cli.disable_dht {
         config.p2p.libtorrent.enable_dht = false;

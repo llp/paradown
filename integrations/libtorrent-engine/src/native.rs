@@ -210,7 +210,8 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
     async fn cancel_session(&self, handle: &TorrentEngineHandle) -> Result<(), Error> {
         let mut state = self.state.lock().expect("libtorrent state poisoned");
         let engine = state.driver.engine.pin_mut();
-        let _ = crate::ffi::ffi::save_resume_data(engine, &handle.external_id);
+        crate::ffi::ffi::remove_torrent(engine, &handle.external_id, false)
+            .map_err(|err| Error::Other(format!("failed to cancel torrent: {err}")))?;
         state.senders.remove(&handle.external_id);
         Ok(())
     }

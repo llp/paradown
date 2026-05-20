@@ -334,6 +334,8 @@ struct NativeEngine::Impl {
                 lt::alert_category::connect | lt::alert_category::port_mapping |
                 lt::alert_category::performance_warning |
                 lt::alert_category::piece_progress | lt::alert_category::file_progress);
+        settings.set_int(lt::settings_pack::alert_queue_size,
+                         static_cast<int>(std::max<std::size_t>(1, config.alert_queue_size)));
         settings.set_bool(lt::settings_pack::enable_dht, config.enable_dht);
         settings.set_bool(lt::settings_pack::enable_lsd, config.enable_lsd);
         settings.set_bool(lt::settings_pack::enable_upnp, config.enable_upnp);

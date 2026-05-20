@@ -124,7 +124,6 @@ pub(crate) mod ffi {
             external_id: &str,
             delete_payload: bool,
         ) -> Result<()>;
-        fn save_resume_data(engine: Pin<&mut NativeEngine>, external_id: &str) -> Result<()>;
     }
 }
 

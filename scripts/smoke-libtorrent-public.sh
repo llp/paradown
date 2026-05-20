@@ -13,8 +13,12 @@ Options:
   --discover-kind <kind>  Discovery parser: auto, html, feed, or text
   --tracker <url>         Add an announce tracker URL; repeatable
   --tracker-file <file>   Add trackers from a newline-delimited file; repeatable
+  --tracker-list-url <url> Add a remote tracker-list provider URL; repeatable
+  --provider-cache-dir <dir> Cache swarm provider HTTP inputs here
   --web-seed <url>        Add a web seed URL; repeatable
   --peer <host:port>      Add an explicit peer endpoint; repeatable
+  --disable-providers     Disable swarm providers after explicit CLI hints
+  --max-trackers <count>  Limit merged tracker candidates
   --timeout <seconds>     Bound the smoke run; default: 180
   --out-dir <dir>         Write downloads and SQLite state here
   -h, --help              Show this help message
@@ -34,8 +38,12 @@ DISCOVER_FILES=()
 DISCOVER_URLS=()
 TRACKERS=()
 TRACKER_FILES=()
+TRACKER_LIST_URLS=()
+PROVIDER_CACHE_DIR=""
 WEB_SEEDS=()
 PEERS=()
+DISABLE_PROVIDERS=0
+MAX_TRACKERS=""
 PASSTHROUGH=()
 
 require_value() {
@@ -79,6 +87,16 @@ while [[ $# -gt 0 ]]; do
       TRACKER_FILES+=("$2")
       shift 2
       ;;
+    --tracker-list-url)
+      require_value "$1" "${2:-}"
+      TRACKER_LIST_URLS+=("$2")
+      shift 2
+      ;;
+    --provider-cache-dir)
+      require_value "$1" "${2:-}"
+      PROVIDER_CACHE_DIR="$2"
+      shift 2
+      ;;
     --web-seed)
       require_value "$1" "${2:-}"
       WEB_SEEDS+=("$2")
@@ -87,6 +105,15 @@ while [[ $# -gt 0 ]]; do
     --peer)
       require_value "$1" "${2:-}"
       PEERS+=("$2")
+      shift 2
+      ;;
+    --disable-providers)
+      DISABLE_PROVIDERS=1
+      shift
+      ;;
+    --max-trackers)
+      require_value "$1" "${2:-}"
+      MAX_TRACKERS="$2"
       shift 2
       ;;
     --timeout)
@@ -153,6 +180,18 @@ done
 for file in "${TRACKER_FILES[@]}"; do
   CMD+=(--tracker-file "$file")
 done
+for url in "${TRACKER_LIST_URLS[@]}"; do
+  CMD+=(--tracker-list-url "$url")
+done
+if [[ -n "$PROVIDER_CACHE_DIR" ]]; then
+  CMD+=(--swarm-provider-cache-dir "$PROVIDER_CACHE_DIR")
+fi
+if [[ "$DISABLE_PROVIDERS" == "1" ]]; then
+  CMD+=(--disable-swarm-providers)
+fi
+if [[ -n "$MAX_TRACKERS" ]]; then
+  CMD+=(--swarm-max-trackers "$MAX_TRACKERS")
+fi
 for web_seed in "${WEB_SEEDS[@]}"; do
   CMD+=(--web-seed "$web_seed")
 done

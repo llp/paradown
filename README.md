@@ -40,6 +40,8 @@ What is implemented today:
   swarm diagnostics for tracker, DHT, peer, listen, and NAT traversal issues
 - Torrent/magnet discovery for HTML, feed, and plain-text inputs, including
   tracker and web-seed extraction for native libtorrent runs
+- Swarm provider layer for magnet hints, static tracker/peer/web-seed inputs,
+  cached remote tracker lists, and HTML/feed/text discovery
 
 What is not implemented yet:
 
@@ -95,6 +97,8 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --download-dir ./downloads \
   --timeout-secs 120 \
   --tracker-file ./trackers.txt \
+  --tracker-list-url https://example.com/trackers.txt \
+  --swarm-provider-cache-dir ./downloads/.paradown/swarm-cache \
   --discover-file ./release-page.html \
   --urls ./ubuntu.torrent 'magnet:?xt=urn:btih:...'
 ```
@@ -229,6 +233,15 @@ enable_dht = true
 enable_lsd = true
 enable_upnp = true
 enable_natpmp = true
+
+[p2p.swarm]
+enabled = true
+tracker_list_urls = ["https://example.com/trackers.txt"]
+tracker_list_cache_ttl_secs = 86400
+
+[p2p.swarm.limits]
+max_trackers = 128
+max_peers = 64
 ```
 
 Important notes:

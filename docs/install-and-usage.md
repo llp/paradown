@@ -249,16 +249,18 @@ paradown-libtorrent \
   --download-dir ./downloads \
   --timeout-secs 120 \
   --tracker-file ./trackers.txt \
+  --tracker-list-url https://example.com/trackers.txt \
   --discover-url https://example.com/releases.xml \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
 ```
 
-The native CLI accepts explicit swarm hints with `--tracker`, `--tracker-file`,
-`--web-seed`, and `--peer`. It can also discover torrent inputs and swarm hints
-from local or remote HTML/feed/text with `--discover-file`, `--discover-url`,
-and `--discover-kind auto|html|feed|text`. Discovery prints the candidates it
-found before the transfer starts, which makes public-swarm smoke runs easier to
-audit.
+The native CLI routes explicit swarm hints through the swarm provider layer:
+`--tracker`, `--tracker-file`, `--web-seed`, and `--peer` become static provider
+candidates. `--tracker-list-url` enables cached remote tracker-list providers.
+`--discover-file`, `--discover-url`, and `--discover-kind auto|html|feed|text`
+enable the discovery provider for HTML/feed/text inputs. Provider candidates and
+diagnostics are printed before transfer startup, which makes public-swarm smoke
+runs easier to audit.
 
 When the timeout expires, the native CLI exits with code `124` and prints the
 latest swarm state plus recent tracker, DHT, peer, listen, and port-mapping
@@ -270,6 +272,8 @@ For a repeatable public-network smoke run that stays outside default CI, use:
 ./scripts/smoke-libtorrent-public.sh \
   --timeout 180 \
   --tracker-file ./trackers.txt \
+  --tracker-list-url https://example.com/trackers.txt \
+  --provider-cache-dir ./target/libtorrent-public-smoke/cache \
   --locator 'magnet:?xt=urn:btih:...'
 ```
 

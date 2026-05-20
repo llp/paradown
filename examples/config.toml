@@ -40,6 +40,29 @@ enable_upnp = true
 enable_natpmp = true
 # listen_interfaces = "0.0.0.0:6881"
 
+[p2p.swarm]
+enabled = true
+include_magnet_hints = true
+# cache_dir = "./downloads/.paradown/swarm-cache"
+# static_trackers = ["udp://tracker.example:1337/announce"]
+# static_tracker_files = ["./trackers.txt"]
+# static_peers = ["127.0.0.1:6881"]
+# static_web_seeds = ["https://seed.example/payload"]
+# tracker_list_urls = ["https://example.com/trackers.txt"]
+tracker_list_cache_ttl_secs = 86400
+tracker_list_timeout_secs = 15
+# discovery_files = ["./release-page.html"]
+# discovery_urls = ["https://example.com/releases.xml"]
+discovery_input_kind = "Auto"
+discovery_timeout_secs = 15
+
+[p2p.swarm.limits]
+max_trackers = 128
+max_peers = 64
+max_web_seeds = 64
+max_locators = 64
+max_diagnostics = 64
+
 [http.client]
 cookie_store = false
 # cookie_jar_path = "./cookies/session.json"

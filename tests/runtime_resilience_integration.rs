@@ -133,7 +133,8 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
         .join(".paradown")
         .join("diagnostics")
         .join(format!("task-{}.json", task_id));
-    let diagnostic = wait_for_file(&diagnostic_path).await;
+    let diagnostic =
+        wait_for_file_containing(&diagnostic_path, &["\"trace_id\"", "\"error\""]).await;
     assert!(diagnostic.contains("\"trace_id\""));
     assert!(diagnostic.contains("\"error\""));
 }
@@ -354,9 +355,11 @@ fn http_reason_phrase(status: u16) -> &'static str {
     }
 }
 
-async fn wait_for_file(path: &std::path::Path) -> String {
-    for _ in 0..20 {
-        if let Ok(contents) = tokio::fs::read_to_string(path).await {
+async fn wait_for_file_containing(path: &std::path::Path, needles: &[&str]) -> String {
+    for _ in 0..40 {
+        if let Ok(contents) = tokio::fs::read_to_string(path).await
+            && needles.iter().all(|needle| contents.contains(needle))
+        {
             return contents;
         }
         sleep(Duration::from_millis(50)).await;

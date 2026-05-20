@@ -4,8 +4,10 @@ use crate::job::Task;
 use crate::job::finalize::finish_job;
 use crate::job::prepare::PreparationOutcome;
 use crate::p2p::{
-    TorrentEngineEvent, TorrentEngineRequest, TorrentEngineState, TorrentSwarmHints,
-    TorrentTransferStats, manifest_from_torrent_metadata,
+    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentEngineEvent,
+    TorrentEngineRequest, TorrentEngineState, TorrentSwarmHints, TorrentSwarmProviderDiagnostic,
+    TorrentSwarmProviderSeverity, TorrentTransferStats, build_swarm_provider_resolver,
+    manifest_from_torrent_metadata,
 };
 use log::{debug, warn};
 use std::path::PathBuf;
@@ -29,8 +31,39 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
 
     let requested_file_path = job.file_path.get().cloned();
     let resume = job.torrent_resume_snapshot().await;
-    let source_set = job.source_set_snapshot().await;
-    let swarm_hints = TorrentSwarmHints::from_spec_and_sources(&job.spec, &source_set)?;
+    let mut source_set = job.source_set_snapshot().await;
+    let initial_hints = TorrentSwarmHints::from_spec_and_sources(&job.spec, &source_set)?;
+    let swarm_hints = match build_swarm_provider_resolver(&job.config.p2p.swarm, download_dir) {
+        Ok(Some(resolver)) => {
+            let resolution = resolver.resolve(job.spec.clone(), initial_hints).await;
+            for candidate in &resolution.candidates {
+                if let Some(source) = candidate.source_descriptor() {
+                    source_set.push_unique(source);
+                }
+            }
+            for diagnostic in &resolution.diagnostics {
+                job.record_torrent_diagnostic(provider_diagnostic_to_torrent(diagnostic))
+                    .await;
+            }
+            if !resolution.candidates.is_empty() {
+                job.set_source_set(source_set.clone()).await;
+            }
+            resolution.hints
+        }
+        Ok(None) => initial_hints,
+        Err(err) => {
+            job.record_torrent_diagnostic(TorrentDiagnosticEvent {
+                scope: TorrentDiagnosticScope::Session,
+                severity: TorrentDiagnosticSeverity::Warning,
+                message: format!("swarm provider setup failed: {err}"),
+                url: None,
+                endpoint: None,
+                peers: None,
+            })
+            .await;
+            initial_hints
+        }
+    };
     let (event_sender, event_receiver) = mpsc::unbounded_channel();
     let request = TorrentEngineRequest {
         session_id: job.id,
@@ -61,6 +94,26 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
     job.persist_task().await?;
 
     Ok(PreparationOutcome::StartedByEngine(event_receiver))
+}
+
+fn provider_diagnostic_to_torrent(
+    diagnostic: &TorrentSwarmProviderDiagnostic,
+) -> TorrentDiagnosticEvent {
+    TorrentDiagnosticEvent {
+        scope: TorrentDiagnosticScope::Session,
+        severity: match diagnostic.severity {
+            TorrentSwarmProviderSeverity::Info => TorrentDiagnosticSeverity::Info,
+            TorrentSwarmProviderSeverity::Warning => TorrentDiagnosticSeverity::Warning,
+            TorrentSwarmProviderSeverity::Error => TorrentDiagnosticSeverity::Error,
+        },
+        message: format!(
+            "swarm provider {}: {}",
+            diagnostic.provider, diagnostic.message
+        ),
+        url: diagnostic.source.clone(),
+        endpoint: None,
+        peers: None,
+    }
 }
 
 pub(crate) fn spawn_torrent_event_listener(

@@ -632,6 +632,56 @@ async fn torrent_swarm_hints_are_forwarded_from_magnet_and_sources() {
 }
 
 #[tokio::test]
+async fn torrent_swarm_providers_enrich_engine_request_and_sources() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let mut config = p2p_config(&sandbox);
+    config.p2p.swarm.static_trackers = vec!["udp://provider-tracker.example/announce".into()];
+    config.p2p.swarm.static_peers = vec!["127.0.0.9:6999".into()];
+    config.p2p.swarm.static_web_seeds = vec!["https://provider-seed.example/payload".into()];
+
+    let received_hints = Arc::new(Mutex::new(None));
+    let manager = Manager::new_with_torrent_engine(
+        config,
+        Arc::new(SwarmHintRecordingTorrentEngine {
+            received_hints: Arc::clone(&received_hints),
+        }),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let hints = received_hints.lock().unwrap().clone().unwrap();
+    assert!(
+        hints
+            .trackers
+            .iter()
+            .any(|tracker| { tracker == "udp://provider-tracker.example/announce" })
+    );
+    assert!(
+        hints
+            .peers
+            .iter()
+            .any(|peer| peer.to_string() == "127.0.0.9:6999")
+    );
+    assert!(
+        hints
+            .web_seeds
+            .iter()
+            .any(|seed| { seed == "https://provider-seed.example/payload" })
+    );
+
+    let snapshot = manager.get_session_by_id(task_id).unwrap().snapshot().await;
+    assert!(
+        snapshot
+            .source_locators
+            .iter()
+            .any(|locator| { locator == "udp://provider-tracker.example/announce" })
+    );
+}
+
+#[tokio::test]
 async fn torrent_resume_data_is_persisted_and_reused_after_restore() {
     let sandbox = tempfile::TempDir::new().unwrap();
     let config = p2p_config(&sandbox);

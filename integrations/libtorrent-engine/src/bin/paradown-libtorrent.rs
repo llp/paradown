@@ -1,19 +1,23 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use paradown::download::{
     DownloadSpec, Event, Manager, SessionRequest, SourceDescriptor, SourceSet,
     TorrentEngineHandle, TorrentPeerEndpoint, TorrentSwarmHints,
 };
-use paradown::{Backend, Config, init_logger_with_level};
+use paradown::{
+    Backend, Config, TorrentDiscoveryCandidate, TorrentDiscoveryInputKind, TorrentDiscoveryKind,
+    TorrentDiscoveryOptions, discover_torrent_candidates, init_logger_with_level,
+};
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 type Result<T> = std::result::Result<T, Box<dyn StdError + Send + Sync>>;
+const DISCOVERY_HTTP_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Parser, Debug)]
 #[command(name = "paradown-libtorrent")]
@@ -64,8 +68,31 @@ struct Cli {
     #[arg(short = 'u', long = "urls", value_name = "TORRENT_OR_MAGNET", num_args = 1..)]
     urls: Vec<String>,
 
+    #[arg(long = "discover-file", value_name = "FILE")]
+    discover_files: Vec<PathBuf>,
+
+    #[arg(long = "discover-url", value_name = "URL")]
+    discover_urls: Vec<String>,
+
+    #[arg(long = "discover-kind", value_enum, default_value_t = DiscoveryInputArg::Auto)]
+    discover_kind: DiscoveryInputArg,
+
     #[arg(value_name = "TORRENT_OR_MAGNET")]
     locators: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DiscoveryInputArg {
+    Auto,
+    Html,
+    Feed,
+    Text,
+}
+
+#[derive(Debug)]
+struct DiscoveryReport {
+    source: String,
+    candidates: Vec<TorrentDiscoveryCandidate>,
 }
 
 fn main() -> ExitCode {
@@ -94,11 +121,16 @@ async fn run() -> Result<ExitCode> {
     let config = build_config(&cli)?;
     init_logger_with_level(config.log_level.as_level_filter());
 
-    let locators = collect_locators(&cli);
+    let mut locators = collect_locators(&cli);
+    let mut cli_hints = collect_cli_swarm_hints(&cli)?;
+    let discovery_reports = collect_discovered_inputs(&cli, &mut locators, &mut cli_hints).await?;
+    print_discovery_reports(&discovery_reports);
     if locators.is_empty() {
-        return Err("provide at least one .torrent path or magnet URI".into());
+        return Err(
+            "provide at least one .torrent path, magnet URI, discovery file, or discovery URL"
+                .into(),
+        );
     }
-    let cli_hints = collect_cli_swarm_hints(&cli)?;
 
     let engine = Arc::new(LibtorrentRasterbarEngine::new(
         config.p2p.libtorrent.clone(),
@@ -282,6 +314,128 @@ fn collect_locators(cli: &Cli) -> Vec<String> {
         .collect()
 }
 
+async fn collect_discovered_inputs(
+    cli: &Cli,
+    locators: &mut Vec<String>,
+    hints: &mut TorrentSwarmHints,
+) -> Result<Vec<DiscoveryReport>> {
+    let mut reports = Vec::new();
+    for path in &cli.discover_files {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|err| format!("failed to read discovery file {}: {err}", path.display()))?;
+        let options = TorrentDiscoveryOptions {
+            input_kind: cli.discover_kind.into(),
+            base_url: None,
+            base_path: discovery_file_base(path),
+        };
+        let candidates = discover_torrent_candidates(&contents, &options)?;
+        apply_discovered_candidates(&candidates, locators, hints);
+        reports.push(DiscoveryReport {
+            source: path.display().to_string(),
+            candidates,
+        });
+    }
+
+    let http_client = discovery_http_client()?;
+    for url in &cli.discover_urls {
+        let response = http_client
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| format!("failed to fetch discovery URL {url}: {err}"))?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| format!("failed to fetch discovery URL {url}: {err}"))?;
+        let contents = response
+            .text()
+            .await
+            .map_err(|err| format!("failed to read discovery URL {url}: {err}"))?;
+        let options = TorrentDiscoveryOptions {
+            input_kind: cli.discover_kind.into(),
+            base_url: Some(url.clone()),
+            base_path: None,
+        };
+        let candidates = discover_torrent_candidates(&contents, &options)?;
+        apply_discovered_candidates(&candidates, locators, hints);
+        reports.push(DiscoveryReport {
+            source: url.clone(),
+            candidates,
+        });
+    }
+
+    Ok(reports)
+}
+
+fn apply_discovered_candidates(
+    candidates: &[TorrentDiscoveryCandidate],
+    locators: &mut Vec<String>,
+    hints: &mut TorrentSwarmHints,
+) {
+    for candidate in candidates {
+        match candidate.kind {
+            TorrentDiscoveryKind::Magnet | TorrentDiscoveryKind::TorrentFile => {
+                if !locators.iter().any(|locator| locator == &candidate.locator) {
+                    locators.push(candidate.locator.clone());
+                }
+            }
+            TorrentDiscoveryKind::Tracker => hints.add_tracker(candidate.locator.clone()),
+            TorrentDiscoveryKind::WebSeed => hints.add_web_seed(candidate.locator.clone()),
+        }
+    }
+}
+
+fn discovery_file_base(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical.parent().map(Path::to_path_buf);
+    }
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
+fn discovery_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(DISCOVERY_HTTP_TIMEOUT_SECS))
+        .user_agent(concat!("paradown-libtorrent/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|err| format!("failed to build discovery HTTP client: {err}").into())
+}
+
+fn print_discovery_reports(reports: &[DiscoveryReport]) {
+    for report in reports {
+        eprintln!(
+            "discovery {} candidates from {}",
+            report.candidates.len(),
+            report.source
+        );
+        for candidate in &report.candidates {
+            if let Some(display_name) = candidate.display_name.as_deref() {
+                eprintln!(
+                    "  {} {} ({})",
+                    discovery_kind_label(candidate.kind),
+                    candidate.locator,
+                    display_name
+                );
+            } else {
+                eprintln!(
+                    "  {} {}",
+                    discovery_kind_label(candidate.kind),
+                    candidate.locator
+                );
+            }
+        }
+    }
+}
+
+fn discovery_kind_label(kind: TorrentDiscoveryKind) -> &'static str {
+    match kind {
+        TorrentDiscoveryKind::Magnet => "magnet",
+        TorrentDiscoveryKind::TorrentFile => "torrent",
+        TorrentDiscoveryKind::Tracker => "tracker",
+        TorrentDiscoveryKind::WebSeed => "web-seed",
+    }
+}
+
 fn collect_cli_swarm_hints(cli: &Cli) -> Result<TorrentSwarmHints> {
     let mut hints = TorrentSwarmHints::default();
     for tracker in &cli.trackers {
@@ -405,4 +559,15 @@ fn format_diagnostic(diagnostic: &paradown::TorrentDiagnosticEvent) -> String {
             .map(|peers| format!(" peers={peers}"))
             .unwrap_or_default()
     )
+}
+
+impl From<DiscoveryInputArg> for TorrentDiscoveryInputKind {
+    fn from(value: DiscoveryInputArg) -> Self {
+        match value {
+            DiscoveryInputArg::Auto => Self::Auto,
+            DiscoveryInputArg::Html => Self::Html,
+            DiscoveryInputArg::Feed => Self::Feed,
+            DiscoveryInputArg::Text => Self::Text,
+        }
+    }
 }

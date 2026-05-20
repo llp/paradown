@@ -266,6 +266,8 @@ fn native_cli_smoke_prints_native_options() {
     assert!(stdout.contains("--tracker"));
     assert!(stdout.contains("--tracker-file"));
     assert!(stdout.contains("--web-seed"));
+    assert!(stdout.contains("--discover-file"));
+    assert!(stdout.contains("--discover-url"));
 }
 
 #[test]
@@ -300,6 +302,51 @@ fn native_cli_timeout_exits_with_diagnostics_snapshot() {
     assert!(stdout.contains("#1 "));
     assert!(stderr.contains("timed out after 1s"));
     assert!(stderr.contains("swarm"));
+
+    let _ = fs::remove_dir_all(sandbox);
+}
+
+#[test]
+fn native_cli_discovers_torrent_from_html_file() {
+    let sandbox = unique_sandbox();
+    let download_dir = sandbox.join("downloads");
+    fs::create_dir_all(&download_dir).unwrap();
+    let torrent_path = sandbox.join("sample.torrent");
+    fs::write(&torrent_path, single_file_torrent()).unwrap();
+    let discovery_path = sandbox.join("index.html");
+    fs::write(
+        &discovery_path,
+        format!(
+            r#"<html><a href="{}">sample</a></html>"#,
+            torrent_path.display()
+        ),
+    )
+    .unwrap();
+
+    let output = run_cli_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_paradown-libtorrent"))
+            .arg("--download-dir")
+            .arg(&download_dir)
+            .arg("--storage-db")
+            .arg(sandbox.join("downloads.db"))
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--discover-file")
+            .arg(&discovery_path),
+        Duration::from_secs(8),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(stdout.contains("#1 "));
+    assert!(stdout.contains("sample.torrent") || stderr.contains("sample.torrent"));
 
     let _ = fs::remove_dir_all(sandbox);
 }

@@ -10,7 +10,7 @@ Timeouts are treated as diagnostic outcomes by default; pass --require-complete
 when every case must finish with exit code 0.
 
 Matrix columns:
-  name<TAB>locator<TAB>tracker_file<TAB>tracker_list_url<TAB>discovery_file<TAB>discovery_url<TAB>timeout_secs<TAB>max_trackers
+  name<TAB>locator<TAB>tracker_file<TAB>tracker_list_url<TAB>discovery_file<TAB>discovery_url<TAB>timeout_secs<TAB>max_trackers<TAB>index_url_template<TAB>index_query<TAB>index_kind<TAB>index_cache_ttl_secs<TAB>index_timeout_secs
 
 Use "-" for blank optional fields. Lines beginning with "#" are ignored.
 
@@ -148,6 +148,11 @@ run_case() {
   local discovery_url="$6"
   local timeout_secs="$7"
   local max_trackers="$8"
+  local index_url_template="$9"
+  local index_query="${10}"
+  local index_kind="${11}"
+  local index_cache_ttl_secs="${12}"
+  local index_timeout_secs="${13}"
 
   local safe_name
   safe_name="$(printf '%03d-%s' "$case_count" "$(sanitize_name "$name")")"
@@ -179,6 +184,21 @@ run_case() {
   fi
   if [[ -n "$max_trackers" ]]; then
     cmd+=(--max-trackers "$max_trackers")
+  fi
+  if [[ -n "$index_url_template" ]]; then
+    cmd+=(--index-url-template "$index_url_template")
+  fi
+  if [[ -n "$index_query" ]]; then
+    cmd+=(--index-query "$index_query")
+  fi
+  if [[ -n "$index_kind" ]]; then
+    cmd+=(--index-kind "$index_kind")
+  fi
+  if [[ -n "$index_cache_ttl_secs" ]]; then
+    cmd+=(--index-cache-ttl-secs "$index_cache_ttl_secs")
+  fi
+  if [[ -n "$index_timeout_secs" ]]; then
+    cmd+=(--index-timeout-secs "$index_timeout_secs")
   fi
 
   echo "==> libtorrent soak case: $name"
@@ -219,7 +239,7 @@ run_case() {
   fi
 }
 
-while IFS=$'\t' read -r raw_name raw_locator raw_tracker_file raw_tracker_list_url raw_discovery_file raw_discovery_url raw_timeout raw_max_trackers _extra; do
+while IFS=$'\t' read -r raw_name raw_locator raw_tracker_file raw_tracker_list_url raw_discovery_file raw_discovery_url raw_timeout raw_max_trackers raw_index_url_template raw_index_query raw_index_kind raw_index_cache_ttl raw_index_timeout _extra; do
   [[ -z "${raw_name:-}" ]] && continue
   [[ "$raw_name" =~ ^[[:space:]]*# ]] && continue
   if [[ "$raw_name" == "name" && "${raw_locator:-}" == "locator" ]]; then
@@ -238,6 +258,11 @@ while IFS=$'\t' read -r raw_name raw_locator raw_tracker_file raw_tracker_list_u
   discovery_url="$(field_or_empty "${raw_discovery_url:-}")"
   timeout_secs="$(field_or_empty "${raw_timeout:-}")"
   max_trackers="$(field_or_empty "${raw_max_trackers:-}")"
+  index_url_template="$(field_or_empty "${raw_index_url_template:-}")"
+  index_query="$(field_or_empty "${raw_index_query:-}")"
+  index_kind="$(field_or_empty "${raw_index_kind:-}")"
+  index_cache_ttl_secs="$(field_or_empty "${raw_index_cache_ttl:-}")"
+  index_timeout_secs="$(field_or_empty "${raw_index_timeout:-}")"
   name="${name%$'\r'}"
   locator="${locator%$'\r'}"
   tracker_file="${tracker_file%$'\r'}"
@@ -246,13 +271,18 @@ while IFS=$'\t' read -r raw_name raw_locator raw_tracker_file raw_tracker_list_u
   discovery_url="${discovery_url%$'\r'}"
   timeout_secs="${timeout_secs%$'\r'}"
   max_trackers="${max_trackers%$'\r'}"
+  index_url_template="${index_url_template%$'\r'}"
+  index_query="${index_query%$'\r'}"
+  index_kind="${index_kind%$'\r'}"
+  index_cache_ttl_secs="${index_cache_ttl_secs%$'\r'}"
+  index_timeout_secs="${index_timeout_secs%$'\r'}"
 
   if [[ -z "$name" ]]; then
     echo "error: matrix row has blank name" >&2
     exit 1
   fi
-  if [[ -z "$locator" && -z "$discovery_file" && -z "$discovery_url" ]]; then
-    echo "error: matrix row '$name' needs locator, discovery_file, or discovery_url" >&2
+  if [[ -z "$locator" && -z "$discovery_file" && -z "$discovery_url" && -z "$index_url_template" ]]; then
+    echo "error: matrix row '$name' needs locator, discovery_file, discovery_url, or index_url_template" >&2
     exit 1
   fi
   if [[ -n "$timeout_secs" ]]; then
@@ -261,9 +291,15 @@ while IFS=$'\t' read -r raw_name raw_locator raw_tracker_file raw_tracker_list_u
   if [[ -n "$max_trackers" ]]; then
     validate_positive_integer "max_trackers for '$name'" "$max_trackers"
   fi
+  if [[ -n "$index_cache_ttl_secs" ]]; then
+    validate_positive_integer "index_cache_ttl_secs for '$name'" "$index_cache_ttl_secs"
+  fi
+  if [[ -n "$index_timeout_secs" ]]; then
+    validate_positive_integer "index_timeout_secs for '$name'" "$index_timeout_secs"
+  fi
 
   case_count=$((case_count + 1))
-  run_case "$name" "$locator" "$tracker_file" "$tracker_list_url" "$discovery_file" "$discovery_url" "$timeout_secs" "$max_trackers"
+  run_case "$name" "$locator" "$tracker_file" "$tracker_list_url" "$discovery_file" "$discovery_url" "$timeout_secs" "$max_trackers" "$index_url_template" "$index_query" "$index_kind" "$index_cache_ttl_secs" "$index_timeout_secs"
 done < "$MATRIX_FILE"
 
 if [[ "$case_count" -eq 0 ]]; then

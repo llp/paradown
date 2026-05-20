@@ -271,6 +271,9 @@ fn native_cli_smoke_prints_native_options() {
     assert!(stdout.contains("--disable-swarm-providers"));
     assert!(stdout.contains("--swarm-provider-cache-dir"));
     assert!(stdout.contains("--tracker-list-url"));
+    assert!(stdout.contains("--index-url-template"));
+    assert!(stdout.contains("--index-query"));
+    assert!(stdout.contains("--index-kind"));
     assert!(stdout.contains("--swarm-max-trackers"));
 }
 

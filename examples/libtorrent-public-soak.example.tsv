@@ -5,9 +5,10 @@
 #   ./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv
 #
 # Columns:
-# name<TAB>locator<TAB>tracker_file<TAB>tracker_list_url<TAB>discovery_file<TAB>discovery_url<TAB>timeout_secs<TAB>max_trackers
+# name<TAB>locator<TAB>tracker_file<TAB>tracker_list_url<TAB>discovery_file<TAB>discovery_url<TAB>timeout_secs<TAB>max_trackers<TAB>index_url_template<TAB>index_query<TAB>index_kind<TAB>index_cache_ttl_secs<TAB>index_timeout_secs
 #
 # Use "-" for blank optional fields. Keep fields tab-separated.
-name	locator	tracker_file	tracker_list_url	discovery_file	discovery_url	timeout_secs	max_trackers
-# public-linux-iso	magnet:?xt=urn:btih:REPLACE_WITH_AUTHORIZED_INFO_HASH	./trackers.txt	https://example.com/trackers.txt	-	-	300	128
-# release-feed	-	./trackers.txt	-	-	https://example.com/releases.xml	300	128
+name	locator	tracker_file	tracker_list_url	discovery_file	discovery_url	timeout_secs	max_trackers	index_url_template	index_query	index_kind	index_cache_ttl_secs	index_timeout_secs
+# public-linux-iso	magnet:?xt=urn:btih:REPLACE_WITH_AUTHORIZED_INFO_HASH	./trackers.txt	https://example.com/trackers.txt	-	-	300	128	-	-	-	-	-
+# release-feed	-	./trackers.txt	-	-	https://example.com/releases.xml	300	128	-	-	-	-	-
+# authorized-index	-	./trackers.txt	-	-	-	300	128	https://index.example/search?q={query}	linux iso	feed	86400	15

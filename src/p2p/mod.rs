@@ -16,11 +16,12 @@ pub use magnet::{
     MagnetExactTopic, MagnetLink, MagnetParameter, TorrentPeerEndpoint, TorrentSwarmHints,
 };
 pub use provider::{
-    DiscoverySwarmProvider, MagnetHintProvider, StaticSwarmProvider, SwarmProviderConfig,
-    SwarmProviderLimits, TorrentSwarmProvider, TorrentSwarmProviderCandidate,
-    TorrentSwarmProviderCandidateKind, TorrentSwarmProviderContext, TorrentSwarmProviderDiagnostic,
-    TorrentSwarmProviderReport, TorrentSwarmProviderResolution, TorrentSwarmProviderResolver,
-    TorrentSwarmProviderSeverity, TrackerListProvider, build_swarm_provider_resolver,
+    DiscoverySwarmProvider, IndexFeedProvider, MagnetHintProvider, StaticSwarmProvider,
+    SwarmIndexProviderConfig, SwarmProviderConfig, SwarmProviderLimits, TorrentSwarmProvider,
+    TorrentSwarmProviderCandidate, TorrentSwarmProviderCandidateKind, TorrentSwarmProviderContext,
+    TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport, TorrentSwarmProviderResolution,
+    TorrentSwarmProviderResolver, TorrentSwarmProviderSeverity, TrackerListProvider,
+    build_swarm_provider_resolver,
 };
 
 pub(crate) use libtorrent::default_libtorrent_engine;

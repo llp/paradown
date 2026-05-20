@@ -39,6 +39,8 @@ pub struct SwarmProviderConfig {
     #[serde(default = "default_provider_timeout_secs")]
     pub tracker_list_timeout_secs: u64,
     #[serde(default)]
+    pub index_providers: Vec<SwarmIndexProviderConfig>,
+    #[serde(default)]
     pub discovery_files: Vec<PathBuf>,
     #[serde(default)]
     pub discovery_urls: Vec<String>,
@@ -63,6 +65,7 @@ impl Default for SwarmProviderConfig {
             tracker_list_urls: Vec::new(),
             tracker_list_cache_ttl_secs: default_tracker_list_cache_ttl_secs(),
             tracker_list_timeout_secs: default_provider_timeout_secs(),
+            index_providers: Vec::new(),
             discovery_files: Vec::new(),
             discovery_urls: Vec::new(),
             discovery_input_kind: TorrentDiscoveryInputKind::default(),
@@ -78,6 +81,18 @@ impl SwarmProviderConfig {
             .clone()
             .unwrap_or_else(|| download_dir.join(".paradown").join("swarm-cache"))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmIndexProviderConfig {
+    pub name: String,
+    pub url_template: String,
+    #[serde(default)]
+    pub input_kind: TorrentDiscoveryInputKind,
+    #[serde(default = "default_tracker_list_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_provider_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -609,6 +624,169 @@ impl TorrentSwarmProvider for TrackerListProvider {
 }
 
 #[derive(Debug, Clone)]
+pub struct IndexFeedProvider {
+    config: SwarmIndexProviderConfig,
+    provider_name: String,
+    client: reqwest::Client,
+}
+
+impl IndexFeedProvider {
+    pub fn new(config: SwarmIndexProviderConfig) -> Result<Self, Error> {
+        let mut config = config;
+        config.name = config.name.trim().to_string();
+        config.url_template = config.url_template.trim().to_string();
+        if config.name.is_empty() {
+            return Err(Error::Other("index provider name cannot be blank".into()));
+        }
+        if config.url_template.is_empty() {
+            return Err(Error::Other(
+                "index provider url_template cannot be blank".into(),
+            ));
+        }
+        if config.cache_ttl_secs == 0 || config.timeout_secs == 0 {
+            return Err(Error::Other(
+                "index provider cache_ttl_secs and timeout_secs must be greater than 0".into(),
+            ));
+        }
+
+        let provider_name = format!("index-feed:{}", config.name);
+        let client = reqwest::Client::builder()
+            .user_agent(PROVIDER_USER_AGENT)
+            .build()
+            .map_err(|err| {
+                Error::Other(format!("failed to build index provider HTTP client: {err}"))
+            })?;
+        Ok(Self {
+            config,
+            provider_name,
+            client,
+        })
+    }
+
+    fn cache_path(&self, cache_dir: &Path, url: &str) -> PathBuf {
+        let mut hasher = Sha1::new();
+        hasher.update(self.provider_name.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(url.as_bytes());
+        let digest = hasher.finalize();
+        cache_dir
+            .join("index-feeds")
+            .join(format!("{digest:x}.txt"))
+    }
+
+    async fn read_source(
+        &self,
+        url: &str,
+        cache_dir: &Path,
+        report: &mut TorrentSwarmProviderReport,
+    ) -> Option<String> {
+        let cache_path = self.cache_path(cache_dir, url);
+        let cache_ttl = Duration::from_secs(self.config.cache_ttl_secs);
+        if is_fresh_cache(&cache_path, cache_ttl).await {
+            return tokio::fs::read_to_string(cache_path).await.ok();
+        }
+
+        match self.fetch_source(url).await {
+            Ok(contents) => {
+                if let Some(parent) = cache_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                if let Err(err) = tokio::fs::write(&cache_path, &contents).await {
+                    report.diagnostic(
+                        TorrentSwarmProviderSeverity::Warning,
+                        format!(
+                            "failed to write index cache {}: {err}",
+                            cache_path.display()
+                        ),
+                        Some(url.into()),
+                    );
+                }
+                Some(contents)
+            }
+            Err(err) => match tokio::fs::read_to_string(&cache_path).await {
+                Ok(contents) => {
+                    report.diagnostic(
+                        TorrentSwarmProviderSeverity::Warning,
+                        format!("using stale index cache after fetch failed: {err}"),
+                        Some(url.into()),
+                    );
+                    Some(contents)
+                }
+                Err(_) => {
+                    report.diagnostic(
+                        TorrentSwarmProviderSeverity::Error,
+                        format!("failed to fetch index feed: {err}"),
+                        Some(url.into()),
+                    );
+                    None
+                }
+            },
+        }
+    }
+
+    async fn fetch_source(&self, url: &str) -> Result<String, Error> {
+        let response = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(self.config.timeout_secs))
+            .send()
+            .await
+            .map_err(|err| Error::Other(err.to_string()))?
+            .error_for_status()
+            .map_err(|err| Error::Other(err.to_string()))?;
+        response
+            .text()
+            .await
+            .map_err(|err| Error::Other(err.to_string()))
+    }
+}
+
+#[async_trait]
+impl TorrentSwarmProvider for IndexFeedProvider {
+    fn name(&self) -> &str {
+        &self.provider_name
+    }
+
+    async fn discover(
+        &self,
+        context: TorrentSwarmProviderContext,
+    ) -> Result<TorrentSwarmProviderReport, Error> {
+        let mut report = TorrentSwarmProviderReport::new(self.name());
+        let Some(url) = expand_index_url_template(&self.config.url_template, &context.spec) else {
+            report.diagnostic(
+                TorrentSwarmProviderSeverity::Warning,
+                "index URL template could not be expanded for this torrent spec",
+                Some(self.config.url_template.clone()),
+            );
+            return Ok(report);
+        };
+
+        let Some(contents) = self
+            .read_source(&url, &context.cache_dir, &mut report)
+            .await
+        else {
+            return Ok(report);
+        };
+        let options = TorrentDiscoveryOptions {
+            input_kind: self.config.input_kind,
+            base_url: Some(url.clone()),
+            base_path: None,
+        };
+        match discover_torrent_candidates(&contents, &options) {
+            Ok(candidates) => {
+                push_discovery_candidates_for_provider(self.name(), &mut report, candidates)
+            }
+            Err(err) => report.diagnostic(
+                TorrentSwarmProviderSeverity::Error,
+                format!("failed to parse index feed {url}: {err}"),
+                Some(url),
+            ),
+        }
+        Ok(report)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct DiscoverySwarmProvider {
     pub files: Vec<PathBuf>,
     pub urls: Vec<String>,
@@ -647,42 +825,7 @@ impl DiscoverySwarmProvider {
         report: &mut TorrentSwarmProviderReport,
         candidates: Vec<TorrentDiscoveryCandidate>,
     ) {
-        for candidate in candidates {
-            match candidate.kind {
-                TorrentDiscoveryKind::Magnet => {
-                    report.push(TorrentSwarmProviderCandidate::locator(
-                        TorrentSwarmProviderCandidateKind::Magnet,
-                        candidate.locator,
-                        candidate.display_name,
-                        self.name(),
-                        candidate.source,
-                    ));
-                }
-                TorrentDiscoveryKind::TorrentFile => {
-                    report.push(TorrentSwarmProviderCandidate::locator(
-                        TorrentSwarmProviderCandidateKind::TorrentFile,
-                        candidate.locator,
-                        candidate.display_name,
-                        self.name(),
-                        candidate.source,
-                    ));
-                }
-                TorrentDiscoveryKind::Tracker => {
-                    report.push(TorrentSwarmProviderCandidate::tracker(
-                        self.name(),
-                        candidate.locator,
-                        candidate.source,
-                    ));
-                }
-                TorrentDiscoveryKind::WebSeed => {
-                    report.push(TorrentSwarmProviderCandidate::web_seed(
-                        self.name(),
-                        candidate.locator,
-                        candidate.source,
-                    ));
-                }
-            }
-        }
+        push_discovery_candidates_for_provider(self.name(), report, candidates);
     }
 }
 
@@ -797,6 +940,9 @@ pub fn build_swarm_provider_resolver(
             Duration::from_secs(config.tracker_list_timeout_secs),
         )?));
     }
+    for index_provider in &config.index_providers {
+        providers.push(Box::new(IndexFeedProvider::new(index_provider.clone())?));
+    }
     if !config.discovery_files.is_empty() || !config.discovery_urls.is_empty() {
         providers.push(Box::new(DiscoverySwarmProvider::new(
             config.discovery_files.clone(),
@@ -811,6 +957,103 @@ pub fn build_swarm_provider_resolver(
         config.limits,
         config.resolved_cache_dir(download_dir),
     )))
+}
+
+fn push_discovery_candidates_for_provider(
+    provider_name: &str,
+    report: &mut TorrentSwarmProviderReport,
+    candidates: Vec<TorrentDiscoveryCandidate>,
+) {
+    for candidate in candidates {
+        match candidate.kind {
+            TorrentDiscoveryKind::Magnet => {
+                report.push(TorrentSwarmProviderCandidate::locator(
+                    TorrentSwarmProviderCandidateKind::Magnet,
+                    candidate.locator,
+                    candidate.display_name,
+                    provider_name,
+                    candidate.source,
+                ));
+            }
+            TorrentDiscoveryKind::TorrentFile => {
+                report.push(TorrentSwarmProviderCandidate::locator(
+                    TorrentSwarmProviderCandidateKind::TorrentFile,
+                    candidate.locator,
+                    candidate.display_name,
+                    provider_name,
+                    candidate.source,
+                ));
+            }
+            TorrentDiscoveryKind::Tracker => {
+                report.push(TorrentSwarmProviderCandidate::tracker(
+                    provider_name,
+                    candidate.locator,
+                    candidate.source,
+                ));
+            }
+            TorrentDiscoveryKind::WebSeed => {
+                report.push(TorrentSwarmProviderCandidate::web_seed(
+                    provider_name,
+                    candidate.locator,
+                    candidate.source,
+                ));
+            }
+        }
+    }
+}
+
+fn expand_index_url_template(template: &str, spec: &DownloadSpec) -> Option<String> {
+    let mut expanded = template.trim().to_string();
+    if expanded.is_empty() {
+        return None;
+    }
+
+    let info_hash = btih_from_spec(spec);
+    let display_name = spec.file_name_hint();
+    let locator = match spec {
+        DownloadSpec::Metadata { .. } => None,
+        _ => Some(spec.locator().to_string()),
+    };
+    let query = display_name
+        .as_deref()
+        .or(info_hash.as_deref())
+        .or(locator.as_deref());
+
+    for (token, value) in [
+        ("btih", info_hash.as_deref()),
+        ("info_hash", info_hash.as_deref()),
+        ("display_name", display_name.as_deref()),
+        ("query", query),
+        ("locator", locator.as_deref()),
+    ] {
+        let placeholder = format!("{{{token}}}");
+        if expanded.contains(&placeholder) {
+            let value = value?;
+            expanded = expanded.replace(&placeholder, &url_encode(value));
+        }
+    }
+
+    Some(expanded)
+}
+
+fn btih_from_spec(spec: &DownloadSpec) -> Option<String> {
+    match spec {
+        DownloadSpec::Magnet { uri } => MagnetLink::parse(uri).ok().and_then(|magnet| {
+            magnet
+                .exact_topics
+                .into_iter()
+                .find_map(|topic| match topic {
+                    super::MagnetExactTopic::Btih(hash) => Some(hash),
+                    _ => None,
+                })
+        }),
+        DownloadSpec::Metadata { info_hash, .. } => info_hash.clone(),
+        _ => None,
+    }
+}
+
+fn url_encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 fn insert_candidate(
@@ -960,9 +1203,9 @@ fn default_max_provider_diagnostics() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        DiscoverySwarmProvider, MagnetHintProvider, StaticSwarmProvider, TorrentSwarmProvider,
-        TorrentSwarmProviderCandidateKind, TorrentSwarmProviderContext,
-        TorrentSwarmProviderResolver, TrackerListProvider,
+        DiscoverySwarmProvider, IndexFeedProvider, MagnetHintProvider, StaticSwarmProvider,
+        SwarmIndexProviderConfig, TorrentSwarmProvider, TorrentSwarmProviderCandidateKind,
+        TorrentSwarmProviderContext, TorrentSwarmProviderResolver, TrackerListProvider,
     };
     use crate::discovery::TorrentDiscoveryInputKind;
     use crate::domain::DownloadSpec;
@@ -1073,6 +1316,103 @@ mod tests {
             candidate.kind == TorrentSwarmProviderCandidateKind::Tracker
                 && candidate.locator == "udp://tracker-cache.example/announce"
         }));
+    }
+
+    #[tokio::test]
+    async fn index_provider_expands_btih_template_and_uses_fresh_cache() {
+        let temp = TempDir::new().unwrap();
+        let provider = IndexFeedProvider::new(SwarmIndexProviderConfig {
+            name: "authorized".into(),
+            url_template: "https://index.example/search?q={btih}".into(),
+            input_kind: TorrentDiscoveryInputKind::Feed,
+            cache_ttl_secs: 3600,
+            timeout_secs: 1,
+        })
+        .unwrap();
+        let url = "https://index.example/search?q=abcdef0123456789abcdef0123456789abcdef01";
+        let cache_path = provider.cache_path(temp.path(), url);
+        tokio::fs::create_dir_all(cache_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &cache_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <title>Authorized</title>
+              <entry>
+                <title>Payload</title>
+                <link href="magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01&amp;tr=udp%3A%2F%2Ftracker-index.example%2Fannounce" />
+              </entry>
+            </feed>"#,
+        )
+        .await
+        .unwrap();
+
+        let report = provider
+            .discover(TorrentSwarmProviderContext {
+                spec: DownloadSpec::parse(
+                    "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+                )
+                .unwrap(),
+                existing_hints: TorrentSwarmHints::default(),
+                cache_dir: temp.path().to_path_buf(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(report.provider, "index-feed:authorized");
+        assert!(report.candidates.iter().any(|candidate| {
+            candidate.kind == TorrentSwarmProviderCandidateKind::Magnet
+                && candidate.locator.starts_with("magnet:?xt=urn:btih:abcdef")
+        }));
+        assert!(report.candidates.iter().any(|candidate| {
+            candidate.kind == TorrentSwarmProviderCandidateKind::Tracker
+                && candidate.locator == "udp://tracker-index.example/announce"
+        }));
+    }
+
+    #[tokio::test]
+    async fn index_provider_reports_template_without_required_context() {
+        let provider = IndexFeedProvider::new(SwarmIndexProviderConfig {
+            name: "authorized".into(),
+            url_template: "https://index.example/search?q={btih}".into(),
+            input_kind: TorrentDiscoveryInputKind::Auto,
+            cache_ttl_secs: 3600,
+            timeout_secs: 1,
+        })
+        .unwrap();
+
+        let report = provider
+            .discover(TorrentSwarmProviderContext {
+                spec: DownloadSpec::Metadata {
+                    display_name: Some("linux iso".into()),
+                    info_hash: None,
+                },
+                existing_hints: TorrentSwarmHints::default(),
+                cache_dir: TempDir::new().unwrap().path().to_path_buf(),
+            })
+            .await
+            .unwrap();
+
+        assert!(report.candidates.is_empty());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("could not be expanded")
+                && diagnostic.source.as_deref() == Some("https://index.example/search?q={btih}")
+        }));
+    }
+
+    #[test]
+    fn index_provider_rejects_invalid_config() {
+        let err = IndexFeedProvider::new(SwarmIndexProviderConfig {
+            name: " ".into(),
+            url_template: "https://index.example/search?q={query}".into(),
+            input_kind: TorrentDiscoveryInputKind::Auto,
+            cache_ttl_secs: 3600,
+            timeout_secs: 1,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("name cannot be blank"));
     }
 
     #[tokio::test]

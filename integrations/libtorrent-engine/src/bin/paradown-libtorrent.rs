@@ -4,9 +4,10 @@ use paradown::download::{
     TorrentEngineHandle, TorrentPeerEndpoint, TorrentSwarmHints,
 };
 use paradown::{
-    Backend, Config, TorrentDiscoveryInputKind, TorrentSwarmProviderCandidate,
-    TorrentSwarmProviderCandidateKind, TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport,
-    build_swarm_provider_resolver, init_logger_with_level,
+    Backend, Config, SwarmIndexProviderConfig, TorrentDiscoveryInputKind,
+    TorrentSwarmProviderCandidate, TorrentSwarmProviderCandidateKind,
+    TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport, build_swarm_provider_resolver,
+    init_logger_with_level,
 };
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::collections::HashSet;
@@ -67,6 +68,21 @@ struct Cli {
 
     #[arg(long = "tracker-list-timeout-secs", value_name = "SECONDS")]
     tracker_list_timeout_secs: Option<NonZeroU64>,
+
+    #[arg(long = "index-url-template", value_name = "URL_TEMPLATE")]
+    index_url_templates: Vec<String>,
+
+    #[arg(long = "index-query", value_name = "TEXT")]
+    index_query: Option<String>,
+
+    #[arg(long = "index-kind", value_enum, default_value_t = DiscoveryInputArg::Auto)]
+    index_kind: DiscoveryInputArg,
+
+    #[arg(long = "index-cache-ttl-secs", value_name = "SECONDS")]
+    index_cache_ttl_secs: Option<NonZeroU64>,
+
+    #[arg(long = "index-timeout-secs", value_name = "SECONDS")]
+    index_timeout_secs: Option<NonZeroU64>,
 
     #[arg(long = "swarm-max-trackers", value_name = "COUNT")]
     swarm_max_trackers: Option<usize>,
@@ -144,7 +160,8 @@ async fn run() -> Result<ExitCode> {
 
     let mut locators = collect_locators(&cli);
     let mut cli_hints = collect_cli_swarm_hints(&cli)?;
-    let provider_reports = collect_provider_bootstrap_inputs(&config, &mut locators, &mut cli_hints).await?;
+    let provider_reports =
+        collect_provider_bootstrap_inputs(&config, &mut locators, &mut cli_hints, &cli).await?;
     print_swarm_provider_reports(&provider_reports);
     if locators.is_empty() {
         return Err(
@@ -366,6 +383,25 @@ fn apply_cli_swarm_provider_config(config: &mut Config, cli: &Cli) {
     if let Some(timeout) = cli.tracker_list_timeout_secs {
         config.p2p.swarm.tracker_list_timeout_secs = timeout.get();
     }
+    for (index, url_template) in cli.index_url_templates.iter().enumerate() {
+        config
+            .p2p
+            .swarm
+            .index_providers
+            .push(SwarmIndexProviderConfig {
+                name: format!("cli-index-{}", index + 1),
+                url_template: url_template.clone(),
+                input_kind: cli.index_kind.into(),
+                cache_ttl_secs: cli
+                    .index_cache_ttl_secs
+                    .map(NonZeroU64::get)
+                    .unwrap_or(config.p2p.swarm.tracker_list_cache_ttl_secs),
+                timeout_secs: cli
+                    .index_timeout_secs
+                    .map(NonZeroU64::get)
+                    .unwrap_or(config.p2p.swarm.tracker_list_timeout_secs),
+            });
+    }
     config
         .p2p
         .swarm
@@ -403,15 +439,21 @@ async fn collect_provider_bootstrap_inputs(
     config: &Config,
     locators: &mut Vec<String>,
     hints: &mut TorrentSwarmHints,
+    cli: &Cli,
 ) -> Result<Vec<TorrentSwarmProviderReport>> {
-    let Some(resolver) = build_swarm_provider_resolver(&config.p2p.swarm, &config.download_dir)?
+    let mut bootstrap_config = config.clone();
+    if cli.index_query.is_none() && !locators.is_empty() {
+        bootstrap_config.p2p.swarm.index_providers.clear();
+    }
+    let Some(resolver) =
+        build_swarm_provider_resolver(&bootstrap_config.p2p.swarm, &bootstrap_config.download_dir)?
     else {
         return Ok(Vec::new());
     };
     let resolution = resolver
         .resolve(
             DownloadSpec::Metadata {
-                display_name: Some("cli-swarm-bootstrap".into()),
+                display_name: cli.index_query.clone(),
                 info_hash: None,
             },
             hints.clone(),

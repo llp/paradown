@@ -14,6 +14,11 @@ Options:
   --tracker <url>         Add an announce tracker URL; repeatable
   --tracker-file <file>   Add trackers from a newline-delimited file; repeatable
   --tracker-list-url <url> Add a remote tracker-list provider URL; repeatable
+  --index-url-template <url> Add an authorized index/feed URL template; repeatable
+  --index-query <text>   Query text used by {query} templates during bootstrap
+  --index-kind <kind>    Index parser: auto, html, feed, or text
+  --index-cache-ttl-secs <n> Cache TTL for index responses
+  --index-timeout-secs <n> Timeout for index responses
   --provider-cache-dir <dir> Cache swarm provider HTTP inputs here
   --web-seed <url>        Add a web seed URL; repeatable
   --peer <host:port>      Add an explicit peer endpoint; repeatable
@@ -39,6 +44,11 @@ DISCOVER_URLS=()
 TRACKERS=()
 TRACKER_FILES=()
 TRACKER_LIST_URLS=()
+INDEX_URL_TEMPLATES=()
+INDEX_QUERY=""
+INDEX_KIND=""
+INDEX_CACHE_TTL_SECS=""
+INDEX_TIMEOUT_SECS=""
 PROVIDER_CACHE_DIR=""
 WEB_SEEDS=()
 PEERS=()
@@ -92,6 +102,31 @@ while [[ $# -gt 0 ]]; do
       TRACKER_LIST_URLS+=("$2")
       shift 2
       ;;
+    --index-url-template)
+      require_value "$1" "${2:-}"
+      INDEX_URL_TEMPLATES+=("$2")
+      shift 2
+      ;;
+    --index-query)
+      require_value "$1" "${2:-}"
+      INDEX_QUERY="$2"
+      shift 2
+      ;;
+    --index-kind)
+      require_value "$1" "${2:-}"
+      INDEX_KIND="$2"
+      shift 2
+      ;;
+    --index-cache-ttl-secs)
+      require_value "$1" "${2:-}"
+      INDEX_CACHE_TTL_SECS="$2"
+      shift 2
+      ;;
+    --index-timeout-secs)
+      require_value "$1" "${2:-}"
+      INDEX_TIMEOUT_SECS="$2"
+      shift 2
+      ;;
     --provider-cache-dir)
       require_value "$1" "${2:-}"
       PROVIDER_CACHE_DIR="$2"
@@ -143,8 +178,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ${#LOCATORS[@]} -eq 0 && ${#DISCOVER_FILES[@]} -eq 0 && ${#DISCOVER_URLS[@]} -eq 0 ]]; then
-  echo "error: provide at least one --locator, --discover-file, or --discover-url" >&2
+if [[ ${#LOCATORS[@]} -eq 0 && ${#DISCOVER_FILES[@]} -eq 0 && ${#DISCOVER_URLS[@]} -eq 0 && ${#INDEX_URL_TEMPLATES[@]} -eq 0 ]]; then
+  echo "error: provide at least one --locator, --discover-file, --discover-url, or --index-url-template" >&2
   usage >&2
   exit 1
 fi
@@ -183,6 +218,21 @@ done
 for url in "${TRACKER_LIST_URLS[@]}"; do
   CMD+=(--tracker-list-url "$url")
 done
+for url in "${INDEX_URL_TEMPLATES[@]}"; do
+  CMD+=(--index-url-template "$url")
+done
+if [[ -n "$INDEX_QUERY" ]]; then
+  CMD+=(--index-query "$INDEX_QUERY")
+fi
+if [[ -n "$INDEX_KIND" ]]; then
+  CMD+=(--index-kind "$INDEX_KIND")
+fi
+if [[ -n "$INDEX_CACHE_TTL_SECS" ]]; then
+  CMD+=(--index-cache-ttl-secs "$INDEX_CACHE_TTL_SECS")
+fi
+if [[ -n "$INDEX_TIMEOUT_SECS" ]]; then
+  CMD+=(--index-timeout-secs "$INDEX_TIMEOUT_SECS")
+fi
 if [[ -n "$PROVIDER_CACHE_DIR" ]]; then
   CMD+=(--swarm-provider-cache-dir "$PROVIDER_CACHE_DIR")
 fi

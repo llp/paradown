@@ -1,5 +1,5 @@
 use crate::domain::{HttpAuth, HttpConfig, HttpHeader};
-use crate::p2p::{LibtorrentEngineConfig, SwarmProviderConfig};
+use crate::p2p::{LibtorrentEngineConfig, SwarmIndexProviderConfig, SwarmProviderConfig};
 use crate::storage::Backend;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -513,6 +513,19 @@ impl Config {
         if let Some(value) = parse_env_u64("PARADOWN_TRACKER_LIST_TIMEOUT_SECS")? {
             self.p2p.swarm.tracker_list_timeout_secs = value;
         }
+        if let Some(value) = read_env("PARADOWN_INDEX_URL_TEMPLATES") {
+            self.p2p.swarm.index_providers = parse_csv_env(&value)
+                .into_iter()
+                .enumerate()
+                .map(|(index, url_template)| SwarmIndexProviderConfig {
+                    name: format!("env-index-{}", index + 1),
+                    url_template,
+                    input_kind: Default::default(),
+                    cache_ttl_secs: self.p2p.swarm.tracker_list_cache_ttl_secs,
+                    timeout_secs: self.p2p.swarm.tracker_list_timeout_secs,
+                })
+                .collect();
+        }
 
         Ok(())
     }
@@ -597,6 +610,24 @@ fn validate_p2p_config(p2p: &P2pConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidP2pConfig(
             "swarm provider timeouts must be greater than 0".into(),
         ));
+    }
+    for provider in &p2p.swarm.index_providers {
+        if provider.name.trim().is_empty() {
+            return Err(ConfigError::InvalidP2pConfig(
+                "swarm index provider name cannot be blank".into(),
+            ));
+        }
+        if provider.url_template.trim().is_empty() {
+            return Err(ConfigError::InvalidP2pConfig(
+                "swarm index provider url_template cannot be blank".into(),
+            ));
+        }
+        if provider.cache_ttl_secs == 0 || provider.timeout_secs == 0 {
+            return Err(ConfigError::InvalidP2pConfig(
+                "swarm index provider cache_ttl_secs and timeout_secs must be greater than 0"
+                    .into(),
+            ));
+        }
     }
     if p2p.swarm.limits.max_trackers == 0
         || p2p.swarm.limits.max_peers == 0
@@ -866,10 +897,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_swarm_index_provider_config() {
+        let config = r#"
+            [p2p.swarm]
+
+            [[p2p.swarm.index_providers]]
+            name = "authorized-feed"
+            url_template = "https://index.example/search?q={btih}"
+            input_kind = "Feed"
+            cache_ttl_secs = 300
+            timeout_secs = 5
+        "#;
+
+        let parsed = config.parse::<Config>().unwrap();
+        let provider = &parsed.p2p.swarm.index_providers[0];
+        assert_eq!(provider.name, "authorized-feed");
+        assert_eq!(
+            provider.url_template,
+            "https://index.example/search?q={btih}"
+        );
+        assert_eq!(provider.cache_ttl_secs, 300);
+        assert_eq!(provider.timeout_secs, 5);
+    }
+
+    #[test]
     fn rejects_invalid_p2p_config() {
         let config = r#"
             [p2p.libtorrent]
             alert_queue_size = 0
+        "#;
+
+        let err = config.parse::<Config>().unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigLoadError::Config(super::ConfigError::InvalidP2pConfig(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_swarm_index_provider_config() {
+        let config = r#"
+            [[p2p.swarm.index_providers]]
+            name = " "
+            url_template = "https://index.example/search?q={query}"
         "#;
 
         let err = config.parse::<Config>().unwrap_err();

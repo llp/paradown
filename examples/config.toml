@@ -56,6 +56,13 @@ tracker_list_timeout_secs = 15
 discovery_input_kind = "Auto"
 discovery_timeout_secs = 15
 
+#[[p2p.swarm.index_providers]]
+#name = "authorized-feed"
+#url_template = "https://index.example/search?q={btih}"
+#input_kind = "Feed"
+#cache_ttl_secs = 86400
+#timeout_secs = 15
+
 [p2p.swarm.limits]
 max_trackers = 128
 max_peers = 64

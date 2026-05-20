@@ -45,12 +45,12 @@ pub use download::{
 pub use error::Error;
 pub use p2p::TorrentResumeSnapshot;
 pub use p2p::{
-    MagnetExactTopic, MagnetLink, MagnetParameter, SwarmProviderConfig, SwarmProviderLimits,
-    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentPeerEndpoint,
-    TorrentSnapshot, TorrentSwarmHints, TorrentSwarmProviderCandidate,
-    TorrentSwarmProviderCandidateKind, TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport,
-    TorrentSwarmProviderResolution, TorrentSwarmProviderSeverity, TorrentTransferStats,
-    build_swarm_provider_resolver,
+    IndexFeedProvider, MagnetExactTopic, MagnetLink, MagnetParameter, SwarmIndexProviderConfig,
+    SwarmProviderConfig, SwarmProviderLimits, TorrentDiagnosticEvent, TorrentDiagnosticScope,
+    TorrentDiagnosticSeverity, TorrentPeerEndpoint, TorrentSnapshot, TorrentSwarmHints,
+    TorrentSwarmProviderCandidate, TorrentSwarmProviderCandidateKind,
+    TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport, TorrentSwarmProviderResolution,
+    TorrentSwarmProviderSeverity, TorrentTransferStats, build_swarm_provider_resolver,
 };
 pub use runtime::{init_logger, init_logger_with_level};
 pub use storage::{Backend, Store};

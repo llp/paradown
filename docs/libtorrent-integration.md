@@ -62,12 +62,14 @@ lives in `src/p2p/provider.rs`:
 - `TorrentSwarmProviderResolution`: merged hints, candidates, diagnostics, and
   per-provider reports
 - `SwarmProviderConfig`: config surface for static hints, cached tracker lists,
-  discovery inputs, cache directory, and candidate limits
+  authorized index/feed URL templates, discovery inputs, cache directory, and
+  candidate limits
 
 Built-in providers are intentionally open-ecosystem pieces: magnet hints,
-static tracker/peer/web-seed inputs, cached remote tracker lists, and
-HTML/feed/text discovery. Provider failures are non-fatal; they are surfaced as
-diagnostics and the torrent still starts with whatever hints were already known.
+static tracker/peer/web-seed inputs, cached remote tracker lists, authorized
+index/feed URL templates, and HTML/feed/text discovery. Provider failures are
+non-fatal; they are surfaced as diagnostics and the torrent still starts with
+whatever hints were already known.
 
 `Manager::new_with_torrent_engine(config, engine)` is the injection point.
 `Manager::new(config)` installs `LibtorrentEngineUnavailable`, which keeps the
@@ -107,6 +109,7 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --timeout-secs 120 \
   --tracker-file ./trackers.txt \
   --tracker-list-url https://example.com/trackers.txt \
+  --index-url-template 'https://index.example/search?q={btih}' \
   --swarm-provider-cache-dir ./downloads/.paradown/swarm-cache \
   --discover-url https://example.com/releases.xml \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
@@ -116,14 +119,17 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
 diagnostic/bootstrap hooks for private fixtures, trackerless swarms, and public
 magnet runs that need more than bare DHT. They now feed the static provider.
 `--tracker-list-url` adds a remote tracker-list provider with TTL-based disk
-cache and stale-cache fallback. `--discover-file` and `--discover-url` feed
-HTML/feed/text into the discovery provider, adding discovered magnets and
-`.torrent` inputs to the run and injecting discovered trackers/web seeds as
-swarm hints. Remote provider fetches use timeout-bounded `reqwest` clients with
-stable paradown user agents. `--timeout-secs N` bounds public-swarm smoke runs
-and exits with code `124` after printing the latest swarm snapshot and recent
-provider/tracker/DHT/peer/listen/port-mapping diagnostics. The native adapter
-also exposes `listen_port` and `connect_peer` as narrow advanced control hooks.
+cache and stale-cache fallback. `--index-url-template` adds an authorized
+index/feed provider with the same cache behavior; templates support `{btih}`,
+`{info_hash}`, `{display_name}`, `{query}`, and `{locator}`. `--discover-file`
+and `--discover-url` feed HTML/feed/text into the discovery provider, adding
+discovered magnets and `.torrent` inputs to the run and injecting discovered
+trackers/web seeds as swarm hints. Remote provider fetches use timeout-bounded
+`reqwest` clients with stable paradown user agents. `--timeout-secs N` bounds
+public-swarm smoke runs and exits with code `124` after printing the latest
+swarm snapshot and recent provider/tracker/DHT/peer/listen/port-mapping
+diagnostics. The native adapter also exposes `listen_port` and `connect_peer`
+as narrow advanced control hooks.
 They are used by tests and keep diagnostics available without leaking
 libtorrent types into the main crate.
 
@@ -134,6 +140,7 @@ Public-network smoke runs are intentionally opt-in and stay out of default CI:
   --timeout 180 \
   --tracker-file ./trackers.txt \
   --tracker-list-url https://example.com/trackers.txt \
+  --index-url-template 'https://index.example/search?q={btih}' \
   --provider-cache-dir ./target/libtorrent-public-smoke/cache \
   --locator 'magnet:?xt=urn:btih:...'
 ```

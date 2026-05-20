@@ -250,6 +250,7 @@ paradown-libtorrent \
   --timeout-secs 120 \
   --tracker-file ./trackers.txt \
   --tracker-list-url https://example.com/trackers.txt \
+  --index-url-template 'https://index.example/search?q={btih}' \
   --discover-url https://example.com/releases.xml \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
 ```
@@ -257,6 +258,9 @@ paradown-libtorrent \
 The native CLI routes explicit swarm hints through the swarm provider layer:
 `--tracker`, `--tracker-file`, `--web-seed`, and `--peer` become static provider
 candidates. `--tracker-list-url` enables cached remote tracker-list providers.
+`--index-url-template` enables authorized index/feed providers. Templates can
+use `{btih}`, `{info_hash}`, `{display_name}`, `{query}`, or `{locator}`; values
+are URL-encoded before the feed is fetched and parsed.
 `--discover-file`, `--discover-url`, and `--discover-kind auto|html|feed|text`
 enable the discovery provider for HTML/feed/text inputs. Provider candidates and
 diagnostics are printed before transfer startup, which makes public-swarm smoke
@@ -273,6 +277,7 @@ For a repeatable public-network smoke run that stays outside default CI, use:
   --timeout 180 \
   --tracker-file ./trackers.txt \
   --tracker-list-url https://example.com/trackers.txt \
+  --index-url-template 'https://index.example/search?q={btih}' \
   --provider-cache-dir ./target/libtorrent-public-smoke/cache \
   --locator 'magnet:?xt=urn:btih:...'
 ```

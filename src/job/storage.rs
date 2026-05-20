@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 impl Task {
     pub async fn persist_task(self: &Arc<Self>) -> Result<(), Error> {
+        let _persistence_guard = self.persistence_gate.lock().await;
+
         {
             let mut updated_at_guard = self.updated_at.lock().await;
             *updated_at_guard = Some(Utc::now());

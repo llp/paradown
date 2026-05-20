@@ -63,6 +63,7 @@ pub struct Task {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Mutex<Option<DateTime<Utc>>>,
     pub persistence: Option<Arc<Store>>,
+    persistence_gate: Mutex<()>,
     pub workers: RwLock<Vec<Arc<Worker>>>,
 
     pub total_size: AtomicU64,
@@ -184,6 +185,7 @@ impl Task {
             created_at: Some(created_at.unwrap_or(now)),
             updated_at: Mutex::new(Some(updated_at.unwrap_or(now))),
             persistence,
+            persistence_gate: Mutex::new(()),
             workers: RwLock::new(vec![]),
             worker_event_tx,
             manager,

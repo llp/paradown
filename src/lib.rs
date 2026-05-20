@@ -2,7 +2,7 @@ mod checksum;
 mod config;
 mod coordinator;
 mod diagnostics;
-mod discovery;
+pub mod discovery;
 mod domain;
 pub mod download;
 mod error;
@@ -27,6 +27,10 @@ pub use checksum::{Checksum, ChecksumAlgorithm};
 pub use config::{
     Config, ConfigBuilder, ConfigError, ConfigLoadError, FileConflictStrategy, LogLevel, P2pConfig,
     ProgressThrottleConfig, RetryConfig,
+};
+pub use discovery::{
+    TorrentDiscoveryCandidate, TorrentDiscoveryInputKind, TorrentDiscoveryKind,
+    TorrentDiscoveryOptions, discover_torrent_candidates,
 };
 pub use domain::{
     BlockState, FileManifest, HttpAuth, HttpClientOptions, HttpConfig, HttpHeader,

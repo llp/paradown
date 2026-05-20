@@ -16,7 +16,7 @@ Use "-" for blank optional fields. Lines beginning with "#" are ignored.
 
 Options:
   --matrix-file <file>   TSV matrix of authorized public test cases
-  --out-dir <dir>        Write downloads, logs, and summary here
+  --out-dir <dir>        Write downloads, logs, reports, and summary here
   --default-timeout <n>  Timeout seconds when a row omits timeout_secs
   --require-complete     Treat exit code 124 as failure instead of diagnostic timeout
   --fail-fast            Stop after the first failed case
@@ -107,10 +107,19 @@ fi
 
 mkdir -p "$OUT_DIR/logs" "$OUT_DIR/cases"
 SUMMARY="$OUT_DIR/summary.tsv"
+SUMMARY_JSONL="$OUT_DIR/summary.jsonl"
+RUN_JSON="$OUT_DIR/run.json"
+REPORT_MD="$OUT_DIR/report.md"
 printf "name\tstatus\texit_code\tduration_secs\tlog\tcase_dir\n" > "$SUMMARY"
+printf '' > "$SUMMARY_JSONL"
 
 case_count=0
+completed_count=0
+timed_out_count=0
 failed_count=0
+dry_run_count=0
+RUN_STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+RUN_STARTED_TS="$(date +%s)"
 
 field_or_empty() {
   local value="${1:-}"
@@ -137,6 +146,115 @@ validate_positive_integer() {
     echo "error: $label must be a positive integer" >&2
     exit 1
   fi
+}
+
+json_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "${1:-}")"
+}
+
+log_excerpt() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    printf ''
+    return
+  fi
+
+  { grep -E -i 'error|failed|timed out|diagnostic|swarm provider|tracker|dht|peer' "$path" || true; } \
+    | tail -n 12 \
+    | tr '\n' ' ' \
+    | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+write_case_jsonl() {
+  local name="$1"
+  local status="$2"
+  local exit_code="$3"
+  local duration_secs="$4"
+  local log_path="$5"
+  local case_dir="$6"
+  local timeout_secs="$7"
+  local command_display="$8"
+  local diagnostic_excerpt="$9"
+
+  {
+    printf '{"name":'
+    json_string "$name"
+    printf ',"status":'
+    json_string "$status"
+    printf ',"exit_code":%s' "$exit_code"
+    printf ',"duration_secs":%s' "$duration_secs"
+    printf ',"timeout_secs":%s' "$timeout_secs"
+    printf ',"log":'
+    json_string "$log_path"
+    printf ',"case_dir":'
+    json_string "$case_dir"
+    printf ',"command":'
+    json_string "$command_display"
+    printf ',"diagnostic_excerpt":'
+    json_string "$diagnostic_excerpt"
+    printf '}\n'
+  } >> "$SUMMARY_JSONL"
+}
+
+write_run_reports() {
+  local finished_at finished_ts duration_secs
+  finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  finished_ts="$(date +%s)"
+  duration_secs="$((finished_ts - RUN_STARTED_TS))"
+
+  {
+    printf '{\n'
+    printf '  "started_at": '
+    json_string "$RUN_STARTED_AT"
+    printf ',\n  "finished_at": '
+    json_string "$finished_at"
+    printf ',\n  "duration_secs": %s,\n' "$duration_secs"
+    printf '  "matrix_file": '
+    json_string "$MATRIX_FILE"
+    printf ',\n  "out_dir": '
+    json_string "$OUT_DIR"
+    printf ',\n  "require_complete": %s,\n' "$([[ "$REQUIRE_COMPLETE" == "1" ]] && printf true || printf false)"
+    printf '  "dry_run": %s,\n' "$([[ "$DRY_RUN" == "1" ]] && printf true || printf false)"
+    printf '  "cases": %s,\n' "$case_count"
+    printf '  "completed": %s,\n' "$completed_count"
+    printf '  "timed_out": %s,\n' "$timed_out_count"
+    printf '  "failed": %s,\n' "$failed_count"
+    printf '  "dry_run_cases": %s,\n' "$dry_run_count"
+    printf '  "summary_tsv": '
+    json_string "$SUMMARY"
+    printf ',\n  "summary_jsonl": '
+    json_string "$SUMMARY_JSONL"
+    printf ',\n  "report_md": '
+    json_string "$REPORT_MD"
+    printf '\n}\n'
+  } > "$RUN_JSON"
+
+  {
+    printf '# Libtorrent Public Soak Report\n\n'
+    printf '%s\n' "- Started: \`$RUN_STARTED_AT\`"
+    printf '%s\n' "- Finished: \`$finished_at\`"
+    printf '%s\n' "- Duration: \`${duration_secs}s\`"
+    printf '%s\n' "- Matrix: \`$MATRIX_FILE\`"
+    printf '%s\n' "- Output: \`$OUT_DIR\`"
+    printf -- '- Cases: `%s` completed=`%s` timed-out=`%s` failed=`%s` dry-run=`%s`\n\n' \
+      "$case_count" "$completed_count" "$timed_out_count" "$failed_count" "$dry_run_count"
+    printf '| Case | Status | Exit | Duration | Log | Case Dir |\n'
+    printf '| --- | --- | ---: | ---: | --- | --- |\n'
+    tail -n +2 "$SUMMARY" | while IFS=$'\t' read -r row_name row_status row_exit row_duration row_log row_case_dir; do
+      printf '| `%s` | `%s` | `%s` | `%ss` | `%s` | `%s` |\n' \
+        "$row_name" "$row_status" "$row_exit" "$row_duration" "$row_log" "$row_case_dir"
+    done
+  } > "$REPORT_MD"
 }
 
 run_case() {
@@ -202,14 +320,17 @@ run_case() {
   fi
 
   echo "==> libtorrent soak case: $name"
+  local command_display
+  command_display="$(printf '%q ' "${cmd[@]}")"
   printf 'command:' > "$log_path"
   printf ' %q' "${cmd[@]}" >> "$log_path"
   printf '\n\n' >> "$log_path"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    printf '%q ' "${cmd[@]}"
-    printf '\n'
+    printf '%s\n' "$command_display"
     printf "%s\tdry-run\t0\t0\t%s\t%s\n" "$name" "$log_path" "$case_dir" >> "$SUMMARY"
+    dry_run_count=$((dry_run_count + 1))
+    write_case_jsonl "$name" "dry-run" 0 0 "$log_path" "$case_dir" "${timeout_secs:-$DEFAULT_TIMEOUT}" "$command_display" ""
     return 0
   fi
 
@@ -223,8 +344,10 @@ run_case() {
 
   if [[ "$exit_code" -eq 0 ]]; then
     status="completed"
+    completed_count=$((completed_count + 1))
   elif [[ "$exit_code" -eq 124 && "$REQUIRE_COMPLETE" != "1" ]]; then
     status="timed-out"
+    timed_out_count=$((timed_out_count + 1))
   else
     status="failed"
     failed_count=$((failed_count + 1))
@@ -232,8 +355,19 @@ run_case() {
 
   printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
     "$name" "$status" "$exit_code" "$((end_ts - start_ts))" "$log_path" "$case_dir" >> "$SUMMARY"
+  write_case_jsonl \
+    "$name" \
+    "$status" \
+    "$exit_code" \
+    "$((end_ts - start_ts))" \
+    "$log_path" \
+    "$case_dir" \
+    "${timeout_secs:-$DEFAULT_TIMEOUT}" \
+    "$command_display" \
+    "$(log_excerpt "$log_path")"
 
   if [[ "$status" == "failed" && "$FAIL_FAST" == "1" ]]; then
+    write_run_reports
     echo "error: case '$name' failed; see $log_path" >&2
     exit 1
   fi
@@ -307,7 +441,12 @@ if [[ "$case_count" -eq 0 ]]; then
   exit 1
 fi
 
+write_run_reports
+
 echo "Libtorrent public soak summary: $SUMMARY"
+echo "Libtorrent public soak JSONL:   $SUMMARY_JSONL"
+echo "Libtorrent public soak run:     $RUN_JSON"
+echo "Libtorrent public soak report:  $REPORT_MD"
 if [[ "$failed_count" -gt 0 ]]; then
   echo "error: $failed_count soak case(s) failed" >&2
   exit 1

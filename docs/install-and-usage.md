@@ -290,6 +290,10 @@ cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
 ./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv
 ```
 
+The soak runner writes `summary.tsv`, `summary.jsonl`, `run.json`, and
+`report.md` under the output directory. `summary.jsonl` is intended for CI or
+release automation, while `report.md` is the human-readable release artifact.
+
 ### I need Docker / SBOM / package-manager files
 
 Repository-side release assets now include:

@@ -43,6 +43,8 @@ What is implemented today:
 - Swarm provider layer for magnet hints, static tracker/peer/web-seed inputs,
   cached remote tracker lists, authorized index/feed URL templates, and
   HTML/feed/text discovery
+- Release-facing public swarm soak reports with TSV, JSONL, run metadata, and
+  Markdown output
 
 What is not implemented yet:
 

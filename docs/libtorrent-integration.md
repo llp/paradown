@@ -156,9 +156,10 @@ cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
   --out-dir ./target/libtorrent-public-soak
 ```
 
-Each row writes a dedicated log and the runner emits `summary.tsv` with
-`completed`, `timed-out`, or `failed` status. Timeouts are diagnostic outcomes
-by default; pass `--require-complete` when every sample must finish.
+Each row writes a dedicated log and the runner emits release-facing telemetry:
+`summary.tsv`, `summary.jsonl`, `run.json`, and `report.md`. Case statuses are
+`completed`, `timed-out`, `failed`, or `dry-run`. Timeouts are diagnostic
+outcomes by default; pass `--require-complete` when every sample must finish.
 
 Native release packages are built separately from the default HTTP CLI:
 

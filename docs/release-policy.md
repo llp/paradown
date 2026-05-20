@@ -34,6 +34,7 @@
    - copy [examples/libtorrent-public-soak.example.tsv](/Users/liulipeng/workspace/rust/paradown/examples/libtorrent-public-soak.example.tsv)
    - fill it with content you have rights to download
    - run `./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv`
+   - archive `summary.jsonl`, `run.json`, `report.md`, and per-case logs from the soak output directory
 6. Verify Docker image build if the Dockerfile changed.
 7. Push the release tag.
 
@@ -42,7 +43,8 @@ all-feature tests, optional cargo-audit, native libtorrent checks, and local
 release package builds. It also fails on tracked, staged, or untracked
 worktree changes so the tag is cut from an auditable commit. Public-network
 soak is intentionally separate from default CI because swarm availability and
-content authorization are external to the repository.
+content authorization are external to the repository, but its JSONL/run/report
+outputs are release artifacts when torrent code changes.
 
 ## Packaging policy
 

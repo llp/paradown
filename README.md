@@ -38,6 +38,8 @@ What is implemented today:
 - Native libtorrent magnet metadata-exchange regression covering magnet-to-metadata-to-file completion
 - Separate `paradown-libtorrent` CLI/release package with timeout-bounded
   swarm diagnostics for tracker, DHT, peer, listen, and NAT traversal issues
+- Torrent/magnet discovery for HTML, feed, and plain-text inputs, including
+  tracker and web-seed extraction for native libtorrent runs
 
 What is not implemented yet:
 
@@ -92,6 +94,8 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --bin paradown-libtorrent -- \
   --download-dir ./downloads \
   --timeout-secs 120 \
+  --tracker-file ./trackers.txt \
+  --discover-file ./release-page.html \
   --urls ./ubuntu.torrent 'magnet:?xt=urn:btih:...'
 ```
 
@@ -328,6 +332,7 @@ Additional release-facing assets:
 
 - Docker runtime image: [Dockerfile](/Users/liulipeng/workspace/rust/paradown/Dockerfile)
 - Native libtorrent release script: [scripts/build-libtorrent-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/build-libtorrent-release.sh)
+- Native libtorrent public smoke script: [scripts/smoke-libtorrent-public.sh](/Users/liulipeng/workspace/rust/paradown/scripts/smoke-libtorrent-public.sh)
 - SBOM generator: [scripts/generate-sbom.sh](/Users/liulipeng/workspace/rust/paradown/scripts/generate-sbom.sh)
 - Optional signing helper: [scripts/sign-release.sh](/Users/liulipeng/workspace/rust/paradown/scripts/sign-release.sh)
 - Homebrew template: [packaging/homebrew/paradown.rb](/Users/liulipeng/workspace/rust/paradown/packaging/homebrew/paradown.rb)

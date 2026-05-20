@@ -45,6 +45,15 @@ The stable Rust boundary lives in `src/p2p/`:
   `TorrentSnapshot`
 - `TorrentMetadata`: engine-neutral torrent metadata
 
+Swarm discovery lives in `src/discovery/swarm.rs` and is public through
+`discover_torrent_candidates(...)`. It uses battle-tested parser crates instead
+of hand-written scraping: `scraper` for HTML, `feed-rs` for feeds, `regex` for
+plain-text locator extraction, and `url` for URL normalization. The discovery
+API returns structured `TorrentDiscoveryCandidate` values for magnets,
+`.torrent` files, trackers, and web seeds. Local discovery files can resolve
+relative `.torrent` links against the file's directory, while remote discovery
+uses the source URL as the base URL.
+
 `Manager::new_with_torrent_engine(config, engine)` is the injection point.
 `Manager::new(config)` installs `LibtorrentEngineUnavailable`, which keeps the
 backend shape visible but reports `available = false` and refuses to start
@@ -81,16 +90,32 @@ cargo run --manifest-path integrations/libtorrent-engine/Cargo.toml \
   --bin paradown-libtorrent -- \
   --download-dir ./downloads \
   --timeout-secs 120 \
+  --tracker-file ./trackers.txt \
+  --discover-url https://example.com/releases.xml \
   --urls ./example.torrent 'magnet:?xt=urn:btih:...'
 ```
 
-`--peer HOST:PORT` is an explicit diagnostic/bootstrap hook for private local
-fixtures or trackerless swarms. `--timeout-secs N` bounds public-swarm smoke
-runs and exits with code `124` after printing the latest swarm snapshot and
-recent tracker/DHT/peer/listen/port-mapping diagnostics. The native adapter also
-exposes `listen_port` and `connect_peer` as narrow advanced control hooks. They
-are used by tests and keep diagnostics available without leaking libtorrent
-types into the main crate.
+`--tracker`, `--tracker-file`, `--web-seed`, and `--peer HOST:PORT` are explicit
+diagnostic/bootstrap hooks for private fixtures, trackerless swarms, and public
+magnet runs that need more than bare DHT. `--discover-file` and `--discover-url`
+feed HTML/feed/text into the main discovery API, adding discovered magnets and
+`.torrent` inputs to the run and injecting discovered trackers/web seeds as
+swarm hints. Remote discovery uses a timeout-bounded `reqwest` client with a
+stable `paradown-libtorrent` user agent. `--timeout-secs N` bounds public-swarm
+smoke runs and exits with code `124` after printing the latest swarm snapshot
+and recent tracker/DHT/peer/listen/port-mapping diagnostics. The native adapter
+also exposes `listen_port` and `connect_peer` as narrow advanced control hooks.
+They are used by tests and keep diagnostics available without leaking
+libtorrent types into the main crate.
+
+Public-network smoke runs are intentionally opt-in and stay out of default CI:
+
+```bash
+./scripts/smoke-libtorrent-public.sh \
+  --timeout 180 \
+  --tracker-file ./trackers.txt \
+  --locator 'magnet:?xt=urn:btih:...'
+```
 
 Native release packages are built separately from the default HTTP CLI:
 

@@ -19,8 +19,9 @@ use crate::domain::{
 use crate::error::Error;
 use crate::events::Event;
 use crate::p2p::{
-    TorrentDiagnosticEvent, TorrentEngineSession, TorrentEngineState, TorrentMetadata,
-    TorrentResumeSnapshot, TorrentSnapshot, TorrentTransferStats,
+    TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity,
+    TorrentEngineSession, TorrentEngineState, TorrentMetadata, TorrentResumeSnapshot,
+    TorrentSnapshot, TorrentTransferStats,
 };
 use crate::payload::store::PayloadStore;
 use crate::stats::{Stats, StatsSnapshot};
@@ -196,19 +197,29 @@ impl Task {
     }
 
     pub async fn snapshot(&self) -> TaskSnapshot {
-        let status_guard = self.status.lock().await;
-        let status_str = match &*status_guard {
-            Status::Failed(err) => format!("Failed: {}", err),
-            _ => status_guard.to_string(),
+        let status_str = {
+            let status_guard = self.status.lock().await;
+            match &*status_guard {
+                Status::Failed(err) => format!("Failed: {}", err),
+                _ => status_guard.to_string(),
+            }
         };
 
-        let updated_at_guard = self.updated_at.lock().await;
-        let piece_states = self.piece_states.read().await;
-        let completed_pieces = completed_piece_count(&piece_states);
-        let piece_count = piece_states.len() as u32;
-        let block_states = self.block_states.read().await;
-        let completed_blocks = completed_block_count(&block_states);
-        let block_count = block_states.len() as u32;
+        let updated_at = *self.updated_at.lock().await;
+        let (completed_pieces, piece_count) = {
+            let piece_states = self.piece_states.read().await;
+            (
+                completed_piece_count(&piece_states),
+                piece_states.len() as u32,
+            )
+        };
+        let (completed_blocks, block_count) = {
+            let block_states = self.block_states.read().await;
+            (
+                completed_block_count(&block_states),
+                block_states.len() as u32,
+            )
+        };
         let stats = self.stats.snapshot().await;
         let sources = self.sources.read().await.clone();
         let torrent = self.torrent_snapshot().await;
@@ -234,7 +245,7 @@ impl Task {
             completed_blocks,
             block_count,
             created_at: self.created_at,
-            updated_at: *updated_at_guard,
+            updated_at,
             checksums: self.checksums.lock().await.clone(),
             stats,
             torrent,
@@ -492,6 +503,9 @@ impl Task {
 
     pub(crate) async fn record_torrent_diagnostic(&self, diagnostic: TorrentDiagnosticEvent) {
         let mut diagnostics = self.torrent_diagnostics.write().await;
+        if should_replace_torrent_diagnostic(&diagnostic) {
+            diagnostics.retain(|existing| !same_torrent_diagnostic_bucket(existing, &diagnostic));
+        }
         if diagnostics.len() == MAX_TORRENT_DIAGNOSTICS {
             diagnostics.pop_front();
         }
@@ -732,6 +746,28 @@ impl Task {
             }
         }
     }
+}
+
+fn should_replace_torrent_diagnostic(diagnostic: &TorrentDiagnosticEvent) -> bool {
+    diagnostic.severity == TorrentDiagnosticSeverity::Info
+        && diagnostic.peers.is_some()
+        && matches!(
+            diagnostic.scope,
+            TorrentDiagnosticScope::Dht | TorrentDiagnosticScope::Tracker
+        )
+}
+
+fn same_torrent_diagnostic_bucket(
+    existing: &TorrentDiagnosticEvent,
+    diagnostic: &TorrentDiagnosticEvent,
+) -> bool {
+    existing.scope == diagnostic.scope
+        && existing.severity == diagnostic.severity
+        && match diagnostic.scope {
+            TorrentDiagnosticScope::Tracker => existing.url == diagnostic.url,
+            TorrentDiagnosticScope::Dht => true,
+            _ => false,
+        }
 }
 
 fn piece_state_layout_matches(expected: &[PieceState], restored: &[PieceState]) -> bool {

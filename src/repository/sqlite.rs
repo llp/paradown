@@ -5,10 +5,13 @@ use crate::repository::models::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 use std::fs;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct SqliteRepository {
     pool: Arc<SqlitePool>,
@@ -38,7 +41,15 @@ impl SqliteRepository {
         }
 
         let conn_str = format!("sqlite://{}", db_abs.display());
-        let pool = SqlitePool::connect(&conn_str)
+        let options = SqliteConnectOptions::from_str(&conn_str)
+            .map_err(|e| Error::Other(e.to_string()))?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(30));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
             .await
             .map_err(|e| Error::Other(e.to_string()))?;
 

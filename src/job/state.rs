@@ -227,13 +227,12 @@ impl Task {
                 .await?;
         }
 
-        self.persist_task().await?;
-
         let workers = { self.workers.read().await.clone() };
         for worker in workers {
             let _ = worker.cancel().await;
         }
 
+        self.persist_task().await?;
         self.emit_manager_event(Event::Cancel(self.id));
         Ok(())
     }

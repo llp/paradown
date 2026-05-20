@@ -7,7 +7,7 @@ use paradown::p2p::{
 };
 use paradown::{
     Backend, Config, DownloadSpec, Error, Event, Manager, SessionRequest, SourceDescriptor,
-    SourceSet, Store,
+    SourceSet, Store, TorrentDiscoveryInputKind,
 };
 use std::sync::{Arc, Mutex};
 
@@ -232,6 +232,14 @@ impl TorrentEngine for DiagnosticReportingTorrentEngine {
                     peers: None,
                 }));
                 let _ = sender.send(TorrentEngineEvent::Diagnostic(TorrentDiagnosticEvent {
+                    scope: TorrentDiagnosticScope::Peer,
+                    severity: TorrentDiagnosticSeverity::Warning,
+                    message: "peer banned after hash failure".into(),
+                    url: None,
+                    endpoint: Some("203.0.113.10:51413".into()),
+                    peers: None,
+                }));
+                let _ = sender.send(TorrentEngineEvent::Diagnostic(TorrentDiagnosticEvent {
                     scope: TorrentDiagnosticScope::Dht,
                     severity: TorrentDiagnosticSeverity::Info,
                     message: "DHT lookup returned peers".into(),
@@ -285,6 +293,97 @@ impl TorrentEngine for SwarmHintRecordingTorrentEngine {
         request: TorrentEngineRequest,
     ) -> Result<TorrentEngineSession, Error> {
         *self.received_hints.lock().unwrap() = Some(request.swarm_hints.clone());
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct RequestSpecRecordingTorrentEngine {
+    received_spec: Arc<Mutex<Option<DownloadSpec>>>,
+}
+
+#[async_trait]
+impl TorrentEngine for RequestSpecRecordingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        *self.received_spec.lock().unwrap() = Some(request.spec.clone());
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FallbackRecordingTorrentEngine {
+    attempts: Arc<Mutex<Vec<DownloadSpec>>>,
+}
+
+#[async_trait]
+impl TorrentEngine for FallbackRecordingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        self.attempts.lock().unwrap().push(request.spec.clone());
+        if matches!(request.spec, DownloadSpec::TorrentFile { .. }) {
+            return Err(Error::Other("bad torrent metadata cache".into()));
+        }
         Ok(fake_session(&request))
     }
 
@@ -560,14 +659,7 @@ async fn torrent_diagnostics_update_snapshot_and_event_stream() {
 
     let torrent = snapshot.torrent.expect("torrent snapshot");
     assert_eq!(torrent.diagnostics.len(), 2);
-    assert_eq!(
-        torrent.diagnostics[0].scope,
-        TorrentDiagnosticScope::Tracker
-    );
-    assert_eq!(
-        torrent.diagnostics[0].url.as_deref(),
-        Some("udp://tracker.example/announce")
-    );
+    assert_eq!(torrent.diagnostics[0].scope, TorrentDiagnosticScope::Peer);
     assert_eq!(torrent.diagnostics[1].scope, TorrentDiagnosticScope::Dht);
     assert_eq!(torrent.diagnostics[1].peers, Some(5));
 
@@ -575,7 +667,8 @@ async fn torrent_diagnostics_update_snapshot_and_event_stream() {
     for _ in 0..16 {
         match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
             Ok(Ok(Event::TorrentDiagnostic { id, diagnostic })) if id == task_id => {
-                saw_diagnostic_event = diagnostic.scope == TorrentDiagnosticScope::Tracker
+                assert_ne!(diagnostic.scope, TorrentDiagnosticScope::Tracker);
+                saw_diagnostic_event = diagnostic.scope == TorrentDiagnosticScope::Peer
                     || diagnostic.scope == TorrentDiagnosticScope::Dht;
                 if saw_diagnostic_event {
                     break;
@@ -679,6 +772,78 @@ async fn torrent_swarm_providers_enrich_engine_request_and_sources() {
             .iter()
             .any(|locator| { locator == "udp://provider-tracker.example/announce" })
     );
+}
+
+#[tokio::test]
+async fn torrent_swarm_provider_torrent_file_replaces_magnet_engine_spec() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let mut config = p2p_config(&sandbox);
+    let torrent_path = sandbox.path().join("metadata.torrent");
+    std::fs::write(&torrent_path, b"d4:infod4:name4:testee").unwrap();
+    let discovery_path = sandbox.path().join("authorized-index.html");
+    let torrent_url = url::Url::from_file_path(&torrent_path).unwrap();
+    std::fs::write(
+        &discovery_path,
+        format!(r#"<a href="{torrent_url}">metadata</a>"#),
+    )
+    .unwrap();
+    config.p2p.swarm.discovery_files = vec![discovery_path];
+    config.p2p.swarm.discovery_input_kind = TorrentDiscoveryInputKind::Html;
+
+    let received_spec = Arc::new(Mutex::new(None));
+    let manager = Manager::new_with_torrent_engine(
+        config,
+        Arc::new(RequestSpecRecordingTorrentEngine {
+            received_spec: Arc::clone(&received_spec),
+        }),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    assert_eq!(
+        received_spec.lock().unwrap().clone(),
+        Some(DownloadSpec::TorrentFile {
+            path: torrent_path.to_string_lossy().into_owned()
+        })
+    );
+}
+
+#[tokio::test]
+async fn torrent_swarm_provider_torrent_file_failure_falls_back_to_magnet() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let mut config = p2p_config(&sandbox);
+    let torrent_path = sandbox.path().join("metadata.torrent");
+    std::fs::write(&torrent_path, b"d4:infod4:name4:testee").unwrap();
+    let discovery_path = sandbox.path().join("authorized-index.html");
+    let torrent_url = url::Url::from_file_path(&torrent_path).unwrap();
+    std::fs::write(
+        &discovery_path,
+        format!(r#"<a href="{torrent_url}">metadata</a>"#),
+    )
+    .unwrap();
+    config.p2p.swarm.discovery_files = vec![discovery_path];
+    config.p2p.swarm.discovery_input_kind = TorrentDiscoveryInputKind::Html;
+
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let manager = Manager::new_with_torrent_engine(
+        config,
+        Arc::new(FallbackRecordingTorrentEngine {
+            attempts: Arc::clone(&attempts),
+        }),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let task_id = add_magnet(&manager).await;
+    manager.start_task(task_id).await.unwrap();
+
+    let attempts = attempts.lock().unwrap().clone();
+    assert_eq!(attempts.len(), 2);
+    assert!(matches!(attempts[0], DownloadSpec::TorrentFile { .. }));
+    assert!(matches!(attempts[1], DownloadSpec::Magnet { .. }));
 }
 
 #[tokio::test]

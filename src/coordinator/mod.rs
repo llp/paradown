@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell, Semaphore, broadcast};
 
+const TASK_EVENT_CHANNEL_CAPACITY: usize = 4096;
+
 pub struct Manager {
     pub config: Arc<Config>,
     pub tasks: Arc<DashMap<u32, Arc<Task>>>,
@@ -68,7 +70,7 @@ impl Manager {
         torrent_engine: Arc<dyn TorrentEngine>,
     ) -> Result<Arc<Self>, Error> {
         config.validate()?;
-        let (task_event_tx, _) = broadcast::channel(100);
+        let (task_event_tx, _) = broadcast::channel(TASK_EVENT_CHANNEL_CAPACITY);
         let max_concurrent = config.concurrent_tasks;
         let built_http_client = build_http_client(&config)?;
         let http_client = Arc::new(built_http_client.client);
@@ -313,8 +315,7 @@ impl Manager {
 
         clear_pending_queue(self).await?;
 
-        for entry in self.tasks.iter() {
-            let task = Arc::clone(entry.value());
+        for task in self.get_all_tasks() {
             if let Err(e) = task.cancel().await {
                 error!("[Task {}] Failed to cancel: {:?}", task.id, e);
             }
@@ -329,8 +330,7 @@ impl Manager {
 
         clear_pending_queue(self).await?;
 
-        for entry in self.tasks.iter() {
-            let task = Arc::clone(entry.value());
+        for task in self.get_all_tasks() {
             if let Err(e) = task.delete().await {
                 error!("Failed to delete task {}: {:?}", task.id, e);
             }

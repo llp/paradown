@@ -1,3 +1,4 @@
+use crate::domain::DownloadSpec;
 use crate::error::Error;
 use crate::events::Event;
 use crate::job::Task;
@@ -5,9 +6,9 @@ use crate::job::finalize::finish_job;
 use crate::job::prepare::PreparationOutcome;
 use crate::p2p::{
     TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentEngineEvent,
-    TorrentEngineRequest, TorrentEngineState, TorrentSwarmHints, TorrentSwarmProviderDiagnostic,
-    TorrentSwarmProviderSeverity, TorrentTransferStats, build_swarm_provider_resolver,
-    manifest_from_torrent_metadata,
+    TorrentEngineRequest, TorrentEngineState, TorrentSwarmHints, TorrentSwarmProviderCandidateKind,
+    TorrentSwarmProviderDiagnostic, TorrentSwarmProviderSeverity, TorrentTransferStats,
+    build_swarm_provider_resolver, manifest_from_torrent_metadata,
 };
 use log::{debug, warn};
 use std::path::PathBuf;
@@ -33,12 +34,27 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
     let resume = job.torrent_resume_snapshot().await;
     let mut source_set = job.source_set_snapshot().await;
     let initial_hints = TorrentSwarmHints::from_spec_and_sources(&job.spec, &source_set)?;
+    let mut engine_spec = job.spec.clone();
     let swarm_hints = match build_swarm_provider_resolver(&job.config.p2p.swarm, download_dir) {
         Ok(Some(resolver)) => {
             let resolution = resolver.resolve(job.spec.clone(), initial_hints).await;
             for candidate in &resolution.candidates {
                 if let Some(source) = candidate.source_descriptor() {
                     source_set.push_unique(source);
+                }
+                if matches!(
+                    candidate.kind,
+                    TorrentSwarmProviderCandidateKind::TorrentFile
+                ) && matches!(
+                    &job.spec,
+                    DownloadSpec::Magnet { .. } | DownloadSpec::Metadata { .. }
+                ) && matches!(
+                    &engine_spec,
+                    DownloadSpec::Magnet { .. } | DownloadSpec::Metadata { .. }
+                ) && let Ok(DownloadSpec::TorrentFile { path }) =
+                    DownloadSpec::parse(candidate.locator.clone())
+                {
+                    engine_spec = DownloadSpec::TorrentFile { path };
                 }
             }
             for diagnostic in &resolution.diagnostics {
@@ -67,17 +83,47 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
     let (event_sender, event_receiver) = mpsc::unbounded_channel();
     let request = TorrentEngineRequest {
         session_id: job.id,
-        spec: job.spec.clone(),
+        spec: engine_spec.clone(),
         download_dir: download_dir.clone(),
         requested_file_name: job.file_name.get().cloned(),
         requested_file_path: requested_file_path.clone(),
         rate_limit_kib_per_sec: job.config.rate_limit_kib_per_sec.map(u64::from),
-        swarm_hints,
+        swarm_hints: swarm_hints.clone(),
         resume: resume.clone(),
-        event_sender: Some(event_sender),
+        event_sender: Some(event_sender.clone()),
     };
 
-    let engine_session = manager.torrent_engine.start_session(request).await?;
+    let engine_session = match manager.torrent_engine.start_session(request).await {
+        Ok(session) => session,
+        Err(err) if engine_spec != job.spec => {
+            job.record_torrent_diagnostic(TorrentDiagnosticEvent {
+                scope: TorrentDiagnosticScope::Session,
+                severity: TorrentDiagnosticSeverity::Warning,
+                message: format!(
+                    "provider torrent metadata candidate failed; falling back to original spec: {err}"
+                ),
+                url: Some(engine_spec.locator().to_string()),
+                endpoint: None,
+                peers: None,
+            })
+            .await;
+            manager
+                .torrent_engine
+                .start_session(TorrentEngineRequest {
+                    session_id: job.id,
+                    spec: job.spec.clone(),
+                    download_dir: download_dir.clone(),
+                    requested_file_name: job.file_name.get().cloned(),
+                    requested_file_path: requested_file_path.clone(),
+                    rate_limit_kib_per_sec: job.config.rate_limit_kib_per_sec.map(u64::from),
+                    swarm_hints,
+                    resume: resume.clone(),
+                    event_sender: Some(event_sender),
+                })
+                .await?
+        }
+        Err(err) => return Err(err),
+    };
 
     if let Some(metadata) = engine_session.metadata.as_ref().or_else(|| {
         resume
@@ -183,15 +229,16 @@ async fn handle_torrent_engine_event(
                 downloaded,
                 total,
             });
-            job.persist_task().await?;
         }
         TorrentEngineEvent::PieceFinished { piece_index } => {
-            let mut piece_states = job.piece_states.write().await;
-            if let Some(piece) = piece_states
-                .iter_mut()
-                .find(|piece| piece.piece_index == piece_index)
             {
-                piece.completed = true;
+                let mut piece_states = job.piece_states.write().await;
+                if let Some(piece) = piece_states
+                    .iter_mut()
+                    .find(|piece| piece.piece_index == piece_index)
+                {
+                    piece.completed = true;
+                }
             }
             job.persist_task().await?;
         }
@@ -200,11 +247,17 @@ async fn handle_torrent_engine_event(
             job.persist_task().await?;
         }
         TorrentEngineEvent::Diagnostic(diagnostic) => {
-            job.record_torrent_diagnostic(diagnostic.clone()).await;
-            job.emit_manager_event(Event::TorrentDiagnostic {
-                id: job.id,
-                diagnostic,
-            });
+            let should_retain = should_retain_torrent_diagnostic(&diagnostic);
+            let should_emit = should_emit_torrent_diagnostic(&diagnostic);
+            if should_retain {
+                job.record_torrent_diagnostic(diagnostic.clone()).await;
+            }
+            if should_emit {
+                job.emit_manager_event(Event::TorrentDiagnostic {
+                    id: job.id,
+                    diagnostic,
+                });
+            }
         }
         TorrentEngineEvent::Finished => {
             job.record_torrent_state(TorrentEngineState::Completed)
@@ -229,6 +282,59 @@ async fn handle_torrent_engine_event(
     }
 
     Ok(())
+}
+
+fn should_retain_torrent_diagnostic(diagnostic: &TorrentDiagnosticEvent) -> bool {
+    if diagnostic.peers.is_some_and(|peers| peers > 0) {
+        return true;
+    }
+    if is_noisy_torrent_diagnostic(diagnostic) {
+        return false;
+    }
+    !matches!(diagnostic.severity, TorrentDiagnosticSeverity::Info)
+}
+
+fn should_emit_torrent_diagnostic(diagnostic: &TorrentDiagnosticEvent) -> bool {
+    should_retain_torrent_diagnostic(diagnostic)
+        && (matches!(
+            diagnostic.severity,
+            TorrentDiagnosticSeverity::Warning | TorrentDiagnosticSeverity::Error
+        ) || (diagnostic.scope == TorrentDiagnosticScope::Tracker
+            && diagnostic.peers.is_some_and(|peers| peers > 0)))
+}
+
+fn is_noisy_torrent_diagnostic(diagnostic: &TorrentDiagnosticEvent) -> bool {
+    if matches!(
+        diagnostic.scope,
+        TorrentDiagnosticScope::PortMapping
+            if !matches!(diagnostic.severity, TorrentDiagnosticSeverity::Error)
+    ) {
+        return true;
+    }
+
+    if diagnostic.scope != TorrentDiagnosticScope::Tracker {
+        return diagnostic.scope == TorrentDiagnosticScope::Peer
+            && is_noisy_peer_message(diagnostic);
+    }
+
+    let message = diagnostic.message.to_ascii_lowercase();
+    let endpoint = diagnostic.endpoint.as_deref().unwrap_or_default();
+    endpoint.starts_with("127.")
+        || endpoint.starts_with("[::1]")
+        || endpoint.starts_with("::1")
+        || message.contains("sending announce")
+        || message.contains("skipping tracker announce")
+        || message.contains("timed out")
+        || message.contains("end of file")
+}
+
+fn is_noisy_peer_message(diagnostic: &TorrentDiagnosticEvent) -> bool {
+    let message = diagnostic.message.to_ascii_lowercase();
+    message.contains("disconnecting")
+        || message.contains("end of file")
+        || message.contains("connection reset")
+        || message.contains("redirecting")
+        || message.contains("404 not found")
 }
 
 async fn install_torrent_metadata(

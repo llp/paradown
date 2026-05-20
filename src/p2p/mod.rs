@@ -1,5 +1,6 @@
 mod engine;
 mod libtorrent;
+mod magnet;
 mod manifest;
 
 pub use engine::{
@@ -10,6 +11,9 @@ pub use engine::{
     TorrentTransferStats,
 };
 pub use libtorrent::{LibtorrentEngineConfig, LibtorrentEngineUnavailable};
+pub use magnet::{
+    MagnetExactTopic, MagnetLink, MagnetParameter, TorrentPeerEndpoint, TorrentSwarmHints,
+};
 
 pub(crate) use libtorrent::default_libtorrent_engine;
 pub(crate) use manifest::manifest_from_torrent_metadata;

@@ -1,3 +1,4 @@
+use super::magnet::TorrentSwarmHints;
 use crate::domain::{DownloadSpec, SessionManifest};
 use crate::error::Error;
 use async_trait::async_trait;
@@ -269,6 +270,7 @@ pub struct TorrentEngineRequest {
     pub requested_file_name: Option<String>,
     pub requested_file_path: Option<PathBuf>,
     pub rate_limit_kib_per_sec: Option<u64>,
+    pub swarm_hints: TorrentSwarmHints,
     pub resume: Option<TorrentResumeSnapshot>,
     pub event_sender: Option<mpsc::UnboundedSender<TorrentEngineEvent>>,
 }

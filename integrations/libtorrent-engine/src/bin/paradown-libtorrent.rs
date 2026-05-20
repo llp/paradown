@@ -1,5 +1,8 @@
 use clap::Parser;
-use paradown::download::{DownloadSpec, Event, Manager, TorrentEngineHandle};
+use paradown::download::{
+    DownloadSpec, Event, Manager, SessionRequest, SourceDescriptor, SourceSet,
+    TorrentEngineHandle, TorrentPeerEndpoint, TorrentSwarmHints,
+};
 use paradown::{Backend, Config, init_logger_with_level};
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::collections::HashSet;
@@ -36,6 +39,15 @@ struct Cli {
 
     #[arg(long = "peer", value_name = "HOST:PORT")]
     peers: Vec<String>,
+
+    #[arg(long = "tracker", value_name = "ANNOUNCE_URL")]
+    trackers: Vec<String>,
+
+    #[arg(long = "tracker-file", value_name = "FILE")]
+    tracker_files: Vec<PathBuf>,
+
+    #[arg(long = "web-seed", value_name = "URL")]
+    web_seeds: Vec<String>,
 
     #[arg(long)]
     disable_dht: bool,
@@ -86,7 +98,7 @@ async fn run() -> Result<ExitCode> {
     if locators.is_empty() {
         return Err("provide at least one .torrent path or magnet URI".into());
     }
-    let peers = parse_peers(&cli.peers)?;
+    let cli_hints = collect_cli_swarm_hints(&cli)?;
 
     let engine = Arc::new(LibtorrentRasterbarEngine::new(
         config.p2p.libtorrent.clone(),
@@ -97,8 +109,19 @@ async fn run() -> Result<ExitCode> {
     let event_task = spawn_event_reporter(Arc::clone(&manager));
     let mut task_ids = Vec::with_capacity(locators.len());
     let mut torrent_handles = Vec::with_capacity(locators.len());
+    let mut peer_hints = Vec::new();
     for locator in locators {
-        let task_id = manager.add_download(DownloadSpec::parse(locator)?).await?;
+        let spec = DownloadSpec::parse(locator)?;
+        let source_set = source_set_with_hints(&spec, &cli_hints)?;
+        let swarm_hints = TorrentSwarmHints::from_spec_and_sources(&spec, &source_set)?;
+        for peer in &swarm_hints.peers {
+            if !peer_hints.iter().any(|existing| existing == peer) {
+                peer_hints.push(peer.clone());
+            }
+        }
+        let task_id = manager
+            .add_session(SessionRequest::builder(spec).sources(source_set).build())
+            .await?;
         manager.start_task(task_id).await?;
         if let Some(session) = manager.get_session(task_id)
             && let Some(handle) = session.torrent_handle().await
@@ -107,10 +130,10 @@ async fn run() -> Result<ExitCode> {
         }
         task_ids.push(task_id);
     }
-    if !peers.is_empty() && torrent_handles.is_empty() {
+    if !peer_hints.is_empty() && torrent_handles.is_empty() {
         return Err("explicit peers were provided, but no torrent handles are available".into());
     }
-    let peer_task = spawn_peer_connector(Arc::clone(&engine), torrent_handles, peers);
+    let peer_task = spawn_peer_connector(Arc::clone(&engine), torrent_handles, peer_hints);
 
     let timed_out = wait_for_completion(&manager, cli.timeout_secs).await?;
     if timed_out {
@@ -259,36 +282,56 @@ fn collect_locators(cli: &Cli) -> Vec<String> {
         .collect()
 }
 
-#[derive(Clone, Debug)]
-struct PeerEndpoint {
-    host: String,
-    port: u16,
-}
-
-fn parse_peers(values: &[String]) -> Result<Vec<PeerEndpoint>> {
-    values.iter().map(|value| parse_peer(value)).collect()
-}
-
-fn parse_peer(value: &str) -> Result<PeerEndpoint> {
-    let (host, port) = value
-        .rsplit_once(':')
-        .ok_or_else(|| format!("peer must be HOST:PORT, got '{value}'"))?;
-    if host.trim().is_empty() {
-        return Err(format!("peer host cannot be blank in '{value}'").into());
+fn collect_cli_swarm_hints(cli: &Cli) -> Result<TorrentSwarmHints> {
+    let mut hints = TorrentSwarmHints::default();
+    for tracker in &cli.trackers {
+        hints.add_tracker(tracker.clone());
     }
-    let port = port
-        .parse::<u16>()
-        .map_err(|err| format!("invalid peer port in '{value}': {err}"))?;
-    Ok(PeerEndpoint {
-        host: host.to_string(),
-        port,
-    })
+    for tracker in read_tracker_files(&cli.tracker_files)? {
+        hints.add_tracker(tracker);
+    }
+    for peer in &cli.peers {
+        hints.add_peer(TorrentPeerEndpoint::parse(peer)?);
+    }
+    for web_seed in &cli.web_seeds {
+        hints.add_web_seed(web_seed.clone());
+    }
+    Ok(hints)
+}
+
+fn read_tracker_files(paths: &[PathBuf]) -> Result<Vec<String>> {
+    let mut trackers = Vec::new();
+    for path in paths {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|err| format!("failed to read tracker file {}: {err}", path.display()))?;
+        for line in contents.lines() {
+            let line = line.trim();
+            if !line.is_empty() && !line.starts_with('#') {
+                trackers.push(line.to_string());
+            }
+        }
+    }
+    Ok(trackers)
+}
+
+fn source_set_with_hints(spec: &DownloadSpec, hints: &TorrentSwarmHints) -> Result<SourceSet> {
+    let mut source_set = SourceSet::for_spec(spec, None);
+    for tracker in &hints.trackers {
+        source_set.push_unique(SourceDescriptor::tracker(tracker.clone()));
+    }
+    for peer in &hints.peers {
+        source_set.push_unique(SourceDescriptor::peer(peer.to_string()));
+    }
+    for web_seed in &hints.web_seeds {
+        source_set.push_unique(SourceDescriptor::web_seed(web_seed.clone()));
+    }
+    Ok(source_set)
 }
 
 fn spawn_peer_connector(
     engine: Arc<LibtorrentRasterbarEngine>,
     handles: Vec<TorrentEngineHandle>,
-    peers: Vec<PeerEndpoint>,
+    peers: Vec<TorrentPeerEndpoint>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if handles.is_empty() || peers.is_empty() {
         return None;

@@ -109,6 +109,13 @@ pub(crate) mod ffi {
             host: &str,
             port: u16,
         ) -> Result<()>;
+        fn add_tracker(engine: Pin<&mut NativeEngine>, external_id: &str, url: &str)
+        -> Result<()>;
+        fn add_url_seed(
+            engine: Pin<&mut NativeEngine>,
+            external_id: &str,
+            url: &str,
+        ) -> Result<()>;
         fn pause_torrent(engine: Pin<&mut NativeEngine>, external_id: &str) -> Result<()>;
         fn resume_torrent(engine: Pin<&mut NativeEngine>, external_id: &str) -> Result<()>;
         fn remove_torrent(

@@ -49,6 +49,7 @@ fn native_bridge_extracts_torrent_file_metadata() {
             requested_file_name: None,
             requested_file_path: None,
             rate_limit_kib_per_sec: None,
+            swarm_hints: paradown::p2p::TorrentSwarmHints::default(),
             resume: None,
             event_sender: None,
         }))
@@ -111,6 +112,7 @@ fn native_bridge_downloads_between_local_libtorrent_peers() {
                 requested_file_name: None,
                 requested_file_path: None,
                 rate_limit_kib_per_sec: None,
+                swarm_hints: paradown::p2p::TorrentSwarmHints::default(),
                 resume: None,
                 event_sender: None,
             })
@@ -128,6 +130,7 @@ fn native_bridge_downloads_between_local_libtorrent_peers() {
                 requested_file_name: None,
                 requested_file_path: None,
                 rate_limit_kib_per_sec: None,
+                swarm_hints: paradown::p2p::TorrentSwarmHints::default(),
                 resume: None,
                 event_sender: Some(event_sender),
             })
@@ -183,6 +186,7 @@ fn native_bridge_resolves_magnet_metadata_from_local_peer() {
                 requested_file_name: None,
                 requested_file_path: None,
                 rate_limit_kib_per_sec: None,
+                swarm_hints: paradown::p2p::TorrentSwarmHints::default(),
                 resume: None,
                 event_sender: None,
             })
@@ -202,6 +206,7 @@ fn native_bridge_resolves_magnet_metadata_from_local_peer() {
                 requested_file_name: None,
                 requested_file_path: None,
                 rate_limit_kib_per_sec: None,
+                swarm_hints: paradown::p2p::TorrentSwarmHints::default(),
                 resume: None,
                 event_sender: Some(event_sender),
             })
@@ -258,6 +263,9 @@ fn native_cli_smoke_prints_native_options() {
     assert!(stdout.contains("--timeout-secs"));
     assert!(stdout.contains("--listen-interfaces"));
     assert!(stdout.contains("--peer"));
+    assert!(stdout.contains("--tracker"));
+    assert!(stdout.contains("--tracker-file"));
+    assert!(stdout.contains("--web-seed"));
 }
 
 #[test]

@@ -5,7 +5,8 @@ use paradown::p2p::{
     LibtorrentEngineConfig, TorrentDiagnosticEvent, TorrentDiagnosticScope,
     TorrentDiagnosticSeverity, TorrentEngine, TorrentEngineBackend, TorrentEngineCapabilities,
     TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest, TorrentEngineSession,
-    TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentTracker,
+    TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash, TorrentSwarmHints,
+    TorrentTracker,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -79,6 +80,20 @@ impl LibtorrentRasterbarEngine {
             .map_err(|err| Error::Other(format!("failed to connect libtorrent peer: {err}")))
     }
 
+    pub fn add_tracker(&self, handle: &TorrentEngineHandle, url: &str) -> Result<(), Error> {
+        let mut state = self.state.lock().expect("libtorrent state poisoned");
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::add_tracker(engine, &handle.external_id, url)
+            .map_err(|err| Error::Other(format!("failed to add libtorrent tracker: {err}")))
+    }
+
+    pub fn add_url_seed(&self, handle: &TorrentEngineHandle, url: &str) -> Result<(), Error> {
+        let mut state = self.state.lock().expect("libtorrent state poisoned");
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::add_url_seed(engine, &handle.external_id, url)
+            .map_err(|err| Error::Other(format!("failed to add libtorrent web seed: {err}")))
+    }
+
     fn ensure_polling(&self) {
         let should_spawn = {
             let mut state = self.state.lock().expect("libtorrent state poisoned");
@@ -128,8 +143,9 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
             let mut state = self.state.lock().expect("libtorrent state poisoned");
             match &request.spec {
                 paradown::DownloadSpec::Magnet { uri } => {
+                    let uri = request.swarm_hints.enhance_magnet_uri(uri)?;
                     let engine = state.driver.engine.pin_mut();
-                    crate::ffi::ffi::add_magnet(engine, uri, &save_path, resume_bytes)
+                    crate::ffi::ffi::add_magnet(engine, &uri, &save_path, resume_bytes)
                 }
                 paradown::DownloadSpec::TorrentFile { path } => {
                     let engine = state.driver.engine.pin_mut();
@@ -146,6 +162,7 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
         .map_err(|err| Error::Other(format!("failed to add torrent: {err}")))?;
 
         let external_id = start_external_id(&result, request.resume.as_ref());
+        apply_swarm_hints(&self.state, &external_id, &request.swarm_hints)?;
         let metadata = if result.has_metadata {
             Some(metadata_from_native(&result.metadata))
         } else {
@@ -210,6 +227,35 @@ impl TorrentEngine for LibtorrentRasterbarEngine {
         state.senders.remove(&handle.external_id);
         Ok(())
     }
+}
+
+fn apply_swarm_hints(
+    state: &Arc<Mutex<EngineState>>,
+    external_id: &str,
+    hints: &TorrentSwarmHints,
+) -> Result<(), Error> {
+    if hints.is_empty() {
+        return Ok(());
+    }
+
+    let mut state = state.lock().expect("libtorrent state poisoned");
+    for tracker in &hints.trackers {
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::add_tracker(engine, external_id, tracker)
+            .map_err(|err| Error::Other(format!("failed to add libtorrent tracker: {err}")))?;
+    }
+    for web_seed in &hints.web_seeds {
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::add_url_seed(engine, external_id, web_seed)
+            .map_err(|err| Error::Other(format!("failed to add libtorrent web seed: {err}")))?;
+    }
+    for peer in &hints.peers {
+        let engine = state.driver.engine.pin_mut();
+        crate::ffi::ffi::connect_peer(engine, external_id, &peer.host, peer.port)
+            .map_err(|err| Error::Other(format!("failed to connect libtorrent peer: {err}")))?;
+    }
+
+    Ok(())
 }
 
 async fn poll_libtorrent_alerts(state: Arc<Mutex<EngineState>>) {

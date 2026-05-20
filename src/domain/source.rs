@@ -138,6 +138,51 @@ impl SourceDescriptor {
         }
     }
 
+    pub fn tracker(url: impl Into<String>) -> Self {
+        let url = url.into();
+        Self {
+            id: format!("tracker::{url}"),
+            kind: SourceKind::Tracker,
+            locator: url,
+            metadata_only: true,
+            request: None,
+            resource_identity: None,
+            capabilities: SourceCapabilities::metadata_only(),
+        }
+    }
+
+    pub fn peer(endpoint: impl Into<String>) -> Self {
+        let endpoint = endpoint.into();
+        Self {
+            id: format!("peer::{endpoint}"),
+            kind: SourceKind::Peer,
+            locator: endpoint,
+            metadata_only: true,
+            request: None,
+            resource_identity: None,
+            capabilities: SourceCapabilities::metadata_only(),
+        }
+    }
+
+    pub fn web_seed(url: impl Into<String>) -> Self {
+        let url = url.into();
+        Self {
+            id: format!("web-seed::{url}"),
+            kind: SourceKind::WebSeed,
+            locator: url,
+            metadata_only: false,
+            request: None,
+            resource_identity: None,
+            capabilities: SourceCapabilities {
+                metadata_discovery: false,
+                random_access: true,
+                range_requests: true,
+                uploads: false,
+                dynamic_availability: true,
+            },
+        }
+    }
+
     pub fn with_identity(mut self, resource_identity: HttpResourceIdentity) -> Self {
         self.resource_identity = Some(resource_identity);
         self
@@ -168,6 +213,12 @@ impl SourceSet {
 
     pub fn for_spec(spec: &DownloadSpec, request: Option<HttpRequestOptions>) -> Self {
         Self::single_primary(SourceDescriptor::from_spec(spec, request))
+    }
+
+    pub fn push_unique(&mut self, source: SourceDescriptor) {
+        if !self.sources.iter().any(|existing| existing.id == source.id) {
+            self.sources.push(source);
+        }
     }
 
     pub fn is_empty(&self) -> bool {

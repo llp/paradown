@@ -3,9 +3,12 @@ use paradown::p2p::{
     TorrentDiagnosticEvent, TorrentDiagnosticScope, TorrentDiagnosticSeverity, TorrentEngine,
     TorrentEngineBackend, TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle,
     TorrentEngineRequest, TorrentEngineSession, TorrentEngineState, TorrentFileEntry,
-    TorrentMetadata, TorrentResumeSnapshot,
+    TorrentMetadata, TorrentResumeSnapshot, TorrentSwarmHints,
 };
-use paradown::{Backend, Config, DownloadSpec, Error, Event, Manager, Store};
+use paradown::{
+    Backend, Config, DownloadSpec, Error, Event, Manager, SessionRequest, SourceDescriptor,
+    SourceSet, Store,
+};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -238,6 +241,50 @@ impl TorrentEngine for DiagnosticReportingTorrentEngine {
                 }));
             });
         }
+        Ok(fake_session(&request))
+    }
+
+    async fn pause_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn resume_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn cancel_session(&self, _handle: &TorrentEngineHandle) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        _handle: &TorrentEngineHandle,
+        _delete_payload: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SwarmHintRecordingTorrentEngine {
+    received_hints: Arc<Mutex<Option<TorrentSwarmHints>>>,
+}
+
+#[async_trait]
+impl TorrentEngine for SwarmHintRecordingTorrentEngine {
+    fn backend(&self) -> TorrentEngineBackend {
+        TorrentEngineBackend::Libtorrent
+    }
+
+    fn capabilities(&self) -> TorrentEngineCapabilities {
+        TorrentEngineCapabilities::libtorrent_full()
+    }
+
+    async fn start_session(
+        &self,
+        request: TorrentEngineRequest,
+    ) -> Result<TorrentEngineSession, Error> {
+        *self.received_hints.lock().unwrap() = Some(request.swarm_hints.clone());
         Ok(fake_session(&request))
     }
 
@@ -538,6 +585,49 @@ async fn torrent_diagnostics_update_snapshot_and_event_stream() {
         }
     }
     assert!(saw_diagnostic_event);
+}
+
+#[tokio::test]
+async fn torrent_swarm_hints_are_forwarded_from_magnet_and_sources() {
+    let sandbox = tempfile::TempDir::new().unwrap();
+    let received_hints = Arc::new(Mutex::new(None));
+    let manager = Manager::new_with_torrent_engine(
+        p2p_config(&sandbox),
+        Arc::new(SwarmHintRecordingTorrentEngine {
+            received_hints: Arc::clone(&received_hints),
+        }),
+    )
+    .unwrap();
+    manager.init().await.unwrap();
+
+    let spec = DownloadSpec::parse(
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=udp%3A%2F%2Ffrom-magnet.example%2Fannounce&x.pe=127.0.0.1%3A6881",
+    )
+    .unwrap();
+    let mut sources = SourceSet::for_spec(&spec, None);
+    sources.push_unique(SourceDescriptor::tracker(
+        "udp://from-source.example/announce",
+    ));
+    sources.push_unique(SourceDescriptor::peer("127.0.0.2:6882"));
+    sources.push_unique(SourceDescriptor::web_seed("https://seed.example/payload"));
+
+    let task_id = manager
+        .add_session(SessionRequest::builder(spec).sources(sources).build())
+        .await
+        .unwrap();
+    manager.start_task(task_id).await.unwrap();
+
+    let hints = received_hints.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        hints.trackers,
+        vec![
+            "udp://from-magnet.example/announce",
+            "udp://from-source.example/announce"
+        ]
+    );
+    assert_eq!(hints.peers[0].to_string(), "127.0.0.1:6881");
+    assert_eq!(hints.peers[1].to_string(), "127.0.0.2:6882");
+    assert_eq!(hints.web_seeds, vec!["https://seed.example/payload"]);
 }
 
 #[tokio::test]

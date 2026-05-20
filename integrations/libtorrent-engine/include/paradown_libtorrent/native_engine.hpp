@@ -40,6 +40,8 @@ void connect_peer(NativeEngine& engine,
                   rust::Str external_id,
                   rust::Str host,
                   std::uint16_t port);
+void add_tracker(NativeEngine& engine, rust::Str external_id, rust::Str url);
+void add_url_seed(NativeEngine& engine, rust::Str external_id, rust::Str url);
 void pause_torrent(NativeEngine& engine, rust::Str external_id);
 void resume_torrent(NativeEngine& engine, rust::Str external_id);
 void remove_torrent(NativeEngine& engine, rust::Str external_id, bool delete_payload);

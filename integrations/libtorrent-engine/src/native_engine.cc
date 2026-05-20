@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "libtorrent/add_torrent_params.hpp"
+#include "libtorrent/announce_entry.hpp"
 #include "libtorrent/alert_types.hpp"
 #include "libtorrent/address.hpp"
 #include "libtorrent/bdecode.hpp"
@@ -639,6 +640,25 @@ void connect_peer(NativeEngine& engine,
         throw std::runtime_error("invalid peer host: " + ec.message());
     }
     it->second.connect_peer(lt::tcp::endpoint(address, port));
+}
+
+void add_tracker(NativeEngine& engine, rust::Str external_id, rust::Str url) {
+    auto it = engine.impl->handles.find(to_string(external_id));
+    if (it == engine.impl->handles.end()) {
+        throw std::runtime_error("unknown torrent handle");
+    }
+    lt::announce_entry tracker(to_string(url));
+    tracker.source = lt::announce_entry::source_client;
+    it->second.add_tracker(tracker);
+    it->second.force_reannounce();
+}
+
+void add_url_seed(NativeEngine& engine, rust::Str external_id, rust::Str url) {
+    auto it = engine.impl->handles.find(to_string(external_id));
+    if (it == engine.impl->handles.end()) {
+        throw std::runtime_error("unknown torrent handle");
+    }
+    it->second.add_url_seed(to_string(url));
 }
 
 void pause_torrent(NativeEngine& engine, rust::Str external_id) {

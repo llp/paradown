@@ -11,8 +11,9 @@ use crate::job::{Task, TaskSnapshot};
 pub use crate::p2p::{
     LibtorrentEngineConfig, LibtorrentEngineUnavailable, TorrentEngine, TorrentEngineBackend,
     TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest,
-    TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata, TorrentPieceHash,
-    TorrentResumeSnapshot, TorrentSnapshot, TorrentTracker, TorrentTransferStats,
+    TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata,
+    TorrentPeerEndpoint, TorrentPieceHash, TorrentResumeSnapshot, TorrentSnapshot,
+    TorrentSwarmHints, TorrentTracker, TorrentTransferStats,
 };
 pub use crate::request::{SegmentRequest, SegmentRequestBuilder};
 use crate::request::{TaskRequest, TaskRequestBuilder};

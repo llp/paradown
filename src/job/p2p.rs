@@ -4,8 +4,8 @@ use crate::job::Task;
 use crate::job::finalize::finish_job;
 use crate::job::prepare::PreparationOutcome;
 use crate::p2p::{
-    TorrentEngineEvent, TorrentEngineRequest, TorrentEngineState, TorrentTransferStats,
-    manifest_from_torrent_metadata,
+    TorrentEngineEvent, TorrentEngineRequest, TorrentEngineState, TorrentSwarmHints,
+    TorrentTransferStats, manifest_from_torrent_metadata,
 };
 use log::{debug, warn};
 use std::path::PathBuf;
@@ -29,6 +29,8 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
 
     let requested_file_path = job.file_path.get().cloned();
     let resume = job.torrent_resume_snapshot().await;
+    let source_set = job.source_set_snapshot().await;
+    let swarm_hints = TorrentSwarmHints::from_spec_and_sources(&job.spec, &source_set)?;
     let (event_sender, event_receiver) = mpsc::unbounded_channel();
     let request = TorrentEngineRequest {
         session_id: job.id,
@@ -37,6 +39,7 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
         requested_file_name: job.file_name.get().cloned(),
         requested_file_path: requested_file_path.clone(),
         rate_limit_kib_per_sec: job.config.rate_limit_kib_per_sec.map(u64::from),
+        swarm_hints,
         resume: resume.clone(),
         event_sender: Some(event_sender),
     };

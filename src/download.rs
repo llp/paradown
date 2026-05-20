@@ -13,7 +13,9 @@ pub use crate::p2p::{
     TorrentEngineCapabilities, TorrentEngineEvent, TorrentEngineHandle, TorrentEngineRequest,
     TorrentEngineSession, TorrentEngineState, TorrentFileEntry, TorrentMetadata,
     TorrentPeerEndpoint, TorrentPieceHash, TorrentResumeSnapshot, TorrentSnapshot,
-    TorrentSwarmHints, TorrentTracker, TorrentTransferStats,
+    TorrentSwarmHints, TorrentSwarmProviderCandidate, TorrentSwarmProviderCandidateKind,
+    TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport, TorrentSwarmProviderResolution,
+    TorrentSwarmProviderSeverity, TorrentTracker, TorrentTransferStats,
 };
 pub use crate::request::{SegmentRequest, SegmentRequestBuilder};
 use crate::request::{TaskRequest, TaskRequestBuilder};

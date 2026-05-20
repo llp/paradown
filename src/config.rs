@@ -1,5 +1,5 @@
 use crate::domain::{HttpAuth, HttpConfig, HttpHeader};
-use crate::p2p::LibtorrentEngineConfig;
+use crate::p2p::{LibtorrentEngineConfig, SwarmProviderConfig};
 use crate::storage::Backend;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,8 @@ pub struct P2pConfig {
     pub enabled: bool,
     #[serde(default)]
     pub libtorrent: LibtorrentEngineConfig,
+    #[serde(default)]
+    pub swarm: SwarmProviderConfig,
 }
 
 impl Default for P2pConfig {
@@ -112,6 +114,7 @@ impl Default for P2pConfig {
         Self {
             enabled: default_p2p_enabled(),
             libtorrent: LibtorrentEngineConfig::default(),
+            swarm: SwarmProviderConfig::default(),
         }
     }
 }
@@ -495,6 +498,21 @@ impl Config {
         if let Some(value) = read_env("PARADOWN_LIBTORRENT_LISTEN_INTERFACES") {
             self.p2p.libtorrent.listen_interfaces = Some(value);
         }
+        if let Some(value) = parse_env_bool("PARADOWN_SWARM_PROVIDERS_ENABLED")? {
+            self.p2p.swarm.enabled = value;
+        }
+        if let Some(value) = read_env("PARADOWN_SWARM_PROVIDER_CACHE_DIR") {
+            self.p2p.swarm.cache_dir = Some(value.into());
+        }
+        if let Some(value) = read_env("PARADOWN_TRACKER_LIST_URLS") {
+            self.p2p.swarm.tracker_list_urls = parse_csv_env(&value);
+        }
+        if let Some(value) = parse_env_u64("PARADOWN_TRACKER_LIST_CACHE_TTL_SECS")? {
+            self.p2p.swarm.tracker_list_cache_ttl_secs = value;
+        }
+        if let Some(value) = parse_env_u64("PARADOWN_TRACKER_LIST_TIMEOUT_SECS")? {
+            self.p2p.swarm.tracker_list_timeout_secs = value;
+        }
 
         Ok(())
     }
@@ -568,6 +586,26 @@ fn validate_p2p_config(p2p: &P2pConfig) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::InvalidP2pConfig(
             "libtorrent listen_interfaces cannot be blank".into(),
+        ));
+    }
+    if p2p.swarm.tracker_list_cache_ttl_secs == 0 {
+        return Err(ConfigError::InvalidP2pConfig(
+            "swarm tracker_list_cache_ttl_secs must be greater than 0".into(),
+        ));
+    }
+    if p2p.swarm.tracker_list_timeout_secs == 0 || p2p.swarm.discovery_timeout_secs == 0 {
+        return Err(ConfigError::InvalidP2pConfig(
+            "swarm provider timeouts must be greater than 0".into(),
+        ));
+    }
+    if p2p.swarm.limits.max_trackers == 0
+        || p2p.swarm.limits.max_peers == 0
+        || p2p.swarm.limits.max_web_seeds == 0
+        || p2p.swarm.limits.max_locators == 0
+        || p2p.swarm.limits.max_diagnostics == 0
+    {
+        return Err(ConfigError::InvalidP2pConfig(
+            "swarm provider limits must be greater than 0".into(),
         ));
     }
 
@@ -716,6 +754,15 @@ fn parse_headers_env(key: &str, value: &str) -> Result<Vec<HttpHeader>, ConfigEr
     }
 
     Ok(headers)
+}
+
+fn parse_csv_env(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn parse_basic_auth_env(value: &str) -> Result<HttpAuth, ConfigError> {

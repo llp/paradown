@@ -15,6 +15,12 @@ pub enum TorrentDiscoveryInputKind {
     Text,
 }
 
+impl Default for TorrentDiscoveryInputKind {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorrentDiscoveryOptions {
     pub input_kind: TorrentDiscoveryInputKind,

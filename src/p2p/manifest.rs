@@ -13,7 +13,7 @@ pub(crate) fn manifest_from_torrent_metadata(
     requested_file_path: Option<&Path>,
 ) -> Result<SessionManifest, Error> {
     let files = build_file_manifests(metadata, download_dir, requested_file_path)?;
-    let block_size = metadata.piece_size.min(TORRENT_BLOCK_SIZE).max(1);
+    let block_size = metadata.piece_size.clamp(1, TORRENT_BLOCK_SIZE);
 
     Ok(SessionManifest::for_files_with_piece_size(
         spec,

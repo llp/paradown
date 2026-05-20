@@ -301,7 +301,7 @@ fn non_empty(value: String) -> Option<String> {
 }
 
 fn strip_trailing_punctuation(value: &str) -> &str {
-    value.trim_end_matches(|ch| matches!(ch, '.' | ',' | ';' | ')' | ']'))
+    value.trim_end_matches(['.', ',', ';', ')', ']'])
 }
 
 fn magnet_regex() -> &'static Regex {

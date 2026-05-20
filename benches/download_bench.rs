@@ -27,11 +27,13 @@ fn download_benchmark(c: &mut Criterion) {
                 .await;
                 let temp = tempdir().expect("tempdir");
 
-                let mut config = Config::default();
-                config.download_dir = temp.path().join("downloads");
-                config.storage_backend = Backend::Memory;
-                config.segments_per_task = 4;
-                config.concurrent_tasks = 1;
+                let config = Config {
+                    download_dir: temp.path().join("downloads"),
+                    storage_backend: Backend::Memory,
+                    segments_per_task: 4,
+                    concurrent_tasks: 1,
+                    ..Config::default()
+                };
 
                 let manager = Manager::new(config).expect("manager");
                 manager.init().await.expect("init");
@@ -61,11 +63,13 @@ fn download_benchmark(c: &mut Criterion) {
                 .await;
                 let temp = tempdir().expect("tempdir");
 
-                let mut config = Config::default();
-                config.download_dir = temp.path().join("downloads");
-                config.storage_backend = Backend::Sqlite(temp.path().join("state.db"));
-                config.segments_per_task = 4;
-                config.concurrent_tasks = 2;
+                let mut config = Config {
+                    download_dir: temp.path().join("downloads"),
+                    storage_backend: Backend::Sqlite(temp.path().join("state.db")),
+                    segments_per_task: 4,
+                    concurrent_tasks: 2,
+                    ..Config::default()
+                };
                 config.http.client.proxy.use_env_proxy = false;
 
                 let manager = Manager::new(config).expect("manager");

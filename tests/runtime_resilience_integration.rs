@@ -14,13 +14,7 @@ async fn retries_download_when_origin_drops_connection() {
     let server = FlakyHttpServer::spawn(Arc::clone(&payload), FailureMode::FailFirstN(2)).await;
     let temp = tempdir().unwrap();
 
-    let mut config = Config::default();
-    config.download_dir = temp.path().join("downloads");
-    config.storage_backend = Backend::Memory;
-    config.segments_per_task = 1;
-    config.concurrent_tasks = 1;
-    config.retry.max_retries = 4;
-    config.http.client.proxy.use_env_proxy = false;
+    let config = retry_test_config(&temp, 4);
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
@@ -56,13 +50,7 @@ async fn retries_http_429_after_retry_after_delay() {
     .await;
     let temp = tempdir().unwrap();
 
-    let mut config = Config::default();
-    config.download_dir = temp.path().join("downloads");
-    config.storage_backend = Backend::Memory;
-    config.segments_per_task = 1;
-    config.concurrent_tasks = 1;
-    config.retry.max_retries = 3;
-    config.http.client.proxy.use_env_proxy = false;
+    let config = retry_test_config(&temp, 3);
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
@@ -100,13 +88,7 @@ async fn does_not_retry_non_retryable_http_statuses() {
     .await;
     let temp = tempdir().unwrap();
 
-    let mut config = Config::default();
-    config.download_dir = temp.path().join("downloads");
-    config.storage_backend = Backend::Memory;
-    config.segments_per_task = 1;
-    config.concurrent_tasks = 1;
-    config.retry.max_retries = 3;
-    config.http.client.proxy.use_env_proxy = false;
+    let config = retry_test_config(&temp, 3);
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
@@ -130,13 +112,7 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
     let server = FlakyHttpServer::spawn(payload, FailureMode::AlwaysDrop).await;
     let temp = tempdir().unwrap();
 
-    let mut config = Config::default();
-    config.download_dir = temp.path().join("downloads");
-    config.storage_backend = Backend::Memory;
-    config.segments_per_task = 1;
-    config.concurrent_tasks = 1;
-    config.retry.max_retries = 1;
-    config.http.client.proxy.use_env_proxy = false;
+    let config = retry_test_config(&temp, 1);
 
     let manager = Manager::new(config).unwrap();
     manager.init().await.unwrap();
@@ -160,6 +136,19 @@ async fn writes_failure_diagnostic_after_retry_exhaustion() {
     let diagnostic = wait_for_file(&diagnostic_path).await;
     assert!(diagnostic.contains("\"trace_id\""));
     assert!(diagnostic.contains("\"error\""));
+}
+
+fn retry_test_config(temp: &tempfile::TempDir, max_retries: u32) -> Config {
+    let mut config = Config {
+        download_dir: temp.path().join("downloads"),
+        storage_backend: Backend::Memory,
+        segments_per_task: 1,
+        concurrent_tasks: 1,
+        ..Config::default()
+    };
+    config.retry.max_retries = max_retries;
+    config.http.client.proxy.use_env_proxy = false;
+    config
 }
 
 #[derive(Clone, Copy)]

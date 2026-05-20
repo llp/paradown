@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::job::Task;
 use crate::job::finalize::{finish_job, verify_checksums};
 use crate::job::p2p::prepare_swarm_download;
+use crate::p2p::TorrentEngineEvent;
 use crate::payload::verifier::verify_file_checksums;
 use crate::scheduler::planner::suggested_http_piece_size;
 use log::{debug, info};
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::fs;
+use tokio::sync::mpsc;
 
 pub(crate) struct PreparedDownload {
     pub(crate) file_path: Arc<PathBuf>,
@@ -19,7 +21,7 @@ pub(crate) struct PreparedDownload {
 
 pub(crate) enum PreparationOutcome {
     Ready(PreparedDownload),
-    StartedByEngine,
+    StartedByEngine(mpsc::UnboundedReceiver<TorrentEngineEvent>),
     Finished,
 }
 

@@ -1,4 +1,5 @@
 #[cxx::bridge(namespace = "paradown_libtorrent")]
+#[allow(clippy::module_inception)]
 pub(crate) mod ffi {
     #[derive(Debug, Clone)]
     pub struct NativeEngineConfig {

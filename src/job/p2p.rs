@@ -59,12 +59,11 @@ pub(crate) async fn prepare_swarm_download(job: &Arc<Task>) -> Result<Preparatio
 
     job.set_torrent_session(engine_session).await;
     job.persist_task().await?;
-    spawn_torrent_event_listener(job, event_receiver);
 
-    Ok(PreparationOutcome::StartedByEngine)
+    Ok(PreparationOutcome::StartedByEngine(event_receiver))
 }
 
-fn spawn_torrent_event_listener(
+pub(crate) fn spawn_torrent_event_listener(
     job: &Arc<Task>,
     mut event_receiver: mpsc::UnboundedReceiver<TorrentEngineEvent>,
 ) {

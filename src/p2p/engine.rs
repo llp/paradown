@@ -132,7 +132,7 @@ pub enum TorrentEngineState {
     Error(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorrentTransferStats {
     pub downloaded: u64,
     pub total: u64,
@@ -140,19 +140,6 @@ pub struct TorrentTransferStats {
     pub upload_rate_bps: u64,
     pub connected_peers: u32,
     pub seeds: u32,
-}
-
-impl Default for TorrentTransferStats {
-    fn default() -> Self {
-        Self {
-            downloaded: 0,
-            total: 0,
-            download_rate_bps: 0,
-            upload_rate_bps: 0,
-            connected_peers: 0,
-            seeds: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

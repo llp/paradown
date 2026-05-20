@@ -345,12 +345,12 @@ async fn handle_redirect_request(
             socket,
             &request,
             method,
-            body,
-            Some(content_disposition.as_str()),
-            None,
-            true,
-            true,
-            Some("\"etag-redirect\""),
+            HttpPayloadResponse {
+                body,
+                content_disposition: Some(content_disposition.as_str()),
+                entity_tag: Some("\"etag-redirect\""),
+                ..HttpPayloadResponse::new(body)
+            },
         )
         .await;
     }
@@ -391,41 +391,58 @@ async fn handle_plain_request(
         socket,
         &request,
         method,
-        body,
-        content_disposition,
-        content_type,
-        true,
-        true,
-        None,
+        HttpPayloadResponse {
+            body,
+            content_disposition,
+            content_type,
+            ..HttpPayloadResponse::new(body)
+        },
     )
     .await;
+}
+
+struct HttpPayloadResponse<'a> {
+    body: &'a [u8],
+    content_disposition: Option<&'a str>,
+    content_type: Option<&'a str>,
+    include_length: bool,
+    accept_ranges: bool,
+    entity_tag: Option<&'a str>,
+}
+
+impl<'a> HttpPayloadResponse<'a> {
+    fn new(body: &'a [u8]) -> Self {
+        Self {
+            body,
+            content_disposition: None,
+            content_type: None,
+            include_length: true,
+            accept_ranges: true,
+            entity_tag: None,
+        }
+    }
 }
 
 async fn write_http_payload(
     socket: &mut tokio::net::TcpStream,
     request: &str,
     method: &str,
-    body: &[u8],
-    content_disposition: Option<&str>,
-    content_type: Option<&str>,
-    include_length: bool,
-    accept_ranges: bool,
-    entity_tag: Option<&str>,
+    payload: HttpPayloadResponse<'_>,
 ) {
     let mut headers = String::new();
-    if accept_ranges {
+    if payload.accept_ranges {
         headers.push_str("Accept-Ranges: bytes\r\n");
     }
-    if let Some(content_disposition) = content_disposition {
+    if let Some(content_disposition) = payload.content_disposition {
         headers.push_str(&format!(
             "Content-Disposition: attachment; {}\r\n",
             content_disposition
         ));
     }
-    if let Some(content_type) = content_type {
+    if let Some(content_type) = payload.content_type {
         headers.push_str(&format!("Content-Type: {}\r\n", content_type));
     }
-    if let Some(entity_tag) = entity_tag {
+    if let Some(entity_tag) = payload.entity_tag {
         headers.push_str(&format!("ETag: {}\r\n", entity_tag));
     }
 
@@ -433,15 +450,15 @@ async fn write_http_payload(
         .and_then(|value| parse_range_header(&value))
         .filter(|_| method != "HEAD");
     let (status_line, response_body, response_headers) = if let Some((start, end)) = range {
-        let end = end.min(body.len().saturating_sub(1));
-        let slice = &body[start..=end];
+        let end = end.min(payload.body.len().saturating_sub(1));
+        let slice = &payload.body[start..=end];
         let mut response_headers = headers.clone();
         response_headers.push_str(&format!("Content-Length: {}\r\n", slice.len()));
         response_headers.push_str(&format!(
             "Content-Range: bytes {}-{}/{}\r\n",
             start,
             end,
-            body.len()
+            payload.body.len()
         ));
         (
             "HTTP/1.1 206 Partial Content",
@@ -449,10 +466,10 @@ async fn write_http_payload(
             response_headers,
         )
     } else {
-        if include_length {
-            headers.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        if payload.include_length {
+            headers.push_str(&format!("Content-Length: {}\r\n", payload.body.len()));
         }
-        ("HTTP/1.1 200 OK", body.to_vec(), headers)
+        ("HTTP/1.1 200 OK", payload.body.to_vec(), headers)
     };
 
     let response = format!(

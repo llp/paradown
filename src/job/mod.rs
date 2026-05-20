@@ -261,7 +261,7 @@ impl Task {
         let file_path = match prepare_download(self).await? {
             PreparationOutcome::Ready(prepared) => prepared.file_path,
             PreparationOutcome::Finished => return Ok(()),
-            PreparationOutcome::StartedByEngine => {
+            PreparationOutcome::StartedByEngine(event_receiver) => {
                 let should_emit_start = {
                     let mut status = self.status.lock().await;
                     if status.is_terminal() {
@@ -276,9 +276,10 @@ impl Task {
                         "[Task {}] Starting external torrent engine session",
                         self.id
                     );
-                    self.emit_manager_event(Event::Start(self.id));
                     self.persist_task().await?;
+                    self.emit_manager_event(Event::Start(self.id));
                 }
+                crate::job::p2p::spawn_torrent_event_listener(self, event_receiver);
                 return Ok(());
             }
         };

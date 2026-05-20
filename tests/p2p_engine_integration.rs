@@ -396,10 +396,11 @@ fn fake_session(request: &TorrentEngineRequest) -> TorrentEngineSession {
 }
 
 fn p2p_config(sandbox: &tempfile::TempDir) -> Config {
-    let mut config = Config::default();
-    config.download_dir = sandbox.path().join("downloads");
-    config.storage_backend = Backend::Sqlite(sandbox.path().join("downloads.db"));
-    config
+    Config {
+        download_dir: sandbox.path().join("downloads"),
+        storage_backend: Backend::Sqlite(sandbox.path().join("downloads.db")),
+        ..Config::default()
+    }
 }
 
 async fn add_magnet(manager: &Arc<Manager>) -> u32 {

@@ -663,15 +663,16 @@ impl IndexFeedProvider {
         })
     }
 
-    fn cache_path(&self, cache_dir: &Path, url: &str) -> PathBuf {
+    fn cache_path(&self, cache_dir: &Path, url: &str, extension: &str) -> PathBuf {
         let mut hasher = Sha1::new();
         hasher.update(self.provider_name.as_bytes());
         hasher.update(b"\n");
         hasher.update(url.as_bytes());
         let digest = hasher.finalize();
+        let extension = extension.trim_start_matches('.');
         cache_dir
             .join("index-feeds")
-            .join(format!("{digest:x}.txt"))
+            .join(format!("{digest:x}.{extension}"))
     }
 
     async fn read_source(
@@ -679,52 +680,87 @@ impl IndexFeedProvider {
         url: &str,
         cache_dir: &Path,
         report: &mut TorrentSwarmProviderReport,
-    ) -> Option<String> {
-        let cache_path = self.cache_path(cache_dir, url);
+    ) -> Option<IndexProviderSource> {
+        let torrent_cache_path = self.cache_path(cache_dir, url, "torrent");
+        let text_cache_path = self.cache_path(cache_dir, url, "txt");
         let cache_ttl = Duration::from_secs(self.config.cache_ttl_secs);
-        if is_fresh_cache(&cache_path, cache_ttl).await {
-            return tokio::fs::read_to_string(cache_path).await.ok();
+        if is_fresh_cache(&torrent_cache_path, cache_ttl).await {
+            return Some(IndexProviderSource::TorrentFile(torrent_cache_path));
+        }
+        if is_fresh_cache(&text_cache_path, cache_ttl).await {
+            return tokio::fs::read_to_string(text_cache_path)
+                .await
+                .ok()
+                .map(IndexProviderSource::Text);
         }
 
         match self.fetch_source(url).await {
-            Ok(contents) => {
-                if let Some(parent) = cache_path.parent() {
-                    let _ = tokio::fs::create_dir_all(parent).await;
+            Ok(source) => match source {
+                FetchedIndexSource::TorrentFile(bytes) => {
+                    if let Some(parent) = torrent_cache_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    if let Err(err) = tokio::fs::write(&torrent_cache_path, bytes).await {
+                        report.diagnostic(
+                            TorrentSwarmProviderSeverity::Warning,
+                            format!(
+                                "failed to write index cache {}: {err}",
+                                torrent_cache_path.display()
+                            ),
+                            Some(url.into()),
+                        );
+                    }
+                    Some(IndexProviderSource::TorrentFile(torrent_cache_path))
                 }
-                if let Err(err) = tokio::fs::write(&cache_path, &contents).await {
-                    report.diagnostic(
-                        TorrentSwarmProviderSeverity::Warning,
-                        format!(
-                            "failed to write index cache {}: {err}",
-                            cache_path.display()
-                        ),
-                        Some(url.into()),
-                    );
+                FetchedIndexSource::Text(contents) => {
+                    if let Some(parent) = text_cache_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    if let Err(err) = tokio::fs::write(&text_cache_path, &contents).await {
+                        report.diagnostic(
+                            TorrentSwarmProviderSeverity::Warning,
+                            format!(
+                                "failed to write index cache {}: {err}",
+                                text_cache_path.display()
+                            ),
+                            Some(url.into()),
+                        );
+                    }
+                    Some(IndexProviderSource::Text(contents))
                 }
-                Some(contents)
-            }
-            Err(err) => match tokio::fs::read_to_string(&cache_path).await {
-                Ok(contents) => {
+            },
+            Err(err) => {
+                if tokio::fs::metadata(&torrent_cache_path).await.is_ok() {
                     report.diagnostic(
                         TorrentSwarmProviderSeverity::Warning,
                         format!("using stale index cache after fetch failed: {err}"),
                         Some(url.into()),
                     );
-                    Some(contents)
+                    return Some(IndexProviderSource::TorrentFile(torrent_cache_path));
                 }
-                Err(_) => {
-                    report.diagnostic(
-                        TorrentSwarmProviderSeverity::Error,
-                        format!("failed to fetch index feed: {err}"),
-                        Some(url.into()),
-                    );
-                    None
+                match tokio::fs::read_to_string(&text_cache_path).await {
+                    Ok(contents) => {
+                        report.diagnostic(
+                            TorrentSwarmProviderSeverity::Warning,
+                            format!("using stale index cache after fetch failed: {err}"),
+                            Some(url.into()),
+                        );
+                        Some(IndexProviderSource::Text(contents))
+                    }
+                    Err(_) => {
+                        report.diagnostic(
+                            TorrentSwarmProviderSeverity::Error,
+                            format!("failed to fetch index feed: {err}"),
+                            Some(url.into()),
+                        );
+                        None
+                    }
                 }
-            },
+            }
         }
     }
 
-    async fn fetch_source(&self, url: &str) -> Result<String, Error> {
+    async fn fetch_source(&self, url: &str) -> Result<FetchedIndexSource, Error> {
         let response = self
             .client
             .get(url)
@@ -734,11 +770,71 @@ impl IndexFeedProvider {
             .map_err(|err| Error::Other(err.to_string()))?
             .error_for_status()
             .map_err(|err| Error::Other(err.to_string()))?;
-        response
-            .text()
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = response
+            .bytes()
             .await
-            .map_err(|err| Error::Other(err.to_string()))
+            .map_err(|err| Error::Other(err.to_string()))?;
+
+        if looks_like_torrent_response(url, content_type.as_deref(), &bytes) {
+            return Ok(FetchedIndexSource::TorrentFile(bytes.to_vec()));
+        }
+
+        Ok(FetchedIndexSource::Text(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ))
     }
+}
+
+enum FetchedIndexSource {
+    Text(String),
+    TorrentFile(Vec<u8>),
+}
+
+enum IndexProviderSource {
+    Text(String),
+    TorrentFile(PathBuf),
+}
+
+fn looks_like_torrent_response(url: &str, content_type: Option<&str>, bytes: &[u8]) -> bool {
+    let expected_torrent = is_torrent_url(url)
+        || content_type.is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("application/x-bittorrent") || value.contains("application/octet-stream")
+        });
+
+    if expected_torrent {
+        return looks_like_torrent_bytes(bytes);
+    }
+
+    if content_type.is_some_and(|value| {
+        let value = value.to_ascii_lowercase();
+        value.starts_with("text/")
+    }) && looks_like_torrent_bytes(bytes)
+    {
+        return true;
+    }
+    looks_like_torrent_bytes(bytes)
+}
+
+fn is_torrent_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .map(|name| name.to_ascii_lowercase())
+        })
+        .is_some_and(|name| name.ends_with(".torrent"))
+}
+
+fn looks_like_torrent_bytes(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&b'd') && bytes.windows(b"4:info".len()).any(|w| w == b"4:info")
 }
 
 #[async_trait]
@@ -761,11 +857,24 @@ impl TorrentSwarmProvider for IndexFeedProvider {
             return Ok(report);
         };
 
-        let Some(contents) = self
+        let Some(source) = self
             .read_source(&url, &context.cache_dir, &mut report)
             .await
         else {
             return Ok(report);
+        };
+        let contents = match source {
+            IndexProviderSource::TorrentFile(path) => {
+                report.push(TorrentSwarmProviderCandidate::locator(
+                    TorrentSwarmProviderCandidateKind::TorrentFile,
+                    path.to_string_lossy().into_owned(),
+                    context.spec.file_name_hint(),
+                    self.name(),
+                    url,
+                ));
+                return Ok(report);
+            }
+            IndexProviderSource::Text(contents) => contents,
         };
         let options = TorrentDiscoveryOptions {
             input_kind: self.config.input_kind,
@@ -1206,6 +1315,7 @@ mod tests {
         DiscoverySwarmProvider, IndexFeedProvider, MagnetHintProvider, StaticSwarmProvider,
         SwarmIndexProviderConfig, TorrentSwarmProvider, TorrentSwarmProviderCandidateKind,
         TorrentSwarmProviderContext, TorrentSwarmProviderResolver, TrackerListProvider,
+        looks_like_torrent_response,
     };
     use crate::discovery::TorrentDiscoveryInputKind;
     use crate::domain::DownloadSpec;
@@ -1330,7 +1440,7 @@ mod tests {
         })
         .unwrap();
         let url = "https://index.example/search?q=abcdef0123456789abcdef0123456789abcdef01";
-        let cache_path = provider.cache_path(temp.path(), url);
+        let cache_path = provider.cache_path(temp.path(), url, "txt");
         tokio::fs::create_dir_all(cache_path.parent().unwrap())
             .await
             .unwrap();
@@ -1368,6 +1478,45 @@ mod tests {
         assert!(report.candidates.iter().any(|candidate| {
             candidate.kind == TorrentSwarmProviderCandidateKind::Tracker
                 && candidate.locator == "udp://tracker-index.example/announce"
+        }));
+    }
+
+    #[tokio::test]
+    async fn index_provider_uses_cached_torrent_response_as_locator() {
+        let temp = TempDir::new().unwrap();
+        let provider = IndexFeedProvider::new(SwarmIndexProviderConfig {
+            name: "metadata-cache".into(),
+            url_template: "https://cache.example/torrent/{btih}.torrent".into(),
+            input_kind: TorrentDiscoveryInputKind::Auto,
+            cache_ttl_secs: 3600,
+            timeout_secs: 1,
+        })
+        .unwrap();
+        let url = "https://cache.example/torrent/abcdef0123456789abcdef0123456789abcdef01.torrent";
+        let cache_path = provider.cache_path(temp.path(), url, "torrent");
+        tokio::fs::create_dir_all(cache_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&cache_path, b"d4:infod4:name4:testee")
+            .await
+            .unwrap();
+
+        let report = provider
+            .discover(TorrentSwarmProviderContext {
+                spec: DownloadSpec::parse(
+                    "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+                )
+                .unwrap(),
+                existing_hints: TorrentSwarmHints::default(),
+                cache_dir: temp.path().to_path_buf(),
+            })
+            .await
+            .unwrap();
+
+        assert!(report.candidates.iter().any(|candidate| {
+            candidate.kind == TorrentSwarmProviderCandidateKind::TorrentFile
+                && candidate.locator == cache_path.to_string_lossy()
+                && candidate.source == url
         }));
     }
 
@@ -1413,6 +1562,20 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("name cannot be blank"));
+    }
+
+    #[test]
+    fn torrent_response_detection_rejects_html_error_pages() {
+        assert!(!looks_like_torrent_response(
+            "https://cache.example/payload.torrent",
+            Some("text/html"),
+            b"<!DOCTYPE html><title>not found</title>",
+        ));
+        assert!(looks_like_torrent_response(
+            "https://cache.example/payload.torrent",
+            Some("application/x-bittorrent"),
+            b"d4:infod4:name4:testee",
+        ));
     }
 
     #[tokio::test]

@@ -121,15 +121,17 @@ magnet runs that need more than bare DHT. They now feed the static provider.
 `--tracker-list-url` adds a remote tracker-list provider with TTL-based disk
 cache and stale-cache fallback. `--index-url-template` adds an authorized
 index/feed provider with the same cache behavior; templates support `{btih}`,
-`{info_hash}`, `{display_name}`, `{query}`, and `{locator}`. `--discover-file`
-and `--discover-url` feed HTML/feed/text into the discovery provider, adding
-discovered magnets and `.torrent` inputs to the run and injecting discovered
-trackers/web seeds as swarm hints. Remote provider fetches use timeout-bounded
-`reqwest` clients with stable paradown user agents. `--timeout-secs N` bounds
-public-swarm smoke runs and exits with code `124` after printing the latest
-swarm snapshot and recent provider/tracker/DHT/peer/listen/port-mapping
-diagnostics. The native adapter also exposes `listen_port` and `connect_peer`
-as narrow advanced control hooks.
+`{info_hash}`, `{display_name}`, `{query}`, and `{locator}`. HTTP(S)
+`.torrent` locators are fetched into `.paradown/torrent-inputs` before the
+native session starts, so official remote torrent files exercise libtorrent
+instead of the HTTP downloader. `--discover-file` and `--discover-url` feed
+HTML/feed/text into the discovery provider, adding discovered magnets and
+`.torrent` inputs to the run and injecting discovered trackers/web seeds as
+swarm hints. Remote provider fetches use timeout-bounded `reqwest` clients with
+stable paradown user agents. `--timeout-secs N` bounds public-swarm smoke runs
+and exits with code `124` after printing the latest swarm snapshot and recent
+provider/tracker/DHT/peer/listen/port-mapping diagnostics. The native adapter
+also exposes `listen_port` and `connect_peer` as narrow advanced control hooks.
 They are used by tests and keep diagnostics available without leaking
 libtorrent types into the main crate.
 
@@ -150,7 +152,7 @@ the matrix runner:
 
 ```bash
 cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
-# edit ./my-soak.tsv with content you have rights to download
+# the example already contains official Linux distribution samples
 ./scripts/soak-libtorrent-public.sh \
   --matrix-file ./my-soak.tsv \
   --out-dir ./target/libtorrent-public-soak

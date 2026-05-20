@@ -5,10 +5,12 @@ use paradown::download::{
 };
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -359,6 +361,42 @@ fn native_cli_discovers_torrent_from_html_file() {
 }
 
 #[test]
+fn native_cli_fetches_remote_torrent_url() {
+    let sandbox = unique_sandbox();
+    let download_dir = sandbox.join("downloads");
+    fs::create_dir_all(&download_dir).unwrap();
+    let (torrent_url, server) =
+        serve_bytes_once("/sample.torrent", single_file_torrent(), "application/x-bittorrent");
+
+    let output = run_cli_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_paradown-libtorrent"))
+            .arg("--download-dir")
+            .arg(&download_dir)
+            .arg("--storage-db")
+            .arg(sandbox.join("downloads.db"))
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg(&torrent_url),
+        Duration::from_secs(8),
+    );
+    server.join().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(stderr.contains("fetched torrent URL"));
+    assert!(stdout.contains("#1 "));
+
+    let _ = fs::remove_dir_all(sandbox);
+}
+
+#[test]
 fn native_cli_prints_static_provider_candidates() {
     let sandbox = unique_sandbox();
     let download_dir = sandbox.join("downloads");
@@ -395,6 +433,29 @@ fn native_cli_prints_static_provider_candidates() {
     assert!(stderr.contains("udp://provider.example/announce"));
 
     let _ = fs::remove_dir_all(sandbox);
+}
+
+fn serve_bytes_once(
+    path: &str,
+    body: Vec<u8>,
+    content_type: &'static str,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let path = path.to_string();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let _ = stream.read(&mut request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            content_type
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    (format!("http://{addr}{path}"), handle)
 }
 
 fn local_engine() -> LibtorrentRasterbarEngine {

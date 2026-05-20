@@ -261,6 +261,9 @@ candidates. `--tracker-list-url` enables cached remote tracker-list providers.
 `--index-url-template` enables authorized index/feed providers. Templates can
 use `{btih}`, `{info_hash}`, `{display_name}`, `{query}`, or `{locator}`; values
 are URL-encoded before the feed is fetched and parsed.
+HTTP(S) `.torrent` locators are fetched into the download directory's
+`.paradown/torrent-inputs` cache and then handed to libtorrent as local torrent
+files.
 `--discover-file`, `--discover-url`, and `--discover-kind auto|html|feed|text`
 enable the discovery provider for HTML/feed/text inputs. Provider candidates and
 diagnostics are printed before transfer startup, which makes public-swarm smoke
@@ -286,7 +289,7 @@ For a matrix of authorized public samples:
 
 ```bash
 cp examples/libtorrent-public-soak.example.tsv ./my-soak.tsv
-# edit ./my-soak.tsv with content you have rights to download
+# the example already contains official Linux distribution samples
 ./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv
 ```
 

@@ -180,7 +180,15 @@ async fn run() -> Result<ExitCode> {
     let mut task_ids = Vec::with_capacity(locators.len());
     let mut torrent_handles = Vec::with_capacity(locators.len());
     let mut peer_hints = Vec::new();
-    for locator in locators {
+    let torrent_input_cache = config.download_dir.join(".paradown").join("torrent-inputs");
+    for (index, locator) in locators.into_iter().enumerate() {
+        let locator = prepare_native_locator(
+            &locator,
+            &torrent_input_cache,
+            index,
+            config.connect_timeout_secs,
+        )
+        .await?;
         let spec = DownloadSpec::parse(locator)?;
         let source_set = source_set_with_hints(&spec, &cli_hints)?;
         let swarm_hints = TorrentSwarmHints::from_spec_and_sources(&spec, &source_set)?;
@@ -243,6 +251,76 @@ async fn run() -> Result<ExitCode> {
     }
 
     Ok(exit_code)
+}
+
+async fn prepare_native_locator(
+    locator: &str,
+    cache_dir: &std::path::Path,
+    index: usize,
+    timeout_secs: u64,
+) -> Result<String> {
+    if !is_remote_torrent_locator(locator) {
+        return Ok(locator.to_string());
+    }
+
+    tokio::fs::create_dir_all(cache_dir).await?;
+    let file_name = remote_torrent_cache_name(locator, index);
+    let cache_path = cache_dir.join(file_name);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs.max(1)))
+        .user_agent(concat!("paradown-libtorrent/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let bytes = client
+        .get(locator)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    tokio::fs::write(&cache_path, &bytes).await?;
+    eprintln!(
+        "fetched torrent URL {} -> {}",
+        locator,
+        cache_path.display()
+    );
+    Ok(cache_path.to_string_lossy().into_owned())
+}
+
+fn is_remote_torrent_locator(locator: &str) -> bool {
+    let lowered = locator.to_ascii_lowercase();
+    (lowered.starts_with("http://") || lowered.starts_with("https://"))
+        && lowered
+            .split(['?', '#'])
+            .next()
+            .is_some_and(|path| path.ends_with(".torrent"))
+}
+
+fn remote_torrent_cache_name(locator: &str, index: usize) -> String {
+    let base = locator
+        .split(['?', '#'])
+        .next()
+        .and_then(|path| path.rsplit('/').next())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("remote.torrent");
+    format!("{index:03}-{}", sanitize_file_name(base))
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "remote.torrent".into()
+    } else {
+        sanitized
+    }
 }
 
 async fn wait_for_completion(

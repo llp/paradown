@@ -80,7 +80,7 @@ flowchart LR
   - native adapter 已有 `paradown-libtorrent` 产品入口和独立 release 打包脚本
   - discovery 已有基于 `scraper`、`feed-rs`、`regex`、`url` 的 HTML/feed/text 解析入口，可发现 magnet、`.torrent`、tracker、web seed 并注入 native libtorrent CLI
   - P6 swarm provider layer 已接入主 torrent 启动流程，支持 magnet hints、静态 tracker/peer/web-seed、带 TTL 缓存的远程 tracker list、授权 index/feed URL 模板、HTML/feed/text discovery、候选限量和 provider 诊断
-  - native adapter 已有公网 smoke 和 soak matrix 脚本入口，支持 tracker 注入、index/feed provider、provider cache、discovery 输入、超时诊断、样本 summary 和 release-facing JSONL/run/Markdown 报告，不进入默认 CI
+  - native adapter 已有公网 smoke 和 soak matrix 脚本入口，支持官方远程 `.torrent` URL 预取、tracker 注入、index/feed provider、provider cache、discovery 输入、超时诊断、样本 summary 和 release-facing JSONL/run/Markdown 报告，不进入默认 CI
   - release readiness gate 已脚本化，覆盖格式、shell 语法、strict clippy、全量测试、可选 cargo-audit、native adapter 和本地 release package build
 - `piece state` 和 `block state` 都已经持久化到存储层，恢复时不再只依赖旧 worker bytes
 - HTTP 当前已经支持：
@@ -89,7 +89,7 @@ flowchart LR
   - `ETag / Last-Modified / If-Range` 安全续传
   - 对无 `Content-Length` 目标的显式拒绝
 - `FTP` 目前只有架构占位，真实发现与传输实现还未开始
-- `libtorrent` 目前已有主 crate API、adapter 包、可编译的 native CXX bridge、torrent-file metadata 提取、magnet metadata exchange、完整控制入口、fast-resume 状态闭环、本地 peer-wire 端到端验证、native CLI、torrent/magnet discovery、swarm provider layer、tracker-list 缓存、授权 index/feed provider、tracker/web-seed/peer 注入、超时诊断、独立 release 打包策略、公网 smoke/soak 入口、release-facing soak telemetry/reporting 和 release readiness gate；下一步是更系统地积累真实授权公网样本结果
+- `libtorrent` 目前已有主 crate API、adapter 包、可编译的 native CXX bridge、torrent-file metadata 提取、magnet metadata exchange、完整控制入口、fast-resume 状态闭环、本地 peer-wire 端到端验证、native CLI、远程 `.torrent` URL 预取、torrent/magnet discovery、swarm provider layer、tracker-list 缓存、授权 index/feed provider、tracker/web-seed/peer 注入、超时诊断、独立 release 打包策略、公网 smoke/soak 入口、release-facing soak telemetry/reporting 和 release readiness gate；下一步是更系统地积累真实授权公网样本结果
 - 当前研发重点已经进入 P5/P6：把 libtorrent native bridge 补完整，而不是继续扩大 HTTP/HTTPS 主线
 
 ## 3. 当前代码与目标代码的映射

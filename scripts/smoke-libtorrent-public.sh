@@ -200,27 +200,41 @@ CMD=(
   --discover-kind "$DISCOVER_KIND"
 )
 
-for locator in "${LOCATORS[@]}"; do
-  CMD+=(--urls "$locator")
-done
-for file in "${DISCOVER_FILES[@]}"; do
-  CMD+=(--discover-file "$file")
-done
-for url in "${DISCOVER_URLS[@]}"; do
-  CMD+=(--discover-url "$url")
-done
-for tracker in "${TRACKERS[@]}"; do
-  CMD+=(--tracker "$tracker")
-done
-for file in "${TRACKER_FILES[@]}"; do
-  CMD+=(--tracker-file "$file")
-done
-for url in "${TRACKER_LIST_URLS[@]}"; do
-  CMD+=(--tracker-list-url "$url")
-done
-for url in "${INDEX_URL_TEMPLATES[@]}"; do
-  CMD+=(--index-url-template "$url")
-done
+if [[ ${#LOCATORS[@]} -gt 0 ]]; then
+  for locator in "${LOCATORS[@]}"; do
+    CMD+=(--urls "$locator")
+  done
+fi
+if [[ ${#DISCOVER_FILES[@]} -gt 0 ]]; then
+  for file in "${DISCOVER_FILES[@]}"; do
+    CMD+=(--discover-file "$file")
+  done
+fi
+if [[ ${#DISCOVER_URLS[@]} -gt 0 ]]; then
+  for url in "${DISCOVER_URLS[@]}"; do
+    CMD+=(--discover-url "$url")
+  done
+fi
+if [[ ${#TRACKERS[@]} -gt 0 ]]; then
+  for tracker in "${TRACKERS[@]}"; do
+    CMD+=(--tracker "$tracker")
+  done
+fi
+if [[ ${#TRACKER_FILES[@]} -gt 0 ]]; then
+  for file in "${TRACKER_FILES[@]}"; do
+    CMD+=(--tracker-file "$file")
+  done
+fi
+if [[ ${#TRACKER_LIST_URLS[@]} -gt 0 ]]; then
+  for url in "${TRACKER_LIST_URLS[@]}"; do
+    CMD+=(--tracker-list-url "$url")
+  done
+fi
+if [[ ${#INDEX_URL_TEMPLATES[@]} -gt 0 ]]; then
+  for url in "${INDEX_URL_TEMPLATES[@]}"; do
+    CMD+=(--index-url-template "$url")
+  done
+fi
 if [[ -n "$INDEX_QUERY" ]]; then
   CMD+=(--index-query "$INDEX_QUERY")
 fi
@@ -242,13 +256,19 @@ fi
 if [[ -n "$MAX_TRACKERS" ]]; then
   CMD+=(--swarm-max-trackers "$MAX_TRACKERS")
 fi
-for web_seed in "${WEB_SEEDS[@]}"; do
-  CMD+=(--web-seed "$web_seed")
-done
-for peer in "${PEERS[@]}"; do
-  CMD+=(--peer "$peer")
-done
-CMD+=("${PASSTHROUGH[@]}")
+if [[ ${#WEB_SEEDS[@]} -gt 0 ]]; then
+  for web_seed in "${WEB_SEEDS[@]}"; do
+    CMD+=(--web-seed "$web_seed")
+  done
+fi
+if [[ ${#PEERS[@]} -gt 0 ]]; then
+  for peer in "${PEERS[@]}"; do
+    CMD+=(--peer "$peer")
+  done
+fi
+if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
+  CMD+=("${PASSTHROUGH[@]}")
+fi
 
 echo "==> Running public libtorrent smoke"
 echo "    downloads: $DOWNLOAD_DIR"

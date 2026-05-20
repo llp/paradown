@@ -32,7 +32,7 @@
    - use `--skip-native` only when the machine cannot build `libtorrent-rasterbar`
 5. Run authorized public BT smoke/soak when the release touches torrent code:
    - copy [examples/libtorrent-public-soak.example.tsv](/Users/liulipeng/workspace/rust/paradown/examples/libtorrent-public-soak.example.tsv)
-   - fill it with content you have rights to download
+   - review the official Linux distribution samples and add only content you have rights to download
    - run `./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv`
    - archive `summary.jsonl`, `run.json`, `report.md`, and per-case logs from the soak output directory
 6. Verify Docker image build if the Dockerfile changed.

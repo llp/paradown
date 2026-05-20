@@ -1,7 +1,7 @@
 # Authorized public libtorrent soak matrix.
 #
-# Copy this file, replace placeholders with content you are allowed to download,
-# then run:
+# These rows use official Linux distribution torrent/magnet sources. Copy this
+# file, adjust timeouts if needed, then run:
 #   ./scripts/soak-libtorrent-public.sh --matrix-file ./my-soak.tsv
 #
 # Columns:
@@ -9,6 +9,7 @@
 #
 # Use "-" for blank optional fields. Keep fields tab-separated.
 name	locator	tracker_file	tracker_list_url	discovery_file	discovery_url	timeout_secs	max_trackers	index_url_template	index_query	index_kind	index_cache_ttl_secs	index_timeout_secs
-# public-linux-iso	magnet:?xt=urn:btih:REPLACE_WITH_AUTHORIZED_INFO_HASH	./trackers.txt	https://example.com/trackers.txt	-	-	300	128	-	-	-	-	-
-# release-feed	-	./trackers.txt	-	-	https://example.com/releases.xml	300	128	-	-	-	-	-
-# authorized-index	-	./trackers.txt	-	-	-	300	128	https://index.example/search?q={query}	linux iso	feed	86400	15
+debian-netinst-official	https://cdimage.debian.org/debian-cd/current/amd64/bt-cd/debian-13.5.0-amd64-netinst.iso.torrent	-	-	-	-	180	128	-	-	-	-	-
+ubuntu-live-server-official	https://torrent.ubuntu.com/simple/noble/live-server/ubuntu-24.04.4-live-server-amd64.iso.torrent	-	-	-	-	180	128	-	-	-	-	-
+arch-official-magnet	magnet:?xt=urn:btih:e337a880c4d0f552bab5b437fe1208d26130ccc5&dn=archlinux-2026.05.01-x86_64.iso	-	-	-	-	180	128	-	-	-	-	-
+arch-official-discovery	-	-	-	-	https://archlinux.org/download/	120	128	-	-	-	-	-

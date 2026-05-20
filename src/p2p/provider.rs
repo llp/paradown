@@ -339,9 +339,9 @@ impl TorrentSwarmProviderResolver {
                 cache_dir: self.cache_dir.clone(),
             };
             match provider.discover(context).await {
-                Ok(mut report) => {
-                    for diagnostic in report.diagnostics.drain(..) {
-                        push_limited_diagnostic(&mut resolution, diagnostic, self.limits);
+                Ok(report) => {
+                    for diagnostic in &report.diagnostics {
+                        push_limited_diagnostic(&mut resolution, diagnostic.clone(), self.limits);
                     }
                     for candidate in report.candidates.iter().cloned() {
                         if !insert_candidate(&mut resolution, &mut seen, candidate, self.limits) {

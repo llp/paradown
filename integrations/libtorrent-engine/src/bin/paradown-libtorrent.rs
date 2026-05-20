@@ -4,20 +4,20 @@ use paradown::download::{
     TorrentEngineHandle, TorrentPeerEndpoint, TorrentSwarmHints,
 };
 use paradown::{
-    Backend, Config, TorrentDiscoveryCandidate, TorrentDiscoveryInputKind, TorrentDiscoveryKind,
-    TorrentDiscoveryOptions, discover_torrent_candidates, init_logger_with_level,
+    Backend, Config, TorrentDiscoveryInputKind, TorrentSwarmProviderCandidate,
+    TorrentSwarmProviderCandidateKind, TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport,
+    build_swarm_provider_resolver, init_logger_with_level,
 };
 use paradown_libtorrent_engine::LibtorrentRasterbarEngine;
 use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::num::NonZeroU64;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 type Result<T> = std::result::Result<T, Box<dyn StdError + Send + Sync>>;
-const DISCOVERY_HTTP_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Parser, Debug)]
 #[command(name = "paradown-libtorrent")]
@@ -52,6 +52,33 @@ struct Cli {
 
     #[arg(long = "web-seed", value_name = "URL")]
     web_seeds: Vec<String>,
+
+    #[arg(long = "disable-swarm-providers")]
+    disable_swarm_providers: bool,
+
+    #[arg(long = "swarm-provider-cache-dir", value_name = "DIR")]
+    swarm_provider_cache_dir: Option<PathBuf>,
+
+    #[arg(long = "tracker-list-url", value_name = "URL")]
+    tracker_list_urls: Vec<String>,
+
+    #[arg(long = "tracker-list-cache-ttl-secs", value_name = "SECONDS")]
+    tracker_list_cache_ttl_secs: Option<NonZeroU64>,
+
+    #[arg(long = "tracker-list-timeout-secs", value_name = "SECONDS")]
+    tracker_list_timeout_secs: Option<NonZeroU64>,
+
+    #[arg(long = "swarm-max-trackers", value_name = "COUNT")]
+    swarm_max_trackers: Option<usize>,
+
+    #[arg(long = "swarm-max-peers", value_name = "COUNT")]
+    swarm_max_peers: Option<usize>,
+
+    #[arg(long = "swarm-max-web-seeds", value_name = "COUNT")]
+    swarm_max_web_seeds: Option<usize>,
+
+    #[arg(long = "swarm-max-locators", value_name = "COUNT")]
+    swarm_max_locators: Option<usize>,
 
     #[arg(long)]
     disable_dht: bool,
@@ -89,12 +116,6 @@ enum DiscoveryInputArg {
     Text,
 }
 
-#[derive(Debug)]
-struct DiscoveryReport {
-    source: String,
-    candidates: Vec<TorrentDiscoveryCandidate>,
-}
-
 fn main() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -123,8 +144,8 @@ async fn run() -> Result<ExitCode> {
 
     let mut locators = collect_locators(&cli);
     let mut cli_hints = collect_cli_swarm_hints(&cli)?;
-    let discovery_reports = collect_discovered_inputs(&cli, &mut locators, &mut cli_hints).await?;
-    print_discovery_reports(&discovery_reports);
+    let provider_reports = collect_provider_bootstrap_inputs(&config, &mut locators, &mut cli_hints).await?;
+    print_swarm_provider_reports(&provider_reports);
     if locators.is_empty() {
         return Err(
             "provide at least one .torrent path, magnet URI, discovery file, or discovery URL"
@@ -301,9 +322,73 @@ fn build_config(cli: &Cli) -> Result<Config> {
     if cli.disable_natpmp {
         config.p2p.libtorrent.enable_natpmp = false;
     }
+    apply_cli_swarm_provider_config(&mut config, cli);
 
     config.validate()?;
     Ok(config)
+}
+
+fn apply_cli_swarm_provider_config(config: &mut Config, cli: &Cli) {
+    if cli.disable_swarm_providers {
+        config.p2p.swarm.enabled = false;
+    }
+    if let Some(cache_dir) = &cli.swarm_provider_cache_dir {
+        config.p2p.swarm.cache_dir = Some(cache_dir.clone());
+    }
+    config
+        .p2p
+        .swarm
+        .static_trackers
+        .extend(cli.trackers.iter().cloned());
+    config
+        .p2p
+        .swarm
+        .static_tracker_files
+        .extend(cli.tracker_files.iter().cloned());
+    config
+        .p2p
+        .swarm
+        .static_peers
+        .extend(cli.peers.iter().cloned());
+    config
+        .p2p
+        .swarm
+        .static_web_seeds
+        .extend(cli.web_seeds.iter().cloned());
+    config
+        .p2p
+        .swarm
+        .tracker_list_urls
+        .extend(cli.tracker_list_urls.iter().cloned());
+    if let Some(ttl) = cli.tracker_list_cache_ttl_secs {
+        config.p2p.swarm.tracker_list_cache_ttl_secs = ttl.get();
+    }
+    if let Some(timeout) = cli.tracker_list_timeout_secs {
+        config.p2p.swarm.tracker_list_timeout_secs = timeout.get();
+    }
+    config
+        .p2p
+        .swarm
+        .discovery_files
+        .extend(cli.discover_files.iter().cloned());
+    config
+        .p2p
+        .swarm
+        .discovery_urls
+        .extend(cli.discover_urls.iter().cloned());
+    config.p2p.swarm.discovery_input_kind = cli.discover_kind.into();
+    if let Some(limit) = cli.swarm_max_trackers {
+        config.p2p.swarm.limits.max_trackers = limit;
+    }
+    if let Some(limit) = cli.swarm_max_peers {
+        config.p2p.swarm.limits.max_peers = limit;
+    }
+    if let Some(limit) = cli.swarm_max_web_seeds {
+        config.p2p.swarm.limits.max_web_seeds = limit;
+    }
+    if let Some(limit) = cli.swarm_max_locators {
+        config.p2p.swarm.limits.max_locators = limit;
+    }
 }
 
 fn collect_locators(cli: &Cli) -> Vec<String> {
@@ -314,112 +399,64 @@ fn collect_locators(cli: &Cli) -> Vec<String> {
         .collect()
 }
 
-async fn collect_discovered_inputs(
-    cli: &Cli,
+async fn collect_provider_bootstrap_inputs(
+    config: &Config,
     locators: &mut Vec<String>,
     hints: &mut TorrentSwarmHints,
-) -> Result<Vec<DiscoveryReport>> {
-    let mut reports = Vec::new();
-    for path in &cli.discover_files {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|err| format!("failed to read discovery file {}: {err}", path.display()))?;
-        let options = TorrentDiscoveryOptions {
-            input_kind: cli.discover_kind.into(),
-            base_url: None,
-            base_path: discovery_file_base(path),
-        };
-        let candidates = discover_torrent_candidates(&contents, &options)?;
-        apply_discovered_candidates(&candidates, locators, hints);
-        reports.push(DiscoveryReport {
-            source: path.display().to_string(),
-            candidates,
-        });
+) -> Result<Vec<TorrentSwarmProviderReport>> {
+    let Some(resolver) = build_swarm_provider_resolver(&config.p2p.swarm, &config.download_dir)?
+    else {
+        return Ok(Vec::new());
+    };
+    let resolution = resolver
+        .resolve(
+            DownloadSpec::Metadata {
+                display_name: Some("cli-swarm-bootstrap".into()),
+                info_hash: None,
+            },
+            hints.clone(),
+        )
+        .await;
+    for candidate in &resolution.candidates {
+        apply_provider_bootstrap_candidate(candidate, locators);
     }
-
-    let http_client = discovery_http_client()?;
-    for url in &cli.discover_urls {
-        let response = http_client
-            .get(url)
-            .send()
-            .await
-            .map_err(|err| format!("failed to fetch discovery URL {url}: {err}"))?;
-        let response = response
-            .error_for_status()
-            .map_err(|err| format!("failed to fetch discovery URL {url}: {err}"))?;
-        let contents = response
-            .text()
-            .await
-            .map_err(|err| format!("failed to read discovery URL {url}: {err}"))?;
-        let options = TorrentDiscoveryOptions {
-            input_kind: cli.discover_kind.into(),
-            base_url: Some(url.clone()),
-            base_path: None,
-        };
-        let candidates = discover_torrent_candidates(&contents, &options)?;
-        apply_discovered_candidates(&candidates, locators, hints);
-        reports.push(DiscoveryReport {
-            source: url.clone(),
-            candidates,
-        });
-    }
-
-    Ok(reports)
+    *hints = resolution.hints;
+    print_swarm_provider_diagnostics(&resolution.diagnostics);
+    Ok(resolution.reports)
 }
 
-fn apply_discovered_candidates(
-    candidates: &[TorrentDiscoveryCandidate],
+fn apply_provider_bootstrap_candidate(
+    candidate: &TorrentSwarmProviderCandidate,
     locators: &mut Vec<String>,
-    hints: &mut TorrentSwarmHints,
 ) {
-    for candidate in candidates {
-        match candidate.kind {
-            TorrentDiscoveryKind::Magnet | TorrentDiscoveryKind::TorrentFile => {
-                if !locators.iter().any(|locator| locator == &candidate.locator) {
-                    locators.push(candidate.locator.clone());
-                }
-            }
-            TorrentDiscoveryKind::Tracker => hints.add_tracker(candidate.locator.clone()),
-            TorrentDiscoveryKind::WebSeed => hints.add_web_seed(candidate.locator.clone()),
-        }
+    if matches!(
+        candidate.kind,
+        TorrentSwarmProviderCandidateKind::Magnet | TorrentSwarmProviderCandidateKind::TorrentFile
+    ) && !locators.iter().any(|locator| locator == &candidate.locator)
+    {
+        locators.push(candidate.locator.clone());
     }
 }
 
-fn discovery_file_base(path: &Path) -> Option<PathBuf> {
-    if let Ok(canonical) = path.canonicalize() {
-        return canonical.parent().map(Path::to_path_buf);
-    }
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-}
-
-fn discovery_http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(DISCOVERY_HTTP_TIMEOUT_SECS))
-        .user_agent(concat!("paradown-libtorrent/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|err| format!("failed to build discovery HTTP client: {err}").into())
-}
-
-fn print_discovery_reports(reports: &[DiscoveryReport]) {
+fn print_swarm_provider_reports(reports: &[TorrentSwarmProviderReport]) {
     for report in reports {
         eprintln!(
-            "discovery {} candidates from {}",
+            "swarm provider {} candidates from {}",
             report.candidates.len(),
-            report.source
+            report.provider
         );
         for candidate in &report.candidates {
             if let Some(display_name) = candidate.display_name.as_deref() {
                 eprintln!(
                     "  {} {} ({})",
-                    discovery_kind_label(candidate.kind),
+                    provider_kind_label(candidate.kind),
                     candidate.locator,
                     display_name
                 );
             } else {
                 eprintln!(
                     "  {} {}",
-                    discovery_kind_label(candidate.kind),
+                    provider_kind_label(candidate.kind),
                     candidate.locator
                 );
             }
@@ -427,12 +464,29 @@ fn print_discovery_reports(reports: &[DiscoveryReport]) {
     }
 }
 
-fn discovery_kind_label(kind: TorrentDiscoveryKind) -> &'static str {
+fn print_swarm_provider_diagnostics(diagnostics: &[TorrentSwarmProviderDiagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "swarm provider {} {:?}: {}{}",
+            diagnostic.provider,
+            diagnostic.severity,
+            diagnostic.message,
+            diagnostic
+                .source
+                .as_deref()
+                .map(|source| format!(" source={source}"))
+                .unwrap_or_default()
+        );
+    }
+}
+
+fn provider_kind_label(kind: TorrentSwarmProviderCandidateKind) -> &'static str {
     match kind {
-        TorrentDiscoveryKind::Magnet => "magnet",
-        TorrentDiscoveryKind::TorrentFile => "torrent",
-        TorrentDiscoveryKind::Tracker => "tracker",
-        TorrentDiscoveryKind::WebSeed => "web-seed",
+        TorrentSwarmProviderCandidateKind::Magnet => "magnet",
+        TorrentSwarmProviderCandidateKind::TorrentFile => "torrent",
+        TorrentSwarmProviderCandidateKind::Tracker => "tracker",
+        TorrentSwarmProviderCandidateKind::Peer => "peer",
+        TorrentSwarmProviderCandidateKind::WebSeed => "web-seed",
     }
 }
 

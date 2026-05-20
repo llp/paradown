@@ -268,6 +268,10 @@ fn native_cli_smoke_prints_native_options() {
     assert!(stdout.contains("--web-seed"));
     assert!(stdout.contains("--discover-file"));
     assert!(stdout.contains("--discover-url"));
+    assert!(stdout.contains("--disable-swarm-providers"));
+    assert!(stdout.contains("--swarm-provider-cache-dir"));
+    assert!(stdout.contains("--tracker-list-url"));
+    assert!(stdout.contains("--swarm-max-trackers"));
 }
 
 #[test]
@@ -347,6 +351,45 @@ fn native_cli_discovers_torrent_from_html_file() {
     );
     assert!(stdout.contains("#1 "));
     assert!(stdout.contains("sample.torrent") || stderr.contains("sample.torrent"));
+
+    let _ = fs::remove_dir_all(sandbox);
+}
+
+#[test]
+fn native_cli_prints_static_provider_candidates() {
+    let sandbox = unique_sandbox();
+    let download_dir = sandbox.join("downloads");
+    fs::create_dir_all(&download_dir).unwrap();
+    let torrent_path = sandbox.join("sample.torrent");
+    fs::write(&torrent_path, single_file_torrent()).unwrap();
+    let tracker_file = sandbox.join("trackers.txt");
+    fs::write(&tracker_file, "udp://provider.example/announce\n").unwrap();
+
+    let output = run_cli_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_paradown-libtorrent"))
+            .arg("--download-dir")
+            .arg(&download_dir)
+            .arg("--storage-db")
+            .arg(sandbox.join("downloads.db"))
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--tracker-file")
+            .arg(&tracker_file)
+            .arg(&torrent_path),
+        Duration::from_secs(8),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(stderr.contains("swarm provider 1 candidates from static"));
+    assert!(stderr.contains("udp://provider.example/announce"));
 
     let _ = fs::remove_dir_all(sandbox);
 }

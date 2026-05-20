@@ -50,6 +50,7 @@ pub use p2p::{
     TorrentSnapshot, TorrentSwarmHints, TorrentSwarmProviderCandidate,
     TorrentSwarmProviderCandidateKind, TorrentSwarmProviderDiagnostic, TorrentSwarmProviderReport,
     TorrentSwarmProviderResolution, TorrentSwarmProviderSeverity, TorrentTransferStats,
+    build_swarm_provider_resolver,
 };
 pub use runtime::{init_logger, init_logger_with_level};
 pub use storage::{Backend, Store};

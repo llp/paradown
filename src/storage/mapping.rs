@@ -15,6 +15,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+/// 把运行时任务转换成数据库模型。
+///
+/// 参数 `task: &Arc<Task>` 表示借用一个原子引用计数指针：
+/// - `Arc<Task>` 允许多个异步任务共享同一个 `Task`。
+/// - 这里用 `&Arc<Task>`，说明本函数只借用这个共享指针，不增加所有权负担。
+///
+/// 这个函数里集中出现了 `.map()`、`.unwrap_or_default()`、`.await?` 等语法，
+/// 对应文档见 `docs/rust/ownership-borrowing-lifetimes.md` 和 `docs/rust/result-option.md`。
 pub(crate) async fn task_to_db(task: &Arc<Task>) -> DBDownloadTask {
     let file_path = task
         .file_path
@@ -215,6 +223,10 @@ pub(crate) fn piece_states_to_db(
     task_id: u32,
     piece_states: &[PieceState],
 ) -> Vec<DBDownloadPiece> {
+    // `piece_states` 是 slice 引用，函数不拥有原始集合。
+    // `.iter()` 产生借用迭代器，每个 `piece` 的类型类似 `&PieceState`。
+    // `.map(...)` 把每个 `PieceState` 映射成数据库模型，最后 `.collect()` 收集成 Vec。
+    // 迭代器和闭包的系统解释见 `docs/rust/iterators-and-closures.md`。
     piece_states
         .iter()
         .map(|piece| DBDownloadPiece {
@@ -227,8 +239,12 @@ pub(crate) fn piece_states_to_db(
 }
 
 pub(crate) fn db_pieces_to_piece_states(pieces: &[DBDownloadPiece]) -> Vec<PieceState> {
+    // `pieces` 是借用来的 slice，不能直接排序，因为排序需要可变集合。
+    // `.to_vec()` 克隆出一个拥有所有权的 Vec，然后 `sort_by_key` 才能原地排序。
     let mut pieces = pieces.to_vec();
     pieces.sort_by_key(|piece| piece.piece_index);
+    // 这里使用 `.into_iter()` 消费临时 Vec，把每个 DBDownloadPiece 移动进闭包。
+    // 因为后面不再需要 `pieces`，消费式迭代最合适。
     pieces
         .into_iter()
         .map(|piece| PieceState {
@@ -289,6 +305,8 @@ pub(crate) fn db_workers_to_requests(workers: &[DBDownloadWorker]) -> Vec<Segmen
 }
 
 fn normalized_text_field(value: &str) -> Option<String> {
+    // `trim()` 返回的是借用的 `&str`，没有分配新字符串。
+    // 只有在确认非空后，才用 `to_string()` 创建拥有所有权的 `String` 放进 `Some`。
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None

@@ -29,6 +29,10 @@ pub struct TaskRequest {
 }
 
 impl TaskRequest {
+    /// 创建 `TaskRequestBuilder`。
+    ///
+    /// 这里接收 `spec: DownloadSpec`，表示调用者把 `DownloadSpec` 的所有权交给 builder。
+    /// builder 最后 `build(self)` 时会再把它移动进 `TaskRequest`。
     pub fn builder(spec: DownloadSpec) -> TaskRequestBuilder {
         TaskRequestBuilder {
             id: None,
@@ -50,6 +54,11 @@ impl TaskRequest {
         }
     }
 
+    /// 从字符串定位符创建 builder。
+    ///
+    /// `locator: impl Into<String>` 是泛型参数简写，允许传入 `&str` 或 `String`。
+    /// `DownloadSpec::parse(locator.into())?` 里的 `?` 会在解析失败时提前返回 `Err(Error)`。
+    /// `Result` 和 `?` 的系统解释见 `docs/rust/result-option.md`。
     pub fn from_locator(locator: impl Into<String>) -> Result<TaskRequestBuilder, Error> {
         Ok(Self::builder(DownloadSpec::parse(locator.into())?))
     }
@@ -59,6 +68,11 @@ impl TaskRequest {
     }
 }
 
+/// `TaskRequest` 的 builder。
+///
+/// builder 模式在 Rust 中常和 `mut self -> Self` 搭配：
+/// 每个设置方法消费旧 builder、返回新 builder，最后 `build(self)` 消费 builder 生成目标值。
+/// 这种方式避免复杂的生命周期借用，也让链式调用很自然。
 pub struct TaskRequestBuilder {
     id: Option<u32>,
     spec: DownloadSpec,
@@ -79,6 +93,7 @@ pub struct TaskRequestBuilder {
 }
 
 impl TaskRequestBuilder {
+    /// 典型的 builder setter：取得 `mut self`，修改字段，返回 `Self`。
     pub fn id(mut self, id: u32) -> Self {
         self.id = Some(id);
         self
@@ -154,6 +169,10 @@ impl TaskRequestBuilder {
         self
     }
 
+    /// `build(self)` 消费 builder。
+    ///
+    /// 因为 `self` 被消费，下面可以直接移动所有字段：
+    /// `spec: self.spec`、`checksums: self.checksums` 等都不会产生复制。
     pub fn build(self) -> TaskRequest {
         TaskRequest {
             id: self.id,

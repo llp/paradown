@@ -1,5 +1,10 @@
 use chrono::{DateTime, Utc};
 
+/// 分片请求。
+///
+/// 这个结构体适合作为学习 `Option<T>` 字段的例子：
+/// 有些字段是创建请求时必须提供的，例如 `task_id`、`start`、`end`；
+/// 有些字段只有恢复、持久化或调度后才知道，因此用 `Option<T>` 表示可选。
 #[derive(Debug, Clone)]
 pub struct SegmentRequest {
     pub id: Option<u32>,
@@ -34,6 +39,10 @@ pub struct SegmentRequestBuilder {
 }
 
 impl SegmentRequestBuilder {
+    /// 创建 builder。
+    ///
+    /// `new` 是关联函数，不带 `self` 参数，所以调用方式是 `SegmentRequestBuilder::new(...)`。
+    /// 它只接收必要字段，其余字段用 `None` 作为默认值。
     pub fn new(task_id: u32, index: u32, start: u64, end: u64) -> Self {
         Self {
             id: None,
@@ -52,11 +61,23 @@ impl SegmentRequestBuilder {
         }
     }
 
+    /// builder 风格方法。
+    ///
+    /// `mut self` 表示这个方法取得 builder 的所有权，并允许修改它的字段。
+    /// 修改完成后返回 `Self`，调用者就可以继续链式调用：
+    ///
+    /// ```ignore
+    /// SegmentRequestBuilder::new(1, 0, 0, 1024).id(7).status("Running").build()
+    /// ```
     pub fn id(mut self, id: u32) -> Self {
         self.id = Some(id);
         self
     }
 
+    /// `impl Into<String>` 表示调用者可以传入任何能转换成 `String` 的类型。
+    ///
+    /// 例如 `String` 和 `&str` 都可以传入。函数内部通过 `.into()` 取得拥有所有权的 `String`。
+    /// 系统解释见 `docs/rust/generics-and-traits.md`。
     pub fn source_id(mut self, source_id: impl Into<String>) -> Self {
         self.source_id = Some(source_id.into());
         self
@@ -89,6 +110,11 @@ impl SegmentRequestBuilder {
         self
     }
 
+    /// 消费 builder，生成最终的 `SegmentRequest`。
+    ///
+    /// 这里参数是 `self` 而不是 `&self`，所以函数会取得整个 builder 的所有权。
+    /// 因此可以把 `self.source_id`、`self.status` 这类字段直接移动进结果结构体，不需要 clone。
+    /// 所有权细节见 `docs/rust/ownership-borrowing-lifetimes.md`。
     pub fn build(self) -> SegmentRequest {
         SegmentRequest {
             id: self.id,

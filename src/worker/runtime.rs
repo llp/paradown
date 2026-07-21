@@ -12,6 +12,14 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 impl Worker {
+    /// 启动 worker。
+    ///
+    /// 这个函数展示了 async 方法和原子状态位的组合：
+    /// - `async fn` 会返回 Future，调用者需要 `.await`。
+    /// - `swap(true, Ordering::Relaxed)` 原子地把运行状态设为 true，并返回旧值。
+    /// - 如果旧值已经是 true，说明已有任务在运行，直接返回。
+    ///
+    /// async 和并发语法见 `docs/rust/async-and-concurrency.md`。
     pub async fn start(&self) -> Result<(), Error> {
         if self.is_running.swap(true, Ordering::Relaxed) {
             debug!("[Worker {}] start() called, but already running", self.id);
@@ -34,6 +42,8 @@ impl Worker {
     }
 
     async fn run_download_loop(&self) -> Result<(), Error> {
+        // `?` 会在 `prepare_run_state` 返回 Err 时提前返回；
+        // 如果成功，则取出 bool 继续判断。
         if !self.prepare_run_state().await? {
             return Ok(());
         }
@@ -49,6 +59,7 @@ impl Worker {
         let mut retry_count = 0;
         let mut progress = ProgressReporter::new(self, downloaded_size);
 
+        // `loop` 是无限循环表达式。这里通过 `return`、`continue`、`break` 控制下载流程。
         loop {
             let source = self.current_source();
             let driver = driver_for_source(&source);
@@ -67,6 +78,8 @@ impl Worker {
                 self.stats.record_resume_attempt();
             }
 
+            // 这里用 `match` 而不是直接 `?`，是因为构建请求失败后不一定立即失败，
+            // 还可能进入重试逻辑。`?` 适合“错误就直接返回”的场景。
             let request = match driver
                 .build_request(self, range_start, use_range_requests)
                 .await

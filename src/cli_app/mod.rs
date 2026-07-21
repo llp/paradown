@@ -18,22 +18,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-// 1. 定义一个名为 `Cli` 的结构体 (struct)。
-//    这就像一个蓝图，描述了一个名为 `Cli` 的新数据类型，它包含了下面定义的所有字段。
+/// 命令行参数结构体。
+///
+/// 这里是学习属性宏和 derive 宏的代表位置：
+/// - `#[derive(Parser, Debug)]` 会自动生成命令行解析和调试输出相关实现。
+/// - `#[command(...)]` 是 clap 读取的结构体级属性。
+/// - 字段上的 `#[arg(...)]` 描述每个命令行参数如何解析。
+///
+/// 宏和属性的系统解释见 `docs/rust/macros-and-attributes.md`。
 #[derive(Parser, Debug)]
-// 2. `#[derive(Parser)]` 是一个“过程宏”，它来自 `clap` 库。
-//    这行代码的魔力在于：它会在编译时自动读取 `Cli` 结构体的定义，
-//    然后为 `Cli` 类型生成所有必要的命令行参数解析代码。
-//    其中就包括了一个名为 `parse()` 的关联函数（可以理解为静态方法）。
-//    更多关于过程宏的信息，请参阅 Rust 官方文档：
-//    https://doc.rust-lang.org/reference/procedural-macros.html
 #[command(name = "paradown")]
 #[command(about = "A multi-threaded download tool")]
-// `pub(crate)` 是一个可见性修饰符。
-// `pub` 表示这个项是公开的。
-// `(crate)` 将 `pub` 的范围限定在当前的 "crate"（也就是您当前的项目）之内。
-// 组合起来，`pub(crate)` 意味着 `Cli` 结构体在 `paradown` 项目的任何模块中都是可见的，
-// 但它不会被暴露为项目的公共 API，即外部无法访问。
 pub(crate) struct Cli {
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,

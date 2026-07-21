@@ -1,3 +1,6 @@
+// `#[cxx::bridge]` 是 cxx crate 提供的过程宏。
+// 它读取这个模块里的 Rust/C++ 边界声明，并生成安全桥接代码。
+// FFI 和 unsafe 的系统解释见 `docs/rust/unsafe-and-ffi.md`。
 #[cxx::bridge(namespace = "paradown_libtorrent")]
 #[allow(clippy::module_inception)]
 pub(crate) mod ffi {
@@ -80,13 +83,18 @@ pub(crate) mod ffi {
         pub diagnostic_peers: u32,
     }
 
+    // `unsafe extern "C++"` 声明 C++ 边界。
+    // Rust 无法完全验证 C++ 侧实现是否满足 Rust 安全规则，所以这个边界必须标记为 unsafe。
     unsafe extern "C++" {
         include!("paradown_libtorrent/native_engine.hpp");
 
+        // opaque C++ 类型：Rust 知道它存在，但不知道它的字段布局。
         type NativeEngine;
 
         fn new_native_engine(config: NativeEngineConfig) -> Result<UniquePtr<NativeEngine>>;
 
+        // `Pin<&mut NativeEngine>` 表示这个 C++ 对象在调用期间不能被移动。
+        // FFI 中需要稳定地址的对象经常使用 Pin 来表达这个约束。
         fn add_magnet(
             engine: Pin<&mut NativeEngine>,
             uri: &str,

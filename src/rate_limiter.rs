@@ -3,6 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, watch};
 use tokio::time::{Duration, Instant};
 
+/// 下载限速器。
+///
+/// 这个结构体是学习 Rust 并发原语的代表位置：
+/// - `AtomicU64` 用于无锁保存当前限速值。
+/// - `Mutex<Instant>` 用于保护需要按顺序更新的下一次可用时间。
+/// - `watch::Sender<()>` 用于通知等待中的异步任务“配置变了”。
+///
+/// async 和并发语法见 `docs/rust/async-and-concurrency.md`。
 pub(crate) struct DownloadRateLimiter {
     bytes_per_second: AtomicU64,
     next_available_at: Mutex<Instant>,
@@ -19,9 +27,15 @@ impl DownloadRateLimiter {
         }
     }
 
+    /// 更新限速。
+    ///
+    /// `&self` 是不可变借用，但仍然可以修改 `AtomicU64` 和 `Mutex` 内部的值。
+    /// 这是 Rust 的“内部可变性”模式：外部看是共享引用，内部类型自己保证并发安全。
     pub(crate) async fn set_limit_kib_per_sec(&self, limit_kib_per_sec: Option<NonZeroU64>) {
         self.bytes_per_second
             .store(kib_to_bytes(limit_kib_per_sec), Ordering::Relaxed);
+        // `lock().await` 获取 Tokio 异步互斥锁。
+        // 前面的 `*` 解引用锁守卫，修改被 Mutex 保护的 Instant。
         *self.next_available_at.lock().await = Instant::now();
         let _ = self.update_tx.send(());
     }
@@ -49,6 +63,8 @@ impl DownloadRateLimiter {
 
             let reservation = duration_for(bytes, bytes_per_second);
             let wait_until = {
+                // 用一个较小作用域包住锁守卫，让锁在进入 `select!` 前释放。
+                // 这样等待 sleep 或配置变化时，不会一直占着 Mutex。
                 let mut next_available_at = self.next_available_at.lock().await;
                 let now = Instant::now();
                 let slot = (*next_available_at).max(now);
@@ -56,6 +72,8 @@ impl DownloadRateLimiter {
                 slot
             };
 
+            // `tokio::select!` 同时等待多个异步分支，先完成的分支获胜。
+            // 这里要么等到预约时间，要么等到限速配置变化后重新计算。
             tokio::select! {
                 _ = tokio::time::sleep_until(wait_until) => return,
                 changed = updates.changed() => {

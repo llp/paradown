@@ -584,11 +584,6 @@ impl Drop for ...
 - `docs/rust/syntax-index.md`
 - `docs/rust/result-option.md`
 - `docs/rust/concurrency-primitives.md`
-
-后续建议新增：
-
-- `docs/rust/modules-and-visibility.md`
-- `docs/rust/enums-structs-traits.md`
 - `docs/rust/ownership-borrowing-lifetimes.md`
 - `docs/rust/pattern-matching.md`
 - `docs/rust/generics-and-traits.md`
@@ -596,3 +591,8 @@ impl Drop for ...
 - `docs/rust/async-and-concurrency.md`
 - `docs/rust/macros-and-attributes.md`
 - `docs/rust/unsafe-and-ffi.md`
+
+后续可选新增：
+
+- `docs/rust/modules-and-visibility.md`
+- `docs/rust/enums-structs-traits.md`

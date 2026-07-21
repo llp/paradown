@@ -478,21 +478,11 @@ impl SourceSet {
     }
 }
 
-/// `SourceSet` 相关单元测试。
-///
-/// 这些测试重点验证：
-/// - 能否从 `DownloadSpec` 构建主来源集合。
-/// - 替换主来源时是否会按 id 覆盖已有来源。
 #[cfg(test)]
 mod tests {
     use super::{SourceDescriptor, SourceKind, SourceSet};
     use crate::domain::DownloadSpec;
 
-    /// 验证 HTTPS 下载规格可以构建成只包含一个主来源的 `SourceSet`。
-    ///
-    /// `map(|source| source.kind.clone())` 表示：
-    /// 如果 `primary()` 返回 `Some(source)`，就把里面的 `SourceKind` 克隆出来用于断言。
-    /// 如果 `primary()` 返回 `None`，整个表达式仍然是 `None`。
     #[test]
     fn builds_single_http_source_set_from_spec() {
         let spec = DownloadSpec::parse("https://example.com/file.bin").unwrap();
@@ -512,11 +502,6 @@ mod tests {
         );
     }
 
-    /// 验证 `replace_primary` 会按相同 id 替换已有主来源。
-    ///
-    /// 测试里构造的 `replacement` 和原始来源使用同一个 id，
-    /// 但 locator 换成了 CDN 地址。替换后如果 `primary().locator` 是 CDN 地址，
-    /// 就说明原来的来源被成功覆盖，而不是新增了一个重复来源。
     #[test]
     fn replaces_existing_primary_source_by_id() {
         let mut sources = SourceSet::single_primary(SourceDescriptor::from_spec(

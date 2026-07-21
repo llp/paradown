@@ -350,14 +350,10 @@ impl TryFrom<String> for DownloadSpec {
     }
 }
 
-/// 单元测试模块。
-///
-/// `#[cfg(test)]` 表示这个模块只在运行测试时编译，正常构建库或二进制时不会包含它。
 #[cfg(test)]
 mod tests {
     use super::DownloadSpec;
 
-    /// 验证 HTTP URL 会被解析成 `Http` 规格，并保留原始 locator。
     #[test]
     fn parses_http_locator() {
         let spec = DownloadSpec::parse("http://example.com/file.bin").unwrap();
@@ -365,7 +361,6 @@ mod tests {
         assert_eq!(spec.locator(), "http://example.com/file.bin");
     }
 
-    /// 验证 HTTPS URL 会被解析成 `Https` 规格，并能从 URL path 推断文件名。
     #[test]
     fn parses_https_locator() {
         let spec = DownloadSpec::parse("https://example.com/file.bin").unwrap();
@@ -373,30 +368,18 @@ mod tests {
         assert_eq!(spec.file_name_hint().as_deref(), Some("file.bin"));
     }
 
-    /// 验证 Magnet URI 会被识别成 `Magnet` 规格。
-    ///
-    /// 这个测试函数名目前叫 `rejects_unsupported_protocols`，但实际断言的是 magnet 被支持。
-    /// 这里先保持测试名不变，只用注释说明它当前真正覆盖的行为。
     #[test]
     fn rejects_unsupported_protocols() {
         let spec = DownloadSpec::parse("magnet:?xt=urn:btih:deadbeef").unwrap();
         assert!(matches!(spec, DownloadSpec::Magnet { .. }));
     }
 
-    /// 验证网络上的 `.torrent` 链接仍然按 HTTPS 下载源处理。
-    ///
-    /// 也就是说，`https://example.com/file.torrent` 是一个 HTTPS URL，
-    /// 不是本地 torrent 文件路径，所以应解析成 `DownloadSpec::Https`。
     #[test]
     fn keeps_http_torrent_links_as_http_specs() {
         let spec = DownloadSpec::parse("https://example.com/file.torrent").unwrap();
         assert!(matches!(spec, DownloadSpec::Https { .. }));
     }
 
-    /// 验证本地 `.torrent` 路径会被解析成 `TorrentFile` 规格。
-    ///
-    /// `/tmp/archive.torrent` 不是完整 URL，`url::Url::parse` 会把它视为缺少 base 的相对路径。
-    /// `parse` 函数专门处理了这种以 `.torrent` 结尾的本地路径。
     #[test]
     fn parses_local_torrent_files_as_torrent_specs() {
         let spec = DownloadSpec::parse("/tmp/archive.torrent").unwrap();

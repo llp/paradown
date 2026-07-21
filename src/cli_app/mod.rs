@@ -10,13 +10,30 @@ use paradown::{Config, Error, HttpAuth, HttpHeader, init_logger_with_level};
 use serde::Serialize;
 use std::io::IsTerminal;
 use std::num::NonZeroU64;
+// `PathBuf` 是 Rust 标准库中用于处理文件系统路径的类型。
+// 它是一个“拥有所有权”的、可变的路径字符串，类似于 `String`。
+// 因为它拥有数据，所以可以被存储在结构体中（如此处的 `Cli`），或者从函数中返回。
+// 它与 `Path` 的关系，类似于 `String` 与 `&str` 的关系。
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+// 1. 定义一个名为 `Cli` 的结构体 (struct)。
+//    这就像一个蓝图，描述了一个名为 `Cli` 的新数据类型，它包含了下面定义的所有字段。
 #[derive(Parser, Debug)]
+// 2. `#[derive(Parser)]` 是一个“过程宏”，它来自 `clap` 库。
+//    这行代码的魔力在于：它会在编译时自动读取 `Cli` 结构体的定义，
+//    然后为 `Cli` 类型生成所有必要的命令行参数解析代码。
+//    其中就包括了一个名为 `parse()` 的关联函数（可以理解为静态方法）。
+//    更多关于过程宏的信息，请参阅 Rust 官方文档：
+//    https://doc.rust-lang.org/reference/procedural-macros.html
 #[command(name = "paradown")]
 #[command(about = "A multi-threaded download tool")]
+// `pub(crate)` 是一个可见性修饰符。
+// `pub` 表示这个项是公开的。
+// `(crate)` 将 `pub` 的范围限定在当前的 "crate"（也就是您当前的项目）之内。
+// 组合起来，`pub(crate)` 意味着 `Cli` 结构体在 `paradown` 项目的任何模块中都是可见的，
+// 但它不会被暴露为项目的公共 API，即外部无法访问。
 pub(crate) struct Cli {
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -106,6 +123,15 @@ pub(crate) struct Cli {
 }
 
 pub(crate) async fn run() -> Result<ExitCode, Error> {
+    // 3. 调用 `Cli::parse()` 函数。
+    //    这个 `parse()` 函数就是第 2 步中 `#[derive(Parser)]` 宏在编译时为我们自动生成的。
+    //    它的作用是：
+    //      a. 读取并解析程序运行时收到的命令行参数（例如 `--verbose`, `--urls ...` 等）。
+    //      b. 根据解析结果，创建一个 `Cli` 结构体的实例。
+    //      c. 将命令行参数的值填充到这个实例的对应字段中。
+    //
+    //    因此，`Cli::parse()` 的返回值就是一个被命令行参数填充好了的 `Cli` 类型的实例。
+    //    所以 `cli` 变量的类型就是 `Cli`。
     let cli = Cli::parse();
     let config = build_config(&cli)?;
     let output_mode = select_output_mode(&cli);

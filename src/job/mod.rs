@@ -44,8 +44,53 @@ pub struct Task {
     pub id: u32,
     trace_id: String,
     pub spec: DownloadSpec,
+    /// `status` 字段是一个 `Mutex<Status>` 类型。
+    ///
+    /// - `pub`: 表示这个字段是公开的，可以在 `Task` 结构体外部直接访问。
+    /// - `status`: 字段的名称。
+    /// - `Mutex<Status>`: 这是一个异步互斥锁，它保护着一个 `Status` 类型的值。
+    ///   - `Mutex`: 来自 `tokio::sync::Mutex`，是一个并发原语，用于保护共享数据。
+    ///     它确保在任何给定时间点，只有一个异步任务能够访问被它保护的 `Status` 值，
+    ///     从而防止数据竞争，保证多线程/多任务环境下的数据一致性。
+    ///   - `<Status>`: `Mutex` 是一个泛型类型，`Status` 是它的类型参数。
+    ///     这意味着这个互斥锁内部存储并保护的是一个 `Status` 类型的值。
+    ///
+    /// 综合来说，`status` 字段存储了任务的当前状态，并且所有对该状态的读写操作都必须
+    /// 通过先锁定互斥锁来完成（例如 `self.status.lock().await`），以确保线程安全。
     pub status: Mutex<Status>,
+    /// `file_name` 字段是一个 `OnceCell<String>` 类型。
+    ///
+    /// - `pub`: 表示这个字段是公开的，可以在 `Task` 结构体外部直接访问。
+    /// - `file_name`: 字段的名称。
+    /// - `OnceCell<String>`: 这是一个用于一次性初始化的类型，它将存储一个 `String`。
+    ///   - `OnceCell`: 来自 `tokio::sync::OnceCell`，它保证一个值只会被设置一次。
+    ///     在值被设置之前，它是空的；一旦被设置，它就不能再被修改。
+    ///     它是线程安全的，即使多个异步任务尝试同时设置它，也只有一个会成功，
+    ///     并且所有任务最终都会看到相同的值。
+    ///   - `<String>`: `OnceCell` 是一个泛型类型，`String` 是它的类型参数。
+    ///     这意味着这个 `OnceCell` 内部存储的是一个 `String` 类型的值。
+    ///
+    /// 综合来说，`file_name` 字段用于存储任务的文件名。这个文件名可能在任务创建时未知，
+    /// 但一旦通过某种方式（例如 HTTP 响应头或 URL 解析）确定后，就会被设置一次，
+    /// 之后便不可更改，确保了文件名的最终确定性。
     pub file_name: OnceCell<String>,
+    /// `file_path` 字段是一个 `Arc<OnceCell<PathBuf>>` 类型。
+    ///
+    /// - `pub`: 表示这个字段是公开的，可以在 `Task` 结构体外部直接访问。
+    /// - `file_path`: 字段的名称。
+    /// - `Arc<OnceCell<PathBuf>>`: 这是一个嵌套的泛型类型，结合了共享所有权、一次性初始化和路径数据。
+    ///   - `PathBuf`: 拥有所有权的、可变的文件系统路径。它在堆上分配内存来存储路径数据。
+    ///   - `OnceCell<PathBuf>`: 用于一次性初始化 `PathBuf` 值。它保证 `PathBuf` 只会被设置一次，
+    ///     一旦设置就不可更改。这解决了文件路径在任务创建时可能未知，但在稍后确定后就不再变化的需求。
+    ///   - `Arc<...>`: (Atomic Reference Counted) 原子引用计数智能指针。
+    ///     它的作用是允许多个线程或异步任务安全地共享同一个 `OnceCell<PathBuf>` 实例。
+    ///     当 `Arc` 被克隆时，内部引用计数增加；当 `Arc` 实例离开作用域时，引用计数减少。
+    ///     只有当引用计数归零时，被 `Arc` 包装的数据才会被释放。
+    ///     这确保了即使 `Task` 实例本身被多个地方共享，其内部的文件路径也能被安全地共享和访问，
+    ///     而无需担心所有权问题或数据竞争。
+    ///
+    /// 综合来说，`file_path` 字段存储了任务的下载文件路径。这个路径在任务生命周期中只会被确定一次，
+    /// 并且可以被多个并发组件安全地共享和访问。
     pub file_path: Arc<OnceCell<PathBuf>>,
     http_resource_identity: RwLock<HttpResourceIdentity>,
     http_request: HttpRequestOptions,

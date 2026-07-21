@@ -5,6 +5,15 @@ use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::num::NonZeroU64;
+// `Path` 和 `PathBuf` 用于处理文件系统路径，它们的关系类似于 `str` 和 `String`：
+//
+// - `Path`: 这是一个“路径切片”，它借用了一个路径字符串，但不拥有它。
+//   它的大小在编译时未知（是动态大小类型 DST），因此你总是通过引用 `&Path` 来使用它。
+//   `&Path` 非常轻量，适合在函数参数中使用，当你只需要读取或检查一个路径时。
+//
+// - `PathBuf`: 这是一个“拥有所有权的路径缓冲区”。它在堆上分配内存来存储路径数据。
+//   因为它拥有数据，所以你可以修改它（例如通过 `.push()` 添加路径段），
+//   将它存储在结构体中，或从函数中返回。
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
@@ -383,6 +392,17 @@ impl Config {
         Self::parse_toml_document(content)?.into_config()
     }
 
+    /// 从环境变量中读取值来覆盖当前的配置。
+    ///
+    /// 这个方法会修改 `Config` 实例自身，因为它接收 `&mut self` 参数。
+    /// `&mut self` 表示一个对实例的可变引用，允许函数内部修改实例的字段。
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(())`: 如果所有环境变量都被成功解析并应用，则返回成功。
+    ///   `()` 是单元类型，表示成功时不返回任何有意义的值。
+    /// - `Err(ConfigError)`: 如果解析任何一个环境变量时出错（例如，值格式不正确），
+    ///   则返回一个包含具体错误信息的 `ConfigError`。
     pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
         if let Some(value) = read_env("PARADOWN_DOWNLOAD_DIR") {
             self.download_dir = PathBuf::from(value);
@@ -675,24 +695,82 @@ fn default_file_conflict_strategy() -> FileConflictStrategy {
     FileConflictStrategy::Resume
 }
 
+/// 从环境中安全地读取一个变量，并进行清理。
+///
+/// 这个函数执行以下步骤：
+/// 1. 尝试读取由 `key` 指定的环境变量。
+/// 2. 如果变量不存在，直接返回 `None`。
+/// 3. 如果变量存在，移除其值前后的所有空白字符。
+/// 4. 如果清理后的值是空的，则返回 `None`。
+/// 5. 否则，返回包含清理后值的 `Some(String)`。
+///
+/// # `String` vs `&str` (字符串 vs 字符串切片)
+///
+/// - **`String`**: 拥有所有权的数据类型。它在内存的堆上分配空间，是可变的、可增长的。
+///   可以把它想象成一个你拥有的、可以随意修改的文本文件。
+/// - **`&str`**: 一个“借用”的、不可变的视图（切片），指向存储在别处的字符串数据。
+///   它不拥有数据，只是一个指针和长度。可以把它想象成一个指向书中某一页的只读便签。
+///
+/// # 参数
+///
+/// * `key`: 要读取的环境变量的名称。
+///
+/// # 返回值
+///
+/// - `Some(String)`: 如果环境变量存在且包含非空内容。
+/// - `None`: 如果环境变量不存在，或者其值为空或只包含空白字符。
 fn read_env(key: &str) -> Option<String> {
+    // 1. `env::var(key)`: 尝试读取环境变量。返回 `Result<String, VarError>`。
+    //    - `Ok(value)`: 如果成功，`value` 是一个拥有所有权的 `String` (在堆上分配)。
+    //    - `Err(_)`: 如果失败（例如，变量未设置）。
     env::var(key)
+        // 2. `.ok()`: 将 `Result` 转换为 `Option`。
+        //    - `Ok(value)` 变为 `Some(value)`。
+        //    - `Err(_)` 变为 `None`。
+        //    这样，如果变量不存在，后续的链式调用就会短路并返回 `None`。
         .ok()
+        // 3. `.map(|value| ...)`: 如果是 `Some(value)`，则对 `value` 执行闭包。
+        //    - `value.trim()`: 移除字符串前后的空白字符。这步返回一个 `&str`（字符串切片），
+        //      它只是一个指向原 `String` 内存的视图，并不创建新数据。
+        //    - `.to_string()`: 在 `&str` 上调用。这一步是关键：它会分配一块全新的内存，
+        //      然后将 `trim()` 返回的 `&str` 所指向的内容复制到新内存中，
+        //      最终根据这块新内存创建一个全新的、拥有所有权的 `String`。
         .map(|value| value.trim().to_string())
+        // 4. `.filter(|value| ...)`: 如果是 `Some(value)`，则应用一个条件。
+        //    - `!value.is_empty()`: 检查清理后的字符串是否不为空。
+        //    - 如果条件为 `true`，`Some(value)` 保持不变。
+        //    - 如果条件为 `false`（字符串为空），则 `Some(value)` 变为 `None`。
         .filter(|value| !value.is_empty())
 }
 
+/// 解析一个环境变量为布尔值。
+///
+/// # `let-else` 语法
+///
+/// `let Some(value) = ... else { ... };` 是一种模式匹配的语法糖。
+/// - 如果 `read_env(key)` 返回 `Some(value)`，则匹配成功，`value` 被绑定，程序继续。
+/// - 如果返回 `None`，则匹配失败，`else` 块被执行。`else` 块必须发散（如 `return`），
+///   这里它直接返回 `Ok(None)`，提前退出了函数。
+///
+/// # `as_str()` vs `to_string()`
+///
+/// - `value.to_ascii_lowercase()`: `value` 是 `String`，此方法返回一个新的、小写的 `String`。
+/// - `.as_str()`: 在新的小写 `String` 上调用，返回一个 `&str` 切片。
+///   这允许我们高效地与 `match` 分支中的 `&'static str` 进行比较，而无需再次分配内存。
 fn parse_env_bool(key: &str) -> Result<Option<bool>, ConfigError> {
+    // 尝试读取环境变量，如果不存在或为空，`let-else` 会让我们直接返回 `Ok(None)`。
     let Some(value) = read_env(key) else {
         return Ok(None);
     };
 
+    // 对读取到的值进行不区分大小写的匹配。
     match value.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(Some(true)),
         "0" | "false" | "no" | "off" => Ok(Some(false)),
+        // 如果值不是任何一个预期的布尔表示，则返回一个错误。
         _ => Err(ConfigError::InvalidEnvValue {
             key: key.to_string(),
-            value,
+            value, // `value` 的所有权在这里被转移到错误类型中。
             message: "expected boolean".into(),
         }),
     }

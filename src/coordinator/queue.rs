@@ -9,6 +9,7 @@ pub(crate) async fn acquire_task_permit_or_queue(
     task_id: u32,
     action: PendingAction,
 ) -> Result<Option<OwnedSemaphorePermit>, Error> {
+    //
     match manager.semaphore.clone().try_acquire_owned() {
         Ok(permit) => {
             debug!(
@@ -29,6 +30,7 @@ pub(crate) async fn acquire_task_permit_or_queue(
 pub(crate) async fn release_task_permit(manager: &Manager, task_id: u32) {
     if let Some(task) = manager.get_task(task_id) {
         let mut guard = task.permit.lock().await;
+        //
         if guard.is_some() {
             *guard = None;
             debug!("[Task {}] Released semaphore permit", task_id);
@@ -46,6 +48,7 @@ pub(crate) async fn release_task_permit(manager: &Manager, task_id: u32) {
 
 pub(crate) async fn remove_from_queue(manager: &Manager, task_id: u32) -> Result<(), Error> {
     let mut queue = manager.pending_queue.lock().await;
+    //
     if let Some(pos) = queue.iter().position(|(id, _action)| *id == task_id) {
         queue.remove(pos);
         debug!(
@@ -73,6 +76,7 @@ pub(crate) async fn spawn_next_task(manager: &Arc<Manager>) -> Result<(), Error>
         queue.pop_front()
     };
 
+    //
     if let Some((task_id, action)) = next_opt {
         let manager_clone = Arc::clone(manager);
         match action {

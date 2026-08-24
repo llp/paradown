@@ -1,40 +1,50 @@
+// =================================================================================
+// 1. 模块导入与依赖引用 (use Statements)
+// =================================================================================
 use crate::domain::{HttpAuth, HttpConfig, HttpHeader};
 use crate::p2p::{LibtorrentEngineConfig, SwarmIndexProviderConfig, SwarmProviderConfig};
 use crate::storage::Backend;
 use log::LevelFilter;
+// `serde::{Deserialize, Serialize}`：Serde 库的核心 trait，用于数据的序列化（结构体转 TOML/JSON）与反序列化（TOML/JSON 转结构体）
 use serde::{Deserialize, Serialize};
 use std::env;
+// `NonZeroU64`：标准库提供的非零无符号 64 位整数类型。
+// Rust 的空指针/利基优化（Niche Optimization）：`Option<NonZeroU64>` 在内存中占用的大小与普通的 `u64` 完全相同（用 0 字节表示 None），消除了内存浪费！
 use std::num::NonZeroU64;
+
 // `Path` 和 `PathBuf` 用于处理文件系统路径，它们的关系类似于 `str` 和 `String`：
-//
-// - `Path`: 这是一个“路径切片”，它借用了一个路径字符串，但不拥有它。
-//   它的大小在编译时未知（是动态大小类型 DST），因此你总是通过引用 `&Path` 来使用它。
-//   `&Path` 非常轻量，适合在函数参数中使用，当你只需要读取或检查一个路径时。
-//
-// - `PathBuf`: 这是一个“拥有所有权的路径缓冲区”。它在堆上分配内存来存储路径数据。
-//   因为它拥有数据，所以你可以修改它（例如通过 `.push()` 添加路径段），
-//   将它存储在结构体中，或从函数中返回。
+// - `Path`: 路径切片引用（不可变、无所有权、动态大小类型 DST），通常以 `&Path` 形式传递。
+// - `PathBuf`: 拥有所有权的路径缓冲区（在堆上分配），可变，类似于 `String`。
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+// `thiserror::Error`：第三方库 thiserror 提供的派生宏，帮助极其简便地定义符合 `std::error::Error` 标准接口的自定义错误类型
 use thiserror::Error;
 
+/// 全局配置 Schema 版本号常量
 pub const CURRENT_CONFIG_SCHEMA: u32 = 1;
 
-/// 文件存在处理策略
+// =================================================================================
+// 2. 枚举类型与转换 Trait (Enums & Traits)
+// =================================================================================
+
+/// 文件存在时的冲突处理策略枚举
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileConflictStrategy {
-    /// 删除已存在的文件并重新下载
+    /// 覆盖：删除已存在的文件并重新下载
     Overwrite,
-    /// 如果文件完整则跳过下载
+    /// 校验跳过：如果本地文件已存在且校验通过，跳过下载
     SkipIfValid,
-    /// 保留已存在文件（断点续传）
+    /// 续传：保留已存在的文件进度（断点续传）
     Resume,
 }
 
+// 为 `FileConflictStrategy` 实现标准库 `FromStr` Trait。
+// 允许使用 `"overwrite".parse::<FileConflictStrategy>()` 或字符串转枚举
 impl FromStr for FileConflictStrategy {
     type Err = ConfigError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        // `.trim()` 去除首尾空格，`.to_ascii_lowercase()` 转小写，`.as_str()` 借用为 &str 进 match 模式匹配
         match value.trim().to_ascii_lowercase().as_str() {
             "overwrite" => Ok(Self::Overwrite),
             "skipifvalid" | "skip_if_valid" | "skip-if-valid" => Ok(Self::SkipIfValid),
@@ -48,7 +58,9 @@ impl FromStr for FileConflictStrategy {
     }
 }
 
-/// 日志级别
+/// 日志输出级别枚举
+/// - `#[serde(rename_all = "snake_case")]`: serde 属性宏，序列化/反序列化时自动转为蛇形小写（如 "snake_case"）
+/// - `#[default]`: Rust 1.62+ 提供的语法，标记 `Info` 为派生 `Default` 特质时的默认变体
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
@@ -60,6 +72,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
+    /// 将自定义 LogLevel 映射转换为 log 库的 `LevelFilter` 过滤器
     pub fn as_level_filter(self) -> LevelFilter {
         match self {
             Self::Error => LevelFilter::Error,
@@ -70,31 +83,36 @@ impl LogLevel {
     }
 }
 
-/// 进度节流配置
+// =================================================================================
+// 3. 配置子结构体定义 (Sub-Configs)
+// =================================================================================
+
+/// 进度更新节流阀配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressThrottleConfig {
-    /// 事件最小触发间隔(ms)
+    /// 事件最小触发间隔 (毫秒 ms)
     pub interval_ms: u64,
-    /// 进度变化最小阈值(bytes)
+    /// 进度变化最小触发阈值 (字节 bytes)
     pub threshold_bytes: u64,
 }
 
+// 手动实现 `Default` Trait 赋予默认推荐值
 impl Default for ProgressThrottleConfig {
     fn default() -> Self {
         Self {
             interval_ms: 200,
-            threshold_bytes: 1024 * 1024,
+            threshold_bytes: 1024 * 1024, // 默认 1 MB 触发一次
         }
     }
 }
 
-/// 重试机制配置
+/// 失败重试策略配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
     pub max_retries: u32,
     pub initial_delay: u64,
     pub max_delay: u64,
-    pub backoff_factor: f64,
+    pub backoff_factor: f64, // 退避乘积因子（如 2.0 代表指数退避 Exponential Backoff）
 }
 
 impl Default for RetryConfig {
@@ -108,8 +126,10 @@ impl Default for RetryConfig {
     }
 }
 
+/// P2P / Swarm 下载扩展配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2pConfig {
+    // `#[serde(default = "default_p2p_enabled")]`: serde 属性宏，若配置文件缺少该字段，自动调用函数指定默认值
     #[serde(default = "default_p2p_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -128,51 +148,88 @@ impl Default for P2pConfig {
     }
 }
 
-/// 下载配置主结构
+// =================================================================================
+// 4. 下载引擎主配置结构体 (Main Config)
+// =================================================================================
+
+/// 下载引擎的主配置结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// 本地文件保存下载目录
     #[serde(default = "default_download_dir")]
     pub download_dir: PathBuf,
+
+    /// 是否对任务打乱随机排序
     #[serde(default, alias = "shuffle")]
     pub shuffle_tasks: bool,
+
+    /// 最大并发任务数上限 (Semaphore 控制)
     #[serde(
         default = "default_concurrent_tasks",
         alias = "max_concurrent_downloads"
     )]
     pub concurrent_tasks: usize,
+
+    /// 单个 HTTP 任务最大的 Worker 分片并发线程数
     #[serde(default = "default_segments_per_task", alias = "worker_threads")]
     pub segments_per_task: usize,
+
+    /// 重试策略
     #[serde(default)]
     pub retry: RetryConfig,
+
+    /// 全局限速 (KiB/s)，使用 `Option<NonZeroU64>` 既节省空间又防止配置为 0
     #[serde(default, alias = "rate_limit_kbps")]
     pub rate_limit_kib_per_sec: Option<NonZeroU64>,
+
+    /// 网络连接超时时间 (秒)
     #[serde(default = "default_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
+
+    /// 存储后端类型 (如 SQLite)
     #[serde(default = "default_storage_backend", alias = "persistence_type")]
     pub storage_backend: Backend,
+
+    /// 进度更新节流配置
     #[serde(default)]
     pub progress_throttle: ProgressThrottleConfig,
+
+    /// 文件冲突处理策略 (Overwrite, SkipIfValid, Resume)
     #[serde(default = "default_file_conflict_strategy")]
     pub file_conflict_strategy: FileConflictStrategy,
+
+    /// 全局日志级别
     #[serde(default)]
     pub log_level: LogLevel,
+
+    /// 下载完成后的可执行 Shell 钩子脚本命令
     #[serde(default, alias = "on_complete")]
     pub completion_hook: Option<String>,
+
+    /// HTTP 代理与网络请求配置
     #[serde(default)]
     pub http: HttpConfig,
+
+    /// P2P 引擎配置
     #[serde(default)]
     pub p2p: P2pConfig,
 }
 
+/// 内部 TOML 文件包装结构体，包含 Schema 版本号
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigFile {
     #[serde(default = "default_schema_version", alias = "version")]
     schema_version: u32,
+    // `#[serde(flatten)]`: serde 扁平化属性宏，将 `Config` 的所有字段直接平铺到 TOML 顶层
     #[serde(flatten)]
     config: Config,
 }
 
-/// Builder 模式的实现
+// =================================================================================
+// 5. Builder 构建器模式实现 (ConfigBuilder)
+// =================================================================================
+
+/// `ConfigBuilder` 结构体：实现流畅调用 (Fluent API) 的 Builder 设计模式
 #[derive(Debug, Clone)]
 pub struct ConfigBuilder {
     inner: Config,
@@ -200,13 +257,16 @@ impl Default for Config {
 }
 
 impl ConfigBuilder {
-    /// 创建新的 Builder
+    /// 创建新的 ConfigBuilder 实例
     pub fn new() -> Self {
         Self {
             inner: Config::default(),
         }
     }
 
+    // `mut self` 与 `impl Into<PathBuf>` 语法解析：
+    // - `mut self`: 接收 `self` 的所有权并将变量标记为可变（Ownership Transfer）。修改后返回 `Self` 自身，实现链式流畅调用。
+    // - `impl Into<PathBuf>`: 泛型特质约束（Trait Bound）。调用者可以传入 `&str`、`String` 或 `PathBuf`，内部通过 `dir.into()` 自动转换为 `PathBuf`！
     pub fn download_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.inner.download_dir = dir.into();
         self
@@ -277,7 +337,7 @@ impl ConfigBuilder {
         self
     }
 
-    /// 构建配置并验证
+    /// 构建 `Config` 实例并调用 `validate()` 进行合法性校验
     pub fn build(self) -> Result<Config, ConfigError> {
         self.inner.validate()?;
         Ok(self.inner)
@@ -290,24 +350,39 @@ impl Default for ConfigBuilder {
     }
 }
 
+// =================================================================================
+// 6. 自定义错误枚举 (ConfigError & ConfigLoadError) 与 thiserror 库使用
+// =================================================================================
+
+/// 配置校验非法错误枚举
+/// `#[derive(Debug, Error)]`: `thiserror` 库提供的派生宏，自动实现 `std::fmt::Display` 与 `std::error::Error`
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    // `#[error("...")]`: 指定该错误变体的 Display 格式化模板，`{0}` 表示元组变体的第 0 个字段
     #[error("Invalid download directory: {0}")]
     InvalidDownloadDir(String),
+
     #[error("Invalid concurrent tasks: {0}")]
     InvalidConcurrentTasks(usize),
+
     #[error("Invalid segments per task: {0}")]
     InvalidSegmentsPerTask(usize),
+
     #[error("Invalid progress throttle interval: {0}")]
     InvalidProgressThrottleInterval(u64),
+
     #[error("Invalid retry config: {0}")]
     InvalidRetryConfig(String),
+
     #[error("Invalid p2p config: {0}")]
     InvalidP2pConfig(String),
+
     #[error("Completion hook cannot be blank")]
     InvalidCompletionHook,
+
     #[error("Unsupported config schema version {found}, current supported version is {supported}")]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
+
     #[error("Invalid env value for {key}: '{value}' ({message})")]
     InvalidEnvValue {
         key: String,
@@ -316,27 +391,39 @@ pub enum ConfigError {
     },
 }
 
+/// 配置加载错误枚举 (文件 IO、TOML 解析、环境变量)
 #[derive(Debug, Error)]
 pub enum ConfigLoadError {
     #[error("Failed to read config file '{path}': {source}")]
     ReadFile {
         path: PathBuf,
+        // `#[source]`: 标记内部嵌入的底层错误（使 Error::source() 可以递归获取根因错误）
         #[source]
         source: std::io::Error,
     },
+
     #[error("Failed to parse config file '{path}': {source}")]
     ParseFile {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
     },
+
+    // `#[from]`: 自动生成 `From<toml::de::Error> for ConfigLoadError`，使 `?` 运算符可自动将 toml 错误转换为 ConfigLoadError
     #[error("Failed to parse config: {0}")]
     Parse(#[from] toml::de::Error),
+
+    // `#[error(transparent)]`: 透明转发内部错误的 Display 和 source 方法
     #[error(transparent)]
     Config(#[from] ConfigError),
 }
 
+// =================================================================================
+// 7. 配置合法性校验与加载实现 (Config Impl)
+// =================================================================================
+
 impl Config {
+    /// 校验配置项参数合法性 (数值边界检查)
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.download_dir.as_os_str().is_empty() {
             return Err(ConfigError::InvalidDownloadDir(
@@ -361,6 +448,8 @@ impl Config {
         validate_retry_config(&self.retry)?;
         validate_p2p_config(&self.p2p)?;
 
+        // `.as_deref()`: 将 `Option<String>` 借用转换为 `Option<&str>`
+        // `.is_some_and(|value| ...)`: 如果 Option 为 Some 且里面的闭包条件返回 true
         if self
             .completion_hook
             .as_deref()
@@ -372,7 +461,8 @@ impl Config {
         Ok(())
     }
 
-    /// 从 TOML 文件加载配置
+    /// 从 TOML 文件路径加载配置
+    /// `path: impl AsRef<Path>`: 泛型借用约束，允许调用者传入 `&str`、`String`、`&Path` 或 `PathBuf`
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigLoadError> {
         let path = path.as_ref();
         let content =
